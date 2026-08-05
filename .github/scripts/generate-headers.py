@@ -79,25 +79,27 @@ def main(repos: list[str]) -> int:
                     continue
                 t = TYPE_RE.search(text)
                 app_type = t.group(1) if t else "ct"
-                # tools/<platform>/x.sh -> headers/tools/<platform>/
+                # APP_TYPE=tools resolves to headers/tools/<platform> at
+                # runtime. tools/pve/ and tools/incus/ each belong to one
+                # platform; anything else declaring APP_TYPE=tools (scripts under
+                # tools/addon/ do) runs on both, so it is written to both.
+                targets = [app_type]
                 if app_type == "tools":
                     parts = script.relative_to(root).parts
                     platform = parts[1] if len(parts) > 2 and parts[1] in TOOL_PLATFORMS else None
-                    if platform is None:
-                        skipped.append(
-                            f"{repo}/{script.relative_to(root)}: APP_TYPE=tools "
-                            f"outside tools/{{{'|'.join(TOOL_PLATFORMS)}}}/"
-                        )
-                        continue
-                    app_type = f"tools/{platform}"
-                key = (app_type, slug(app))
-                if key in written:
+                    targets = (
+                        [f"tools/{platform}"] if platform
+                        else [f"tools/{p}" for p in TOOL_PLATFORMS]
+                    )
+                keys = [(t, slug(app)) for t in targets]
+                if all(k in written for k in keys):
                     continue
                 art = figlet(app)
                 if art is None:
                     skipped.append(f"{repo}/{script.relative_to(root)}: figlet failed")
                     continue
-                written[key] = art
+                for k in keys:
+                    written.setdefault(k, art)
 
     # Rewrite the tree so removed apps do not leave orphans behind.
     for stale in sorted(OUT.rglob("*")):
