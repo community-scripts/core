@@ -879,6 +879,9 @@ exit_script() {
 get_header() {
   local app_name=$(echo "${APP,,}" | tr -d ' ')
   local app_type=${APP_TYPE:-ct} # Default to 'ct' if not set
+  # Addon scripts live under tools/, and the generator writes their headers
+  # into tools/headers recursively — there is no addon/headers directory.
+  [[ "$app_type" == "addon" ]] && app_type="tools"
   local header_url="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}/${app_type}/headers/${app_name}"
   local local_header_path="/usr/local/community-scripts/headers/${app_type}/${app_name}"
   local repo_header=""
