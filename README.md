@@ -94,9 +94,33 @@ incus/      Incus backend
   tools.func           Incus-side helper wrappers
   vm-core.func         VM creation on Incus
 
+headers/    figlet banners, generated from the script repos
+  ct/                  container scripts
+  addon/               in-container add-ons
+  vm/                  virtual machines
+  tools/pve/           Proxmox VE host tools
+  tools/incus/         Incus host tools
+
 tools/      developer helpers (run.sh)
 images/     logos used in container MOTD and VM output
 ```
+
+### Why headers live here
+
+A header is a figlet banner derived from a script's `APP=` line — a generated
+artifact, never hand-written. The same banner renders on both platforms, so
+keeping a copy in every script repo was pure duplication.
+`.github/workflows/generate-headers.yml` walks ProxmoxVE, ProxmoxVED and Incus
+every six hours (or immediately on a `scripts-changed` dispatch) and regenerates
+the tree.
+
+They are keyed by `APP_TYPE`, not by the folder a script lives in — scripts
+under `tools/addon/` declare `APP_TYPE="addon"`. Host tools are the one type
+that is platform-specific: `tools/pve/` never runs on Incus and `tools/incus/`
+never on Proxmox VE, so their banners are kept apart and `get_header()` picks
+the folder from the detected host. A newly merged script has no banner until the
+generator has run; `header_info()` prints nothing in that case rather than
+failing.
 
 ---
 
