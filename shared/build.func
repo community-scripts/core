@@ -10,8 +10,8 @@
 # ProxmoxVED, Incus) live in SEPARATE repositories, so a single origin can no
 # longer address both. Everything below distinguishes two roots:
 #
-#   ENGINE  — misc/*.func             → core, laid out as shared/ pve/ incus/
-#   SCRIPTS — ct/ install/ vm/ tools/ → whichever script repo invoked us
+#   ENGINE  — shared/ pve/ incus/     → core
+#   SCRIPTS — ct/ install/ vm/        → whichever script repo invoked us
 #
 # Each root resolves independently, so a fork/branch of core can be tested
 # against production scripts and vice versa:
@@ -19,8 +19,8 @@
 #   COMMUNITY_SCRIPTS_CORE_URL / COMMUNITY_SCRIPTS_CORE_DIR   → engine
 #   COMMUNITY_SCRIPTS_URL      / COMMUNITY_SCRIPTS_ROOT       → scripts
 #
-# Call sites keep using virtual "misc/<name>.func" paths; _cs_core_rel maps
-# them onto core's real subfolders.
+# Paths are folder-qualified: "shared/core.func", "pve/backend.func",
+# "incus/build.func" for the engine, "ct/…" and "install/…" for the scripts.
 # ==============================================================================
 
 [[ -n "${_LXC_BUILD_DISPATCHED:-}" ]] && return
@@ -30,20 +30,16 @@ _CS_DEFAULT_URL="${_CS_DEFAULT_URL:-https://raw.githubusercontent.com/community-
 _CS_CORE_DEFAULT_URL="${_CS_CORE_DEFAULT_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
 
 # ── Engine layout ─────────────────────────────────────────────────────────────
-# Virtual "misc/<name>" → real path inside core. An explicit map rather than
-# probing candidate folders: over HTTP a probe costs one request per miss, and
-# every CT install would pay it several times.
-_cs_core_rel() {
-  local name="${1##*/}"
-  case "$name" in
-  incus-*.func) echo "incus/$name" ;;
-  pve-backend.func | vm-app.func | vm-core.func) echo "pve/$name" ;;
-  *) echo "shared/$name" ;;
+# Paths are folder-qualified ("incus/backend.func"), so the folder itself says
+# which root a path belongs to and no name→folder map is needed. That is also
+# what lets the files drop their platform prefix: incus/build.func and
+# shared/build.func can coexist because nothing resolves by basename.
+_cs_is_engine_path() {
+  case "${1:-}" in
+  shared/* | pve/* | incus/*) return 0 ;;
+  *) return 1 ;;
   esac
 }
-
-# Everything under misc/ is engine; ct/, install/, vm/, tools/ are scripts.
-_cs_is_engine_path() { [[ "${1:-}" == misc/* ]]; }
 
 # ── Engine root ───────────────────────────────────────────────────────────────
 # This file lives at <core>/shared/build.func, so the engine root is its parent.
@@ -121,13 +117,7 @@ _cs_local_path() {
 
   if _cs_is_engine_path "$rel"; then
     [[ -z "${COMMUNITY_SCRIPTS_CORE_DIR:-}" ]] && return 1
-    candidate="${COMMUNITY_SCRIPTS_CORE_DIR}/$(_cs_core_rel "$rel")"
-    if [[ -f "$candidate" ]]; then
-      echo "$candidate"
-      return 0
-    fi
-    # Flat checkout fallback (pre-split layout).
-    candidate="${COMMUNITY_SCRIPTS_CORE_DIR}/${rel##*/}"
+    candidate="${COMMUNITY_SCRIPTS_CORE_DIR}/${rel}"
     if [[ -f "$candidate" ]]; then
       echo "$candidate"
       return 0
@@ -148,7 +138,7 @@ _cs_local_path() {
 _cs_remote_url() {
   local rel="${1:?relative path}"
   if _cs_is_engine_path "$rel"; then
-    echo "${COMMUNITY_SCRIPTS_CORE_URL}/$(_cs_core_rel "$rel")"
+    echo "${COMMUNITY_SCRIPTS_CORE_URL}/${rel}"
   else
     echo "${COMMUNITY_SCRIPTS_URL}/${rel}"
   fi
@@ -165,7 +155,7 @@ _cs_download() {
 
 # Fetch text: prefer a local checkout, else download from the matching base.
 _cs_fetch_text() {
-  local rel="${1:?relative path e.g. misc/install.func}"
+  local rel="${1:?relative path e.g. shared/install.func}"
   local file
   if file="$(_cs_local_path "$rel")" && [[ -n "$file" ]]; then
     cat "$file"
@@ -186,12 +176,12 @@ _cs_source_func() {
   source <(_cs_download "$(_cs_remote_url "$rel")")
 }
 
-_cs_source_func "misc/lxc-platform.func"
+_cs_source_func "shared/lxc-platform.func"
 
 if is_incus_lxc_backend; then
-  _cs_source_func "misc/incus-build.func"
+  _cs_source_func "incus/build.func"
   return 0
 fi
 
-_cs_source_func "misc/build-ui.func"
-_cs_source_func "misc/pve-backend.func"
+_cs_source_func "shared/build-ui.func"
+_cs_source_func "pve/backend.func"
