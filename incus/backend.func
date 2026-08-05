@@ -199,9 +199,9 @@ validate_storage_space() {
 
 _incus_prepare_install_exports() {
   if [[ "${var_os:-debian}" == "alpine" ]]; then
-    export FUNCTIONS_FILE_PATH="$(_cs_fetch_text misc/alpine-install.func)"
+    export FUNCTIONS_FILE_PATH="$(_cs_fetch_text "shared/alpine-install.func")"
   else
-    export FUNCTIONS_FILE_PATH="$(_cs_fetch_text misc/install.func)"
+    export FUNCTIONS_FILE_PATH="$(_cs_fetch_text "shared/install.func")"
   fi
 
   export DIAGNOSTICS="${DIAGNOSTICS:-yes}"
