@@ -10,7 +10,7 @@
 # ProxmoxVED, Incus) live in SEPARATE repositories, so a single origin can no
 # longer address both. Everything below distinguishes two roots:
 #
-#   ENGINE  — misc/*.func             → core, laid out as shared/ PVE/ Incus/
+#   ENGINE  — misc/*.func             → core, laid out as shared/ pve/ incus/
 #   SCRIPTS — ct/ install/ vm/ tools/ → whichever script repo invoked us
 #
 # Each root resolves independently, so a fork/branch of core can be tested
@@ -36,21 +36,9 @@ _CS_CORE_DEFAULT_URL="${_CS_CORE_DEFAULT_URL:-https://raw.githubusercontent.com/
 _cs_core_rel() {
   local name="${1##*/}"
   case "$name" in
-  build.func | build-ui.func | core.func | tools.func | api.func | \
-    error_handler.func | alpine-install.func | alpine-tools.func)
-    echo "shared/$name"
-    ;;
-  pve-backend.func | vm-app.func | vm-core.func)
-    echo "PVE/$name"
-    ;;
-  incus-backend.func | incus-build.func | incus-core.func | \
-    incus-tools.func | incus-vm-core.func)
-    echo "Incus/$name"
-    ;;
-  *)
-    # lxc-platform.func, install.func, cloud-init.func, source-origin.func
-    echo "$name"
-    ;;
+  incus-*.func) echo "incus/$name" ;;
+  pve-backend.func | vm-app.func | vm-core.func) echo "pve/$name" ;;
+  *) echo "shared/$name" ;;
   esac
 }
 
@@ -61,10 +49,10 @@ _cs_is_engine_path() { [[ "${1:-}" == misc/* ]]; }
 # This file lives at <core>/shared/build.func, so the engine root is its parent.
 if [[ -z "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
   _cs_this_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-  if [[ -f "${_cs_this_dir}/../lxc-platform.func" ]]; then
+  if [[ "${_cs_this_dir##*/}" == "shared" && -d "${_cs_this_dir}/../pve" ]]; then
     COMMUNITY_SCRIPTS_CORE_DIR="$(cd "${_cs_this_dir}/.." >/dev/null 2>&1 && pwd)"
   elif [[ -f "${_cs_this_dir}/lxc-platform.func" ]]; then
-    # Flat checkout (pre-split layout) — treat this directory as the root.
+    # Flat checkout (a script repo's own misc/) — treat this directory as root.
     COMMUNITY_SCRIPTS_CORE_DIR="${_cs_this_dir}"
   fi
   unset _cs_this_dir

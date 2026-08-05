@@ -140,7 +140,7 @@ run_preflight() {
     _build_ui_source "misc/preflight.func"
   else
     # shellcheck disable=SC1090
-    source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/preflight.func")
+    source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/preflight.func")
   fi
   if declare -f run_preflight_full >/dev/null 2>&1; then
     run_preflight_full
