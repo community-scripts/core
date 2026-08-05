@@ -191,74 +191,6 @@ set_std_mode() {
   fi
 }
 
-# ------------------------------------------------------------------------------
-# parse_dev_mode()
-#
-# - Parses comma-separated dev_mode variable (e.g., "motd,keep,trace")
-# - Sets global flags for each mode:
-#   * DEV_MODE_MOTD: Setup SSH/MOTD before installation
-#   * DEV_MODE_KEEP: Never delete container on failure
-#   * DEV_MODE_TRACE: Enable bash set -x tracing
-#   * DEV_MODE_PAUSE: Pause after each msg_info step
-#   * DEV_MODE_BREAKPOINT: Open shell on error instead of cleanup
-#   * DEV_MODE_LOGS: Persist all logs to /var/log/community-scripts/
-#   * DEV_MODE_DRYRUN: Show commands without executing
-# - Call this early in script execution
-# ------------------------------------------------------------------------------
-parse_dev_mode() {
-  local mode
-  # Initialize all flags to false
-  export DEV_MODE_MOTD=false
-  export DEV_MODE_KEEP=false
-  export DEV_MODE_TRACE=false
-  export DEV_MODE_PAUSE=false
-  export DEV_MODE_BREAKPOINT=false
-  export DEV_MODE_LOGS=false
-  export DEV_MODE_DRYRUN=false
-
-  # Parse comma-separated modes
-  if [[ -n "${dev_mode:-}" ]]; then
-    IFS=',' read -ra MODES <<<"$dev_mode"
-    for mode in "${MODES[@]}"; do
-      mode="$(echo "$mode" | xargs)" # Trim whitespace
-      case "$mode" in
-      motd) export DEV_MODE_MOTD=true ;;
-      keep) export DEV_MODE_KEEP=true ;;
-      trace) export DEV_MODE_TRACE=true ;;
-      pause) export DEV_MODE_PAUSE=true ;;
-      breakpoint) export DEV_MODE_BREAKPOINT=true ;;
-      logs) export DEV_MODE_LOGS=true ;;
-      dryrun) export DEV_MODE_DRYRUN=true ;;
-      *)
-        if declare -f msg_warn >/dev/null 2>&1; then
-          msg_warn "Unknown dev_mode: '$mode' (ignored)"
-        else
-          echo "[WARN] Unknown dev_mode: '$mode' (ignored)" >&2
-        fi
-        ;;
-      esac
-    done
-
-    # Show active dev modes
-    local active_modes=()
-    [[ $DEV_MODE_MOTD == true ]] && active_modes+=("motd")
-    [[ $DEV_MODE_KEEP == true ]] && active_modes+=("keep")
-    [[ $DEV_MODE_TRACE == true ]] && active_modes+=("trace")
-    [[ $DEV_MODE_PAUSE == true ]] && active_modes+=("pause")
-    [[ $DEV_MODE_BREAKPOINT == true ]] && active_modes+=("breakpoint")
-    [[ $DEV_MODE_LOGS == true ]] && active_modes+=("logs")
-    [[ $DEV_MODE_DRYRUN == true ]] && active_modes+=("dryrun")
-
-    if [[ ${#active_modes[@]} -gt 0 ]]; then
-      if declare -f msg_custom >/dev/null 2>&1; then
-        msg_custom "🔧" "${YWB}" "Dev modes active: ${active_modes[*]}"
-      else
-        echo "[DEV] Active modes: ${active_modes[*]}" >&2
-      fi
-    fi
-  fi
-}
-
 # ==============================================================================
 # SECTION 2: VALIDATION CHECKS
 # ==============================================================================
@@ -1768,6 +1700,48 @@ function get_lxc_ip() {
   fi
 
   export LOCAL_IP
+}
+
+# ------------------------------------------------------------------------------
+# apt_update_safe()
+#
+# - Runs apt-get update without letting a partial failure abort the caller
+# - Disarms errexit and the ERR trap for the duration, then restores them
+# - Warns on a non-zero exit and hints at the enterprise-repo 401/403 case
+# ------------------------------------------------------------------------------
+apt_update_safe() {
+  local logfile
+  logfile="$(get_active_logfile)"
+
+  local _restore_errexit=false
+  [[ "$-" == *e* ]] && _restore_errexit=true
+
+  set +Eeuo pipefail
+  trap - ERR
+
+  apt-get update >>"$logfile" 2>&1
+  local rc=$?
+
+  if $_restore_errexit; then
+    set -Eeuo pipefail
+    trap 'error_handler' ERR
+  fi
+
+  if [[ $rc -ne 0 ]]; then
+    msg_warn "apt-get update exited with code ${rc} — some repositories may have failed."
+
+    # Check log for common 401/403 enterprise repo issues
+    if grep -qiE '401\s*Unauthorized|403\s*Forbidden|enterprise\.proxmox\.com' "$logfile" 2>/dev/null; then
+      echo -e "${TAB}${INFO} ${YWB}Hint: Proxmox enterprise repository returned an auth error.${CL}"
+      echo -e "${TAB}       If you don't have a subscription, you can disable the enterprise"
+      echo -e "${TAB}       repo and use the no-subscription repo instead."
+    fi
+
+    echo -e "${TAB}${INFO} ${YWB}Continuing despite partial update failure — packages may still be installable.${CL}"
+    echo ""
+  fi
+
+  return 0
 }
 
 # ------------------------------------------------------------------------------

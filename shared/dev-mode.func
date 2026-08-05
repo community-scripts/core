@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# Copyright (c) 2021-2026 community-scripts ORG
+# License: MIT | https://raw.githubusercontent.com/community-scripts/core/main/LICENSE
+
+# ==============================================================================
+# DEV-MODE.FUNC - DEVELOPER AND DEBUGGING MODES
+# ==============================================================================
+# Opt-in debugging, driven by a comma-separated dev_mode variable:
+#
+#   motd        set up MOTD/SSH in a kept container so it can be inspected
+#   keep        never delete the container when a build fails
+#   trace       bash set -x tracing
+#   pause       pause after each msg_info step
+#   breakpoint  open a shell on error instead of cleaning up
+#   logs        persist all logs to /var/log/community-scripts/
+#   dryrun      print commands instead of running them
+#
+# Parsing and the interactive picker live here; the flags themselves are read at
+# the point of use, in the backends and the messaging helpers.
+# ==============================================================================
+
+[[ -n "${_DEV_MODE_FUNC_LOADED:-}" ]] && return
+_DEV_MODE_FUNC_LOADED=1
+
+# ------------------------------------------------------------------------------
+# parse_dev_mode()
+#
+# - Parses comma-separated dev_mode variable (e.g., "motd,keep,trace")
+# - Sets global flags for each mode:
+#   * DEV_MODE_MOTD: Setup SSH/MOTD before installation
+#   * DEV_MODE_KEEP: Never delete container on failure
+#   * DEV_MODE_TRACE: Enable bash set -x tracing
+#   * DEV_MODE_PAUSE: Pause after each msg_info step
+#   * DEV_MODE_BREAKPOINT: Open shell on error instead of cleanup
+#   * DEV_MODE_LOGS: Persist all logs to /var/log/community-scripts/
+#   * DEV_MODE_DRYRUN: Show commands without executing
+# - Call this early in script execution
+# ------------------------------------------------------------------------------
+parse_dev_mode() {
+  local mode
+  # Initialize all flags to false
+  export DEV_MODE_MOTD=false
+  export DEV_MODE_KEEP=false
+  export DEV_MODE_TRACE=false
+  export DEV_MODE_PAUSE=false
+  export DEV_MODE_BREAKPOINT=false
+  export DEV_MODE_LOGS=false
+  export DEV_MODE_DRYRUN=false
+
+  # Parse comma-separated modes
+  if [[ -n "${dev_mode:-}" ]]; then
+    IFS=',' read -ra MODES <<<"$dev_mode"
+    for mode in "${MODES[@]}"; do
+      mode="$(echo "$mode" | xargs)" # Trim whitespace
+      case "$mode" in
+      motd) export DEV_MODE_MOTD=true ;;
+      keep) export DEV_MODE_KEEP=true ;;
+      trace) export DEV_MODE_TRACE=true ;;
+      pause) export DEV_MODE_PAUSE=true ;;
+      breakpoint) export DEV_MODE_BREAKPOINT=true ;;
+      logs) export DEV_MODE_LOGS=true ;;
+      dryrun) export DEV_MODE_DRYRUN=true ;;
+      *)
+        if declare -f msg_warn >/dev/null 2>&1; then
+          msg_warn "Unknown dev_mode: '$mode' (ignored)"
+        else
+          echo "[WARN] Unknown dev_mode: '$mode' (ignored)" >&2
+        fi
+        ;;
+      esac
+    done
+
+    # Show active dev modes
+    local active_modes=()
+    [[ $DEV_MODE_MOTD == true ]] && active_modes+=("motd")
+    [[ $DEV_MODE_KEEP == true ]] && active_modes+=("keep")
+    [[ $DEV_MODE_TRACE == true ]] && active_modes+=("trace")
+    [[ $DEV_MODE_PAUSE == true ]] && active_modes+=("pause")
+    [[ $DEV_MODE_BREAKPOINT == true ]] && active_modes+=("breakpoint")
+    [[ $DEV_MODE_LOGS == true ]] && active_modes+=("logs")
+    [[ $DEV_MODE_DRYRUN == true ]] && active_modes+=("dryrun")
+
+    if [[ ${#active_modes[@]} -gt 0 ]]; then
+      if declare -f msg_custom >/dev/null 2>&1; then
+        msg_custom "🔧" "${YWB}" "Dev modes active: ${active_modes[*]}"
+      else
+        echo "[DEV] Active modes: ${active_modes[*]}" >&2
+      fi
+    fi
+  fi
+}
+
+dev_mode_menu() {
+  local motd=OFF keep=OFF trace=OFF pause=OFF breakpoint=OFF logs=OFF dryrun=OFF verbose=OFF
+
+  IFS=',' read -r -a _modes <<<"$dev_mode"
+  for m in "${_modes[@]}"; do
+    case "$m" in
+    motd) motd=ON ;;
+    keep) keep=ON ;;
+    trace) trace=ON ;;
+    pause) pause=ON ;;
+    breakpoint) breakpoint=ON ;;
+    logs) logs=ON ;;
+    dryrun) dryrun=ON ;;
+    esac
+  done
+
+  [[ "$var_verbose" == "yes" ]] && verbose=ON
+
+  local selection
+  selection=$(whiptail --backtitle "Proxmox VE Helper Scripts" \
+    --title "DEV MODE" \
+    --checklist "Choose one or more Options" 16 51 10 \
+    "motd" "Early SSH/MOTD Setup" "$motd" \
+    "keep" "Preserve Container on Failure" "$keep" \
+    "trace" "Bash Command Tracing" "$trace" \
+    "pause" "Step-by-Step Execution" "$pause" \
+    "breakpoint" "Interactive Shell on Error" "$breakpoint" \
+    "logs" "Persistent Logging" "$logs" \
+    "dryrun" "Simulation Mode" "$dryrun" \
+    "verbose" "Verbose logging" "$verbose" \
+    3>&1 1>&2 2>&3) || exit_script
+
+  dev_mode=""
+  var_verbose="no"
+  local modes_out=()
+
+  for tag in $selection; do
+    tag="${tag%\"}"
+    tag="${tag#\"}"
+    if [[ "$tag" == "verbose" ]]; then
+      var_verbose="yes"
+    else
+      modes_out+=("$tag")
+    fi
+  done
+
+  dev_mode=$(
+    IFS=,
+    echo "${modes_out[*]}"
+  )
+  unset DEV_MODE_MOTD DEV_MODE_KEEP DEV_MODE_TRACE DEV_MODE_PAUSE DEV_MODE_BREAKPOINT DEV_MODE_LOGS DEV_MODE_DRYRUN
+  parse_dev_mode
+  if [[ "${DEV_MODE_LOGS:-false}" == "true" ]]; then
+    mkdir -p /var/log/community-scripts
+    BUILD_LOG="/var/log/community-scripts/create-lxc-${SESSION_ID}-$(date +%Y%m%d_%H%M%S).log"
+    combined_log="/var/log/community-scripts/install-${SESSION_ID}-combined-$(date +%Y%m%d_%H%M%S).log"
+  fi
+}
