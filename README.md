@@ -69,7 +69,11 @@ ported before it can move.
 ```
 shared/     platform-agnostic engine
   build.func           entry point, origin resolution, platform dispatch
-  build-ui.func        whiptail wizard, validators, advanced settings
+  build-ui.func        whiptail wizard entry point (loader)
+  build-ui/validate.func   container id, hostname, network, IP range validators
+  build-ui/defaults.func   storage selection, .vars files, app defaults
+  build-ui/advanced.func   the advanced settings wizard
+  build-ui/menu.func       settings and diagnostics menus, install_script, start
   core.func            colors, spinners, messaging, silent()
   tools.func           helper library used by install scripts (loader)
   tools/system.func      packages, repositories, OS probes, services
@@ -238,9 +242,10 @@ Before opening a PR:
   on Proxmox VE belongs in `pve/`.
 - Never hardcode a raw URL. Use `_cs_source_func "shared/<name>.func"` (or
   `pve/…`, `incus/…`) so both roots keep resolving and forks keep working.
-- `shared/tools.func` is the published helper API. Source that, not the parts
-  under `shared/tools/`. If you add or rename a function there, regenerate
-  `shared/tools/API.txt` in the same PR — CI compares against it.
+- `shared/tools.func` and `shared/build-ui.func` are loaders. Source those, not
+  the parts under `shared/tools/` or `shared/build-ui/`. If you add or rename a
+  function, regenerate the matching `API.txt` in the same PR — CI compares
+  against it.
 - New files go in the folder that matches their root. Nothing resolves by
   basename, so `incus/tools.func` and `shared/tools.func` are both fine.
 - `shellcheck` and `shfmt` the files you touched.

@@ -1,0 +1,619 @@
+#!/usr/bin/env bash
+# Copyright (c) 2021-2026 community-scripts ORG
+# License: MIT | https://raw.githubusercontent.com/community-scripts/core/main/LICENSE
+
+# ==============================================================================
+# BUILD-UI/VALIDATE.FUNC - INPUT VALIDATION AND IP RANGE HELPERS
+# ==============================================================================
+# Part of the build UI. Load shared/build-ui.func -- it sources every part --
+# rather than this file directly; the split is for maintenance only and no
+# function name or behaviour changed with it.
+# ==============================================================================
+
+[[ -n "${_BUILD_UI_VALIDATE_LOADED:-}" ]] && return 0
+_BUILD_UI_VALIDATE_LOADED=1
+
+# ==============================================================================
+# SECTION 3: CONTAINER SETUP UTILITIES
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# get_current_ip()
+#
+# - Returns current container IP depending on OS type
+# - Debian/Ubuntu: uses `hostname -I`
+# - Alpine: parses eth0 via `ip -4 addr` or `ip -6 addr`
+# - Supports IPv6-only environments as fallback
+# - Returns "Unknown" if OS type cannot be determined
+# ------------------------------------------------------------------------------
+get_current_ip() {
+  CURRENT_IP=""
+  if [ -f /etc/os-release ]; then
+    # Check for Debian/Ubuntu (uses hostname -I)
+    if grep -qE 'ID=debian|ID=ubuntu' /etc/os-release; then
+      # Try IPv4 first
+      CURRENT_IP=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+      # Fallback to IPv6 if no IPv4
+      if [[ -z "$CURRENT_IP" ]]; then
+        CURRENT_IP=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E ':' | head -n1)
+      fi
+    # Check for Alpine (uses ip command)
+    elif grep -q 'ID=alpine' /etc/os-release; then
+      # Try IPv4 first
+      CURRENT_IP=$(ip -4 addr show eth0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | head -n 1)
+      # Fallback to IPv6 if no IPv4
+      if [[ -z "$CURRENT_IP" ]]; then
+        CURRENT_IP=$(ip -6 addr show eth0 scope global 2>/dev/null | awk '/inet6 / {print $2}' | cut -d/ -f1 | head -n 1)
+      fi
+    else
+      CURRENT_IP="Unknown"
+    fi
+  fi
+  echo "$CURRENT_IP"
+}
+
+# ------------------------------------------------------------------------------
+# update_motd_ip()
+#
+# - Updates /etc/motd with current container IP
+# - Removes old IP entries to avoid duplicates
+# ------------------------------------------------------------------------------
+update_motd_ip() {
+  MOTD_FILE="/etc/motd"
+
+  if [ -f "$MOTD_FILE" ]; then
+    # Remove existing IP Address lines to prevent duplication
+    sed -i '/IP Address:/d' "$MOTD_FILE"
+
+    IP=$(get_current_ip)
+    # Add the new IP address
+    echo -e "${TAB}${NETWORK}${YW} IP Address: ${GN}${IP}${CL}" >>"$MOTD_FILE"
+  fi
+
+  # Update dynamic LXC details profile if values changed (e.g., after OS upgrade)
+  # Only update if file exists and is from community-scripts
+  if [ -f "$PROFILE_FILE" ] && grep -q "community-scripts" "$PROFILE_FILE" 2>/dev/null; then
+    # Get current values
+    local current_os="$(grep ^NAME /etc/os-release | cut -d= -f2 | tr -d '"') - Version: $(grep ^VERSION_ID /etc/os-release | cut -d= -f2 | tr -d '"')"
+    local current_hostname="$(hostname)"
+    local current_ip="$(hostname -I | awk '{print $1}')"
+
+    # Update only if values actually changed
+    if ! grep -q "OS:.*$current_os" "$PROFILE_FILE" 2>/dev/null; then
+      sed -i "s|OS:.*|OS: \${GN}$current_os\${CL}\\\"|" "$PROFILE_FILE"
+    fi
+    if ! grep -q "Hostname:.*$current_hostname" "$PROFILE_FILE" 2>/dev/null; then
+      sed -i "s|Hostname:.*|Hostname: \${GN}$current_hostname\${CL}\\\"|" "$PROFILE_FILE"
+    fi
+    if ! grep -q "IP Address:.*$current_ip" "$PROFILE_FILE" 2>/dev/null; then
+      sed -i "s|IP Address:.*|IP Address: \${GN}$current_ip\${CL}\\\"|" "$PROFILE_FILE"
+    fi
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# install_ssh_keys_into_ct()
+#
+# - Installs SSH keys into container root account if SSH is enabled
+# - Uses pct push or direct input to authorized_keys
+# - Supports both SSH_KEYS_FILE (from advanced settings) and SSH_AUTHORIZED_KEY (from user defaults)
+# - Falls back to warning if no keys provided
+# ------------------------------------------------------------------------------
+install_ssh_keys_into_ct() {
+  [[ "${SSH:-no}" != "yes" ]] && return 0
+
+  # Ensure SSH_KEYS_FILE is defined (may not be set if advanced_settings was skipped)
+  : "${SSH_KEYS_FILE:=}"
+
+  # If SSH_KEYS_FILE doesn't exist but SSH_AUTHORIZED_KEY is set (from user defaults),
+  # create a temporary SSH_KEYS_FILE with the key
+  if [[ -z "$SSH_KEYS_FILE" || ! -s "$SSH_KEYS_FILE" ]] && [[ -n "${SSH_AUTHORIZED_KEY:-}" ]]; then
+    SSH_KEYS_FILE="$(mktemp)"
+    printf '%s\n' "$SSH_AUTHORIZED_KEY" >"$SSH_KEYS_FILE"
+  fi
+
+  if [[ -n "$SSH_KEYS_FILE" && -s "$SSH_KEYS_FILE" ]]; then
+    msg_info "Installing selected SSH keys into CT ${CTID}"
+    pct exec "$CTID" -- sh -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh' || {
+      msg_error "prepare /root/.ssh failed"
+      return 1
+    }
+    pct push "$CTID" "$SSH_KEYS_FILE" /root/.ssh/authorized_keys >/dev/null 2>&1 ||
+      pct exec "$CTID" -- sh -c "cat > /root/.ssh/authorized_keys" <"$SSH_KEYS_FILE" || {
+      msg_error "write authorized_keys failed"
+      return 1
+    }
+    pct exec "$CTID" -- sh -c 'chmod 600 /root/.ssh/authorized_keys' || true
+    msg_ok "Installed SSH keys into CT ${CTID}"
+    return 0
+  fi
+
+  # Fallback
+  msg_warn "No SSH keys to install (skipping)."
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# validate_container_id()
+#
+# - Validates if a container ID is available for use
+# - Checks if ID is already used by VM or LXC container
+# - Checks if ID is used in LVM logical volumes
+# - Returns 0 if ID is available, 1 if already in use
+# ------------------------------------------------------------------------------
+validate_container_id() {
+  local ctid="$1"
+
+  # Check if ID is numeric
+  if ! [[ "$ctid" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+
+  # Check if config file exists for VM or LXC
+  if [[ -f "/etc/pve/qemu-server/${ctid}.conf" ]] || [[ -f "/etc/pve/lxc/${ctid}.conf" ]]; then
+    return 1
+  fi
+
+  # Check if ID is used in LVM logical volumes
+  if lvs --noheadings -o lv_name 2>/dev/null | grep -qE "(^|[-_])${ctid}($|[-_])"; then
+    return 1
+  fi
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# get_valid_container_id()
+#
+# - Returns a valid, unused container ID
+# - If provided ID is valid, returns it
+# - Otherwise increments from suggested ID until a free one is found
+# - Calls validate_container_id() to check availability
+# ------------------------------------------------------------------------------
+get_valid_container_id() {
+  local suggested_id="${1:-$(pvesh get /cluster/nextid)}"
+
+  while ! validate_container_id "$suggested_id"; do
+    suggested_id=$((suggested_id + 1))
+  done
+
+  echo "$suggested_id"
+}
+
+# ------------------------------------------------------------------------------
+# validate_hostname()
+#
+# - Validates hostname/FQDN according to RFC 1123/952
+# - Checks total length (max 253 characters for FQDN)
+# - Validates each label (max 63 chars, alphanumeric + hyphens)
+# - Returns 0 if valid, 1 if invalid
+# ------------------------------------------------------------------------------
+validate_hostname() {
+  local hostname="$1"
+
+  # Check total length (max 253 for FQDN)
+  if [[ ${#hostname} -gt 253 ]] || [[ -z "$hostname" ]]; then
+    return 1
+  fi
+
+  # Split by dots and validate each label
+  local IFS='.'
+  read -ra labels <<<"$hostname"
+  for label in "${labels[@]}"; do
+    # Each label: 1-63 chars, alphanumeric, hyphens allowed (not at start/end)
+    if [[ -z "$label" ]] || [[ ${#label} -gt 63 ]]; then
+      return 1
+    fi
+    if [[ ! "$label" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] && [[ ! "$label" =~ ^[a-z0-9]$ ]]; then
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# validate_mac_address()
+#
+# - Validates MAC address format (XX:XX:XX:XX:XX:XX)
+# - Empty value is allowed (auto-generated)
+# - Returns 0 if valid, 1 if invalid
+# ------------------------------------------------------------------------------
+validate_mac_address() {
+  local mac="$1"
+  [[ -z "$mac" ]] && return 0
+  if [[ ! "$mac" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; then
+    return 1
+  fi
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# validate_vlan_tag()
+#
+# - Validates VLAN tag (1-4094)
+# - Empty value is allowed (no VLAN)
+# - Returns 0 if valid, 1 if invalid
+# ------------------------------------------------------------------------------
+validate_vlan_tag() {
+  local vlan="$1"
+  [[ -z "$vlan" ]] && return 0
+  if ! [[ "$vlan" =~ ^[0-9]+$ ]] || ((vlan < 1 || vlan > 4094)); then
+    return 1
+  fi
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# validate_mtu()
+#
+# - Validates MTU size (576-65535, common values: 1500, 9000)
+# - Empty value is allowed (default 1500)
+# - Returns 0 if valid, 1 if invalid
+# ------------------------------------------------------------------------------
+validate_mtu() {
+  local mtu="$1"
+  [[ -z "$mtu" ]] && return 0
+  if ! [[ "$mtu" =~ ^[0-9]+$ ]] || ((mtu < 576 || mtu > 65535)); then
+    return 1
+  fi
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# validate_ipv6_address()
+#
+# - Validates IPv6 address with optional CIDR notation
+# - Supports compressed (::) and full notation
+# - Empty value is allowed
+# - Returns 0 if valid, 1 if invalid
+# ------------------------------------------------------------------------------
+validate_ipv6_address() {
+  local ipv6="$1"
+  [[ -z "$ipv6" ]] && return 0
+
+  # Extract address and CIDR
+  local addr="${ipv6%%/*}"
+  local cidr="${ipv6##*/}"
+
+  # Validate CIDR if present (1-128)
+  if [[ "$ipv6" == */* ]]; then
+    if ! [[ "$cidr" =~ ^[0-9]+$ ]] || ((cidr < 1 || cidr > 128)); then
+      return 1
+    fi
+  fi
+
+  # Basic IPv6 validation - check for valid characters and structure
+  # Must contain only hex digits and colons
+  if [[ ! "$addr" =~ ^[0-9a-fA-F:]+$ ]]; then
+    return 1
+  fi
+
+  # Must contain at least one colon
+  if [[ ! "$addr" == *:* ]]; then
+    return 1
+  fi
+
+  # Check for valid double-colon usage (only one :: allowed)
+  if [[ "$addr" == *::*::* ]]; then
+    return 1
+  fi
+
+  # Check that no segment exceeds 4 hex chars
+  local IFS=':'
+  local -a segments
+  read -ra segments <<<"$addr"
+  for seg in "${segments[@]}"; do
+    if [[ ${#seg} -gt 4 ]]; then
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# validate_bridge()
+#
+# - Validates that network bridge exists and is active
+# - Returns 0 if valid, 1 if invalid
+# ------------------------------------------------------------------------------
+validate_bridge() {
+  local bridge="$1"
+  [[ -z "$bridge" ]] && return 1
+
+  # Check if bridge interface exists
+  if ! ip link show "$bridge" &>/dev/null; then
+    return 1
+  fi
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# validate_gateway_in_subnet()
+#
+# - Validates that gateway IP is in the same subnet as static IP
+# - Arguments: static_ip (with CIDR), gateway_ip
+# - Returns 0 if valid, 1 if invalid
+# ------------------------------------------------------------------------------
+validate_gateway_in_subnet() {
+  local static_ip="$1"
+  local gateway="$2"
+
+  [[ -z "$static_ip" || -z "$gateway" ]] && return 0
+
+  # Extract IP and CIDR
+  local ip="${static_ip%%/*}"
+  local cidr="${static_ip##*/}"
+
+  # Convert CIDR to netmask bits
+  local mask=$((0xFFFFFFFF << (32 - cidr) & 0xFFFFFFFF))
+
+  # Convert IPs to integers
+  local IFS='.'
+  read -r i1 i2 i3 i4 <<<"$ip"
+  read -r g1 g2 g3 g4 <<<"$gateway"
+
+  local ip_int=$(((i1 << 24) + (i2 << 16) + (i3 << 8) + i4))
+  local gw_int=$(((g1 << 24) + (g2 << 16) + (g3 << 8) + g4))
+
+  # Check if both are in same network
+  if (((ip_int & mask) != (gw_int & mask))); then
+    return 1
+  fi
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# validate_ip_address()
+#
+# - Validates IPv4 address with CIDR notation
+# - Checks each octet is 0-255
+# - Checks CIDR is 1-32
+# - Returns 0 if valid, 1 if invalid
+# ------------------------------------------------------------------------------
+validate_ip_address() {
+  local ip="$1"
+  [[ -z "$ip" ]] && return 1
+
+  # Check format with CIDR
+  if [[ ! "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})$ ]]; then
+    return 1
+  fi
+
+  local o1="${BASH_REMATCH[1]}"
+  local o2="${BASH_REMATCH[2]}"
+  local o3="${BASH_REMATCH[3]}"
+  local o4="${BASH_REMATCH[4]}"
+  local cidr="${BASH_REMATCH[5]}"
+
+  # Validate octets (0-255)
+  for octet in "$o1" "$o2" "$o3" "$o4"; do
+    if ((octet > 255)); then
+      return 1
+    fi
+  done
+
+  # Validate CIDR (1-32)
+  if ((cidr < 1 || cidr > 32)); then
+    return 1
+  fi
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# validate_gateway_ip()
+#
+# - Validates gateway IPv4 address (without CIDR)
+# - Checks each octet is 0-255
+# - Returns 0 if valid, 1 if invalid
+# ------------------------------------------------------------------------------
+validate_gateway_ip() {
+  local ip="$1"
+  [[ -z "$ip" ]] && return 0
+
+  # Check format without CIDR
+  if [[ ! "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+    return 1
+  fi
+
+  local o1="${BASH_REMATCH[1]}"
+  local o2="${BASH_REMATCH[2]}"
+  local o3="${BASH_REMATCH[3]}"
+  local o4="${BASH_REMATCH[4]}"
+
+  # Validate octets (0-255)
+  for octet in "$o1" "$o2" "$o3" "$o4"; do
+    if ((octet > 255)); then
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# validate_timezone()
+#
+# - Validates timezone string against system zoneinfo
+# - Empty value or "host" is allowed
+# - Returns 0 if valid, 1 if invalid
+# ------------------------------------------------------------------------------
+validate_timezone() {
+  local tz="$1"
+  [[ -z "$tz" || "$tz" == "host" ]] && return 0
+
+  # Check if timezone file exists
+  if [[ ! -f "/usr/share/zoneinfo/$tz" ]]; then
+    return 1
+  fi
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# validate_tags()
+#
+# - Validates Proxmox tags format
+# - Only alphanumeric, hyphens, underscores, and semicolons allowed
+# - Empty value is allowed
+# - Returns 0 if valid, 1 if invalid
+# ------------------------------------------------------------------------------
+validate_tags() {
+  local tags="$1"
+  [[ -z "$tags" ]] && return 0
+
+  # Tags can only contain alphanumeric, -, _, and ; (separator)
+  if [[ ! "$tags" =~ ^[a-zA-Z0-9_\;-]+$ ]]; then
+    return 1
+  fi
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# find_host_ssh_keys()
+#
+# - Scans system for available SSH keys
+# - Supports defaults (~/.ssh, /etc/ssh/authorized_keys)
+# - Returns list of files containing valid SSH public keys
+# - Sets FOUND_HOST_KEY_COUNT to number of keys found
+# ------------------------------------------------------------------------------
+find_host_ssh_keys() {
+  local re='(ssh-(rsa|ed25519)|ecdsa-sha2-nistp256|sk-(ssh-ed25519|ecdsa-sha2-nistp256))'
+  local -a files=() cand=()
+  local g="${var_ssh_import_glob:-}"
+  local total=0 f base c
+
+  shopt -s nullglob
+  if [[ -n "$g" ]]; then
+    for pat in $g; do cand+=($pat); done
+  else
+    cand+=(/root/.ssh/authorized_keys /root/.ssh/authorized_keys2)
+    cand+=(/root/.ssh/*.pub)
+    cand+=(/etc/ssh/authorized_keys /etc/ssh/authorized_keys.d/*)
+  fi
+  shopt -u nullglob
+
+  for f in "${cand[@]}"; do
+    [[ -f "$f" && -r "$f" ]] || continue
+    base="$(basename -- "$f")"
+    case "$base" in
+    known_hosts | known_hosts.* | config) continue ;;
+    id_*) [[ "$f" != *.pub ]] && continue ;;
+    esac
+
+    # CRLF safe check for host keys
+    c=$(tr -d '\r' <"$f" | awk '
+      /^[[:space:]]*#/ {next}
+      /^[[:space:]]*$/ {next}
+      {print}
+    ' | grep -E -c '"$re"' || true)
+
+    if ((c > 0)); then
+      files+=("$f")
+      total=$((total + c))
+    fi
+  done
+
+  # Fallback to /root/.ssh/authorized_keys
+  if ((${#files[@]} == 0)) && [[ -r /root/.ssh/authorized_keys ]]; then
+    if grep -E -q "$re" /root/.ssh/authorized_keys; then
+      files+=(/root/.ssh/authorized_keys)
+      total=$((total + $(grep -E -c "$re" /root/.ssh/authorized_keys || echo 0)))
+    fi
+  fi
+
+  FOUND_HOST_KEY_COUNT="$total"
+  (
+    IFS=:
+    echo "${files[*]}"
+  )
+}
+
+# ==============================================================================
+# SECTION 3B: IP RANGE SCANNING
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# ip_to_int() / int_to_ip()
+#
+# - Converts IP address to integer and vice versa for range iteration
+# ------------------------------------------------------------------------------
+ip_to_int() {
+  local IFS=.
+  read -r i1 i2 i3 i4 <<<"$1"
+  echo $(((i1 << 24) + (i2 << 16) + (i3 << 8) + i4))
+}
+
+int_to_ip() {
+  local ip=$1
+  echo "$(((ip >> 24) & 0xFF)).$(((ip >> 16) & 0xFF)).$(((ip >> 8) & 0xFF)).$((ip & 0xFF))"
+}
+
+# ------------------------------------------------------------------------------
+# resolve_ip_from_range()
+#
+# - Takes an IP range in format "10.0.0.1/24-10.0.0.10/24"
+# - Pings each IP in the range to find the first available one
+# - Returns the first free IP with CIDR notation
+# - Sets NET_RESOLVED to the resolved IP or empty on failure
+# ------------------------------------------------------------------------------
+resolve_ip_from_range() {
+  local range="$1"
+  local ip_cidr_regex='^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})$'
+  local ip_start ip_end
+
+  # Parse range: "10.0.0.1/24-10.0.0.10/24"
+  ip_start="${range%%-*}"
+  ip_end="${range##*-}"
+
+  if [[ ! "$ip_start" =~ $ip_cidr_regex ]] || [[ ! "$ip_end" =~ $ip_cidr_regex ]]; then
+    NET_RESOLVED=""
+    return 1
+  fi
+
+  local ip1="${ip_start%%/*}"
+  local ip2="${ip_end%%/*}"
+  local cidr="${ip_start##*/}"
+
+  local start_int=$(ip_to_int "$ip1")
+  local end_int=$(ip_to_int "$ip2")
+
+  for ((ip_int = start_int; ip_int <= end_int; ip_int++)); do
+    local ip=$(int_to_ip $ip_int)
+    msg_info "Checking IP: $ip"
+    if ! ping -c 1 -W 1 "$ip" >/dev/null 2>&1; then
+      NET_RESOLVED="$ip/$cidr"
+      msg_ok "Found free IP: ${BGN}$NET_RESOLVED${CL}"
+      return 0
+    fi
+  done
+
+  NET_RESOLVED=""
+  msg_error "No free IP found in range $range"
+  return 1
+}
+
+# ------------------------------------------------------------------------------
+# is_ip_range()
+#
+# - Checks if a string is an IP range (contains - and looks like IP/CIDR)
+# - Returns 0 if it's a range, 1 otherwise
+# ------------------------------------------------------------------------------
+is_ip_range() {
+  local value="$1"
+  local ip_start ip_end
+  if [[ "$value" == *-* ]] && [[ "$value" != "dhcp" ]]; then
+    local ip_cidr_regex='^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})$'
+    ip_start="${value%%-*}"
+    ip_end="${value##*-}"
+    if [[ "$ip_start" =~ $ip_cidr_regex ]] && [[ "$ip_end" =~ $ip_cidr_regex ]]; then
+      return 0
+    fi
+  fi
+  return 1
+}
