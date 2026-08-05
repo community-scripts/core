@@ -95,11 +95,9 @@ incus/      Incus backend
   vm-core.func         VM creation on Incus
 
 headers/    figlet banners, generated from the script repos
-  ct/                  container scripts
-  addon/               in-container add-ons
-  vm/                  virtual machines
-  tools/pve/           Proxmox VE host tools
-  tools/incus/         Incus host tools
+  <type>/              ct, addon, vm, tools — the banner for both platforms
+  <type>/pve/          only when that script exists on Proxmox VE alone
+  <type>/incus/        only when that script exists on Incus alone
 
 tools/      developer helpers (run.sh)
 images/     logos used in container MOTD and VM output
@@ -115,12 +113,19 @@ every six hours (or immediately on a `scripts-changed` dispatch) and regenerates
 the tree.
 
 They are keyed by `APP_TYPE`, not by the folder a script lives in — scripts
-under `tools/addon/` declare `APP_TYPE="addon"`. Host tools are the one type
-that is platform-specific: `tools/pve/` never runs on Incus and `tools/incus/`
-never on Proxmox VE, so their banners are kept apart and `get_header()` picks
-the folder from the detected host. A newly merged script has no banner until the
-generator has run; `header_info()` prints nothing in that case rather than
-failing.
+under `tools/addon/` declare `APP_TYPE="addon"`.
+
+The platform subfolder is **optional and applies to every type**. Most scripts
+run on both hosts and their banner sits flat under the type. A script that
+exists on one platform only — host tools today, Incus VMs or a host-touching
+add-on tomorrow — gets a `pve/` or `incus/` subfolder, and the generator decides
+that purely from a `pve/` or `incus/` segment in the script's path. So a repo
+opts in by where it puts the script, with no engine change and no new variable.
+
+`get_header()` tries the platform folder first and falls back to the flat one,
+which means an Incus-only VM script will be picked up automatically the day it
+lands in `vm/incus/`. A newly merged script has no banner until the generator
+has run; `header_info()` prints nothing in that case rather than failing.
 
 ---
 
