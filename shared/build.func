@@ -63,13 +63,18 @@ fi
 if [[ -z "${COMMUNITY_SCRIPTS_ROOT:-}" ]]; then
   _cs_caller="${_CS_ENTRY_SCRIPT:-${BASH_SOURCE[-1]:-}}"
   if [[ -n "$_cs_caller" && -f "$_cs_caller" ]]; then
-    _cs_caller_dir="$(cd "$(dirname "$_cs_caller")" >/dev/null 2>&1 && pwd)"
-    # <repo>/ct/foo.sh → <repo>
-    if [[ -d "${_cs_caller_dir}/../install" || -d "${_cs_caller_dir}/../ct" ]]; then
-      COMMUNITY_SCRIPTS_ROOT="$(cd "${_cs_caller_dir}/.." >/dev/null 2>&1 && pwd)"
-    fi
+    _cs_dir="$(cd "$(dirname "$_cs_caller")" >/dev/null 2>&1 && pwd)"
+    # Walk up to the first directory holding both ct/ and install/. Checking a
+    # single level would miss anything nested, e.g. ct/deferred/foo.sh.
+    while [[ -n "$_cs_dir" && "$_cs_dir" != "/" ]]; do
+      if [[ -d "${_cs_dir}/ct" && -d "${_cs_dir}/install" ]]; then
+        COMMUNITY_SCRIPTS_ROOT="$_cs_dir"
+        break
+      fi
+      _cs_dir="$(cd "${_cs_dir}/.." >/dev/null 2>&1 && pwd)"
+    done
   fi
-  unset _cs_caller _cs_caller_dir
+  unset _cs_caller _cs_dir
 fi
 [[ -n "${COMMUNITY_SCRIPTS_ROOT:-}" ]] && export COMMUNITY_SCRIPTS_ROOT
 
