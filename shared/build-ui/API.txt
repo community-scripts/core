@@ -1,5 +1,4 @@
 _build_current_app_vars_tmp
-_build_ui_source
 _build_vars_diff
 _container_write_failure
 _get_current_ip
