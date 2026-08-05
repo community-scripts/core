@@ -1,0 +1,80 @@
+name: Generate app headers
+
+# Headers are figlet banners derived from the APP= line of every script, so
+# they are generated, never hand-written. They live here rather than in the
+# script repos because all three repos share them byte for byte -- the same
+# banner renders on Proxmox VE and on Incus.
+#
+# This walks the script repos, generates a header per script into
+# headers/<APP_TYPE>/<slug>, and opens a PR when anything changed.
+#
+# Runs on a schedule, and immediately when a script repo fires a
+# repository_dispatch of type "scripts-changed".
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+  repository_dispatch:
+    types: [scripts-changed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: generate-headers
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout core
+        uses: actions/checkout@v4
+
+      - name: Checkout ProxmoxVE
+        uses: actions/checkout@v4
+        with:
+          repository: community-scripts/ProxmoxVE
+          path: .src/ProxmoxVE
+
+      - name: Checkout ProxmoxVED
+        uses: actions/checkout@v4
+        with:
+          repository: community-scripts/ProxmoxVED
+          path: .src/ProxmoxVED
+
+      - name: Checkout Incus
+        uses: actions/checkout@v4
+        with:
+          repository: community-scripts/Incus
+          path: .src/Incus
+
+      - name: Install figlet
+        run: sudo apt-get update -qq && sudo apt-get install -y figlet
+
+      - name: Generate
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/generate-headers.py .src/ProxmoxVE .src/ProxmoxVED .src/Incus
+
+      - name: Clean up sources
+        run: rm -rf .src
+
+      - name: Open a pull request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: chore/generate-headers
+          title: "Generate app headers"
+          commit-message: |
+            Generate app headers
+
+            Regenerated with figlet from the APP= line of every script in
+            ProxmoxVE, ProxmoxVED and Incus.
+          body: |
+            Regenerated automatically from the script repositories.
+
+            Headers are derived artifacts — edit the `APP=` line in the script
+            instead, and this workflow follows.
+          delete-branch: true
