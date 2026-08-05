@@ -40,14 +40,14 @@ _incus_source() {
   fi
 }
 
-# --- LOAD incus-core.func ---
+# --- LOAD incus/core.func ---
 if [[ -z "${_INCUS_CORE_FUNC_LOADED:-}" ]]; then
   _incus_source "incus/core.func"
   load_incus_functions
   incus_catch_errors
 fi
 
-# --- LOAD incus-tools.func (compat aliases for host messaging) ---
+# --- LOAD incus/tools.func (compat aliases for host messaging) ---
 if [[ -z "${_INCUS_TOOLS_FUNC_LOADED:-}" ]]; then
   _incus_source "incus/tools.func"
   incus_install_compat_aliases

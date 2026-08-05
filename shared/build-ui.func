@@ -7,7 +7,7 @@
 # ==============================================================================
 # Whiptail menus, advanced wizard, validators, preflight helpers, install_script
 # and start(). Platform backends override storage/network/create hooks.
-# Loaded by misc/build.func (PVE) and misc/incus-build.func (Incus).
+# Loaded by shared/build.func (PVE) and incus/build.func (Incus).
 # ==============================================================================
 
 [[ -n "${_BUILD_UI_FUNC_LOADED:-}" ]] && return

@@ -152,8 +152,8 @@ curl -fsSL https://raw.githubusercontent.com/community-scripts/core/main/tools/r
 
 | Environment | Detected by | Backend |
 | ----------- | ----------- | ------- |
-| Proxmox VE host | `pveversion` present | `pve/pve-backend.func` |
-| Incus host | `incus` CLI and a reachable daemon | `incus/incus-build.func` |
+| Proxmox VE host | `pveversion` present | `pve/backend.func` |
+| Incus host | `incus` CLI and a reachable daemon | `incus/build.func` |
 | Inside an Incus container | `/dev/incus/sock` or the Community Scripts MOTD | update mode |
 
 Override with `LXC_PLATFORM` when debugging.
