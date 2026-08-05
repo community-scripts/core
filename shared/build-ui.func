@@ -104,29 +104,32 @@ variables() {
 # See docs/DEV_MODE.md for details
 COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
 
+# Prefer the dispatcher's resolver; the fallback must use the ENGINE base,
+# since every path passed in here is a core file, not a script.
 _build_ui_source() {
   local rel="$1"
   if declare -f _cs_source_func >/dev/null 2>&1; then
     _cs_source_func "$rel"
     return
   fi
+  local base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
   if command -v curl >/dev/null 2>&1; then
     # shellcheck disable=SC1090
-    source <(curl -fsSL "$COMMUNITY_SCRIPTS_URL/$rel")
+    source <(curl -fsSL "$base/$rel")
   else
     # shellcheck disable=SC1090
-    source <(wget -qO- "$COMMUNITY_SCRIPTS_URL/$rel")
+    source <(wget -qO- "$base/$rel")
   fi
 }
 
-_build_ui_source "misc/api.func"
-_build_ui_source "misc/core.func"
-_build_ui_source "misc/error_handler.func"
+_build_ui_source "shared/api.func"
+_build_ui_source "shared/core.func"
+_build_ui_source "shared/error_handler.func"
 load_functions
 catch_errors
 
 # ==============================================================================
-# SECTION 2: PRE-FLIGHT (disabled — full implementation in misc/preflight.func)
+# SECTION 2: PRE-FLIGHT (disabled — full implementation in shared/preflight.func)
 # ==============================================================================
 # To re-enable: ENABLE_PREFLIGHT=1
 # ------------------------------------------------------------------------------
@@ -135,9 +138,9 @@ run_preflight() {
     return 0
   fi
   if declare -f _cs_source_func >/dev/null 2>&1; then
-    _cs_source_func "misc/preflight.func"
+    _cs_source_func "shared/preflight.func"
   elif declare -f _build_ui_source >/dev/null 2>&1; then
-    _build_ui_source "misc/preflight.func"
+    _build_ui_source "shared/preflight.func"
   else
     # shellcheck disable=SC1090
     source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/preflight.func")
@@ -2843,7 +2846,7 @@ DIAGNOSTICS=yes
 #"method"
 #"pve_version"
 #"status"
-#If you have any concerns, please review the source code at /misc/build.func
+#If you have any concerns, please review the source code at core/shared/build.func
 EOF
       DIAGNOSTICS="yes"
     else
@@ -2868,7 +2871,7 @@ DIAGNOSTICS=no
 #"method"
 #"pve_version"
 #"status"
-#If you have any concerns, please review the source code at /misc/build.func
+#If you have any concerns, please review the source code at core/shared/build.func
 EOF
       DIAGNOSTICS="no"
     fi

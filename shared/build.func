@@ -47,9 +47,6 @@ if [[ -z "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -n "${BASH_SOURCE[0]:-}" && -f "${
   _cs_this_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
   if [[ "${_cs_this_dir##*/}" == "shared" && -d "${_cs_this_dir}/../pve" ]]; then
     COMMUNITY_SCRIPTS_CORE_DIR="$(cd "${_cs_this_dir}/.." >/dev/null 2>&1 && pwd)"
-  elif [[ -f "${_cs_this_dir}/lxc-platform.func" ]]; then
-    # Flat checkout (a script repo's own misc/) — treat this directory as root.
-    COMMUNITY_SCRIPTS_CORE_DIR="${_cs_this_dir}"
   fi
   unset _cs_this_dir
 fi
@@ -82,10 +79,8 @@ fi
 _cs_load_origin_helper() {
   local base="${COMMUNITY_SCRIPTS_CORE_DIR:-}"
   [[ -z "$base" ]] && return 1
-  local helper=""
-  [[ -f "${base}/source-origin.func" ]] && helper="${base}/source-origin.func"
-  [[ -z "$helper" && -f "${base}/shared/source-origin.func" ]] && helper="${base}/shared/source-origin.func"
-  [[ -z "$helper" ]] && return 1
+  local helper="${base}/shared/source-origin.func"
+  [[ -f "$helper" ]] || return 1
   # shellcheck disable=SC1090
   source "$helper"
 }

@@ -62,16 +62,16 @@ shared/     platform-agnostic engine
   source-origin.func   git remote → raw content base
 
 pve/        Proxmox VE backend
-  pve-backend.func     container creation via pct
+  backend.func         container creation via pct
   vm-core.func         VM creation via qm
   vm-app.func          VM application provisioning
 
 incus/      Incus backend
-  incus-build.func     entry hooks over the shared wizard
-  incus-backend.func   container creation via the incus CLI
-  incus-core.func      messaging and compatibility layer
-  incus-tools.func     Incus-side helper wrappers
-  incus-vm-core.func   VM creation on Incus
+  build.func           entry hooks over the shared wizard
+  backend.func         container creation via the incus CLI
+  core.func            messaging and compatibility layer
+  tools.func           Incus-side helper wrappers
+  vm-core.func         VM creation on Incus
 
 tools/      developer helpers (run.sh)
 images/     logos used in container MOTD and VM output
@@ -85,14 +85,15 @@ The engine and the scripts live in different repositories, so both are resolved
 independently. A CT script bootstraps the engine, and everything after that
 goes through the resolver in `shared/build.func`:
 
-| Virtual path | Resolves against | Example |
-| ------------ | ---------------- | ------- |
-| `misc/*.func` | **engine root** | `misc/pve-backend.func` → `core/pve/pve-backend.func` |
-| `ct/`, `install/`, `vm/`, `tools/` | **scripts root** | `install/debian-install.sh` → `ProxmoxVE/install/debian-install.sh` |
+| Path prefix | Resolves against | Example |
+| ----------- | ---------------- | ------- |
+| `shared/`, `pve/`, `incus/` | **engine root** | `pve/backend.func` → `core/pve/backend.func` |
+| everything else | **scripts root** | `install/debian-install.sh` → `ProxmoxVE/install/debian-install.sh` |
 
-Call sites keep using `misc/<name>.func`; `_cs_core_rel` maps that onto this
-repository's folders. Keeping the virtual path means the script repositories do
-not need to know how core is organised.
+Paths are folder-qualified, so the prefix alone decides the root and there is no
+name-to-folder map to keep in sync. It is also what lets the backend files drop
+their platform prefix: `incus/build.func` and `shared/build.func` can coexist
+because nothing resolves by basename.
 
 ### Resolution order
 

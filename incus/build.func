@@ -22,32 +22,34 @@ elif [[ -S /dev/incus/sock ]] || [[ -f /etc/profile.d/incus-motd.sh ]] || [[ -f 
   _INCUS_INSIDE_CONTAINER=1
 fi
 
-# Prefer dispatcher helper when available (local COMMUNITY_SCRIPTS_DIR or curl).
+# Prefer the dispatcher's resolver; the fallback must use the ENGINE base,
+# since every path passed in here is a core file, not a script.
 _incus_source() {
   local rel="$1"
   if declare -f _cs_source_func >/dev/null 2>&1; then
     _cs_source_func "$rel"
     return
   fi
+  local base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
   if command -v curl >/dev/null 2>&1; then
     # shellcheck disable=SC1090
-    source <(curl -fsSL "$INCUS_COMMUNITY_SCRIPTS_URL/$rel")
+    source <(curl -fsSL "$base/$rel")
   else
     # shellcheck disable=SC1090
-    source <(wget -qO- "$INCUS_COMMUNITY_SCRIPTS_URL/$rel")
+    source <(wget -qO- "$base/$rel")
   fi
 }
 
 # --- LOAD incus-core.func ---
 if [[ -z "${_INCUS_CORE_FUNC_LOADED:-}" ]]; then
-  _incus_source "misc/incus-core.func"
+  _incus_source "incus/core.func"
   load_incus_functions
   incus_catch_errors
 fi
 
 # --- LOAD incus-tools.func (compat aliases for host messaging) ---
 if [[ -z "${_INCUS_TOOLS_FUNC_LOADED:-}" ]]; then
-  _incus_source "misc/incus-tools.func"
+  _incus_source "incus/tools.func"
   incus_install_compat_aliases
 fi
 
@@ -271,7 +273,7 @@ _incus_sync_from_pve_settings() {
 }
 
 # Shared Proxmox UI (menus / wizard / validators / install_script / start)
-_incus_source "misc/build-ui.func"
+_incus_source "shared/build-ui.func"
 
 # Keep UI update checks under stable names before any later tools.func reload.
 eval "$(declare -f check_container_storage | sed '1s/check_container_storage/_shared_check_container_storage/')"
@@ -284,7 +286,7 @@ base_settings() {
 }
 
 # Incus create/deploy backend (overrides PVE create hooks)
-_incus_source "misc/incus-backend.func"
+_incus_source "incus/backend.func"
 
 # ==============================================================================
 # SECTION 4: PLATFORM OVERRIDES
@@ -554,7 +556,7 @@ header_info() {
 # On Incus hosts, run install_script (same as Proxmox).
 eval "$(declare -f start | sed '1s/start/_shared_start/')"
 start() {
-  _incus_source "misc/tools.func"
+  _incus_source "shared/tools.func"
   # Ensure cleanup_lxc exists for update_script footer (tools.func may not define it).
   if ! declare -f cleanup_lxc >/dev/null 2>&1; then
     cleanup_lxc() {
