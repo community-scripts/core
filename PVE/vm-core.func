@@ -10,7 +10,7 @@ COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.co
 if command -v pveversion &>/dev/null; then
   :
 elif command -v incus &>/dev/null && incus info &>/dev/null 2>&1; then
-  source <(curl -fsSL "$COMMUNITY_SCRIPTS_URL/misc/incus-vm-core.func" 2>/dev/null || wget -qO- "$COMMUNITY_SCRIPTS_URL/misc/incus-vm-core.func")
+  source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/Incus/incus-vm-core.func" 2>/dev/null || wget -qO- "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/Incus/incus-vm-core.func")
   return 0
 fi
 
@@ -31,7 +31,7 @@ COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://git.community-scripts.or
 
 load_api_functions() {
   if ! declare -f post_to_api_vm >/dev/null 2>&1; then
-    source /dev/stdin <<<$(curl -fsSL "$COMMUNITY_SCRIPTS_URL/misc/api.func")
+    source /dev/stdin <<<$(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/api.func")
   fi
 }
 
@@ -55,7 +55,7 @@ load_functions() {
 
 load_cloud_init_functions() {
   if ! declare -f setup_cloud_init >/dev/null 2>&1; then
-    source <(curl -fsSL "$COMMUNITY_SCRIPTS_URL/misc/cloud-init.func") 2>/dev/null || true
+    source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/cloud-init.func") 2>/dev/null || true
   fi
 }
 
@@ -219,7 +219,7 @@ silent() {
   if [[ $rc -ne 0 ]]; then
     # Source explain_exit_code if needed
     if ! declare -f explain_exit_code >/dev/null 2>&1; then
-      source <(curl -fsSL "$COMMUNITY_SCRIPTS_URL/misc/error_handler.func") 2>/dev/null || true
+      source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/error_handler.func") 2>/dev/null || true
     fi
 
     local explanation=""

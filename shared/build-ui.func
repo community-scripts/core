@@ -140,7 +140,7 @@ run_preflight() {
     _build_ui_source "misc/preflight.func"
   else
     # shellcheck disable=SC1090
-    source <(curl -fsSL "${COMMUNITY_SCRIPTS_URL}/misc/preflight.func")
+    source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/preflight.func")
   fi
   if declare -f run_preflight_full >/dev/null 2>&1; then
     run_preflight_full
@@ -3529,7 +3529,7 @@ msg_menu() {
 # - Otherwise: shows update/setting menu and runs update_script with cleanup
 # ------------------------------------------------------------------------------
 start() {
-  source <(curl -fsSL "$COMMUNITY_SCRIPTS_URL/misc/tools.func")
+  source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/tools.func")
   if command -v pveversion >/dev/null 2>&1; then
     install_script || return 0
     return 0

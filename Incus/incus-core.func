@@ -32,7 +32,7 @@ INCUS_COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercont
 # Load upstream misc/core.func for full helper parity (prompt_*, dev-mode, etc.).
 # Incus-specific behavior is provided through incus_* functions and aliases below.
 if [[ -z "${_CORE_FUNC_LOADED:-}" ]]; then
-  source <(curl -fsSL "$INCUS_COMMUNITY_SCRIPTS_URL/misc/core.func")
+  source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/core.func")
 fi
 
 # ==============================================================================
