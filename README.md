@@ -32,6 +32,27 @@ Incus script tree.
 
 ---
 
+## Status
+
+**The split is in progress.** Extracting the engine is done, but the script
+repositories have not been moved over yet:
+
+| Repository | Scripts bootstrapping from core |
+| ---------- | ------------------------------- |
+| ProxmoxVED | 1 of 95 (`ct/debian.sh`, the pilot) |
+| ProxmoxVE | 0 of 577 — untouched, still ships and loads its own `misc/` |
+
+Everything else still sources its own in-repo `misc/build.func`. So the fork and
+branch workflow described below works **today only for the converted scripts**;
+pointing `COMMUNITY_SCRIPTS_CORE_URL` at a fork has no effect on a script that
+never loads core in the first place.
+
+ProxmoxVE stays untouched until the mechanism is proven in ProxmoxVED. See
+[Divergence from ProxmoxVE](#divergence-from-proxmoxve) for what has to be
+ported before it can move.
+
+---
+
 ## Repository map
 
 | Repository | Contains |
@@ -99,7 +120,7 @@ because nothing resolves by basename.
 
 1. **Local checkout** — used when found, so development needs no network at all
 2. **Git origin** — a checkout's own `remote` and branch become its raw base, so a fork or branch is picked up automatically
-3. **Defaults** — `community-scripts/core@main` and `community-scripts/ProxmoxVE@main`
+3. **Defaults** — `community-scripts/core@main` for the engine, `community-scripts/ProxmoxVED@main` for the scripts
 
 ### Environment variables
 
@@ -109,8 +130,9 @@ because nothing resolves by basename.
 | `COMMUNITY_SCRIPTS_CORE_URL` | engine | Raw base for the engine |
 | `COMMUNITY_SCRIPTS_ROOT` | scripts | Local script-repo checkout |
 | `COMMUNITY_SCRIPTS_URL` | scripts | Raw base for the scripts |
+| `COMMUNITY_SCRIPTS_DIR` | engine | Back-compat alias for `…_CORE_DIR` |
 | `COMMUNITY_SCRIPTS_STATE_DIR` | — | Defaults, diagnostics and build logs |
-| `LXC_PLATFORM` | — | Force `pve`, `incus` or `incus-container` (debugging) |
+| `LXC_PLATFORM` | — | Force `pve`, `incus`, `incus-container` or `container` (debugging) |
 
 ---
 
@@ -180,8 +202,10 @@ Before opening a PR:
 
 - Test on **both** backends when you touch `shared/`. A change that only works
   on Proxmox VE belongs in `pve/`.
-- Never hardcode a raw URL. Use `_cs_source_func "misc/<name>.func"` so the
-  resolver keeps forks working.
+- Never hardcode a raw URL. Use `_cs_source_func "shared/<name>.func"` (or
+  `pve/…`, `incus/…`) so both roots keep resolving and forks keep working.
+- New files go in the folder that matches their root. Nothing resolves by
+  basename, so `incus/tools.func` and `shared/tools.func` are both fine.
 - `shellcheck` and `shfmt` the files you touched.
 
 ---
