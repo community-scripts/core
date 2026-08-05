@@ -7,10 +7,18 @@ if ! command -v curl >/dev/null 2>&1; then
   apk update && apk add curl >/dev/null 2>&1
 fi
 COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+COMMUNITY_SCRIPTS_CORE_URL="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
+# ── Engine URL (container side) ───────────────────────────────────────────────
+# Inside the container there is no _cs_source_func resolver, and the engine now
+# lives in a separate repo. Every .func loaded in here is a shared/ one, so the
+# mapping collapses to a single prefix — no folder table needed.
+_cs_core_url() {
+  echo "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/${1:?func name}"
+}
 # Container context: failure artifacts only, never talk to the telemetry API
 export TELEMETRY_CONTEXT="container"
-source <(curl -fsSL "$COMMUNITY_SCRIPTS_URL/misc/core.func")
-source <(curl -fsSL "$COMMUNITY_SCRIPTS_URL/misc/error_handler.func")
+source <(curl -fsSL "$(_cs_core_url core.func)")
+source <(curl -fsSL "$(_cs_core_url error_handler.func)")
 load_functions
 catch_errors
 
@@ -131,7 +139,7 @@ network_check() {
 update_os() {
   msg_info "Updating Container OS"
   $STD apk -U upgrade
-  source <(curl -fsSL "$COMMUNITY_SCRIPTS_URL/misc/alpine-tools.func")
+  source <(curl -fsSL "$(_cs_core_url alpine-tools.func)")
   msg_ok "Updated Container OS"
 }
 

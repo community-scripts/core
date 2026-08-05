@@ -143,6 +143,9 @@ build_container() {
   export BUILD_LOG="$BUILD_LOG"
   export INSTALL_LOG="/root/.install-${SESSION_ID}.log"
   export COMMUNITY_SCRIPTS_URL="$COMMUNITY_SCRIPTS_URL"
+  # The engine lives in its own repo — the container needs that base too,
+  # otherwise its misc/*.func loads fall back to the hardcoded default.
+  export COMMUNITY_SCRIPTS_CORE_URL="$COMMUNITY_SCRIPTS_CORE_URL"
   # Keep host-side logging on BUILD_LOG (not exported — invisible to container)
   # Without this, get_active_logfile() would return INSTALL_LOG (a container path)
   # and all host msg_info/msg_ok/msg_error would write to /root/.install-SESSION.log
@@ -1143,7 +1146,7 @@ PROFILE
         if [[ "${DEV_MODE_MOTD:-false}" == "true" ]]; then
           echo -e "${TAB}${HOLD}${DGN}Setting up MOTD and SSH for debugging...${CL}"
           if pct exec "$CTID" -- bash -c "
-              source <(curl -fsSL \"${COMMUNITY_SCRIPTS_URL}/misc/install.func\")
+              source <(curl -fsSL \"${COMMUNITY_SCRIPTS_CORE_URL}/install.func\")
               declare -f motd_ssh >/dev/null 2>&1 && motd_ssh || true
             " >/dev/null 2>&1; then
             local ct_ip=$(pct exec "$CTID" ip a s dev eth0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1)

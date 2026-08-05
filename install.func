@@ -7,7 +7,7 @@
 # ==============================================================================
 # INSTALL.FUNC - UNIFIED CONTAINER INSTALLATION & SETUP
 # ==============================================================================
-#
+
 # All-in-One install.func supporting official Proxmox LXC templates:
 #   - Debian, Ubuntu, Devuan (apt, systemd/sysvinit)
 #   - Alpine (apk, OpenRC)
@@ -36,6 +36,15 @@
 # ==============================================================================
 
 # Global variables for OS detection
+
+# ── Engine URL (container side) ───────────────────────────────────────────────
+# Inside the container there is no _cs_source_func resolver, and the engine now
+# lives in a separate repo. Every .func loaded in here is a shared/ one, so the
+# mapping collapses to a single prefix — no folder table needed.
+_cs_core_url() {
+  echo "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/${1:?func name}"
+}
+
 OS_TYPE=""     # debian, ubuntu, devuan, alpine, fedora, rocky, alma, centos, opensuse, gentoo, openeuler
 OS_FAMILY=""   # debian, alpine, rhel, suse, gentoo, arch
 OS_VERSION=""  # Version number
@@ -197,8 +206,11 @@ _bootstrap() {
     exit 1
   fi
 
-  # Configurable base URL for development — override with COMMUNITY_SCRIPTS_URL
+  # Two roots: the engine (core) and the scripts live in separate repos, and
+  # inside the container there is no resolver — the host exports both bases.
+  # Override either independently for fork/branch testing.
   COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+  COMMUNITY_SCRIPTS_CORE_URL="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
 
   # Mark container context BEFORE error handling starts: error_handler/on_exit
   # must write local failure artifacts instead of talking to the telemetry API
@@ -206,8 +218,8 @@ _bootstrap() {
   export TELEMETRY_CONTEXT="container"
 
   # Source core functions
-  source <($_fetch "$COMMUNITY_SCRIPTS_URL/misc/core.func")
-  source <($_fetch "$COMMUNITY_SCRIPTS_URL/misc/error_handler.func")
+  source <($_fetch "$(_cs_core_url core.func)")
+  source <($_fetch "$(_cs_core_url error_handler.func)")
   load_functions
   catch_errors
 
@@ -1158,7 +1170,7 @@ EOF
   alpine) tools_name="alpine-tools.func" ;;
   *) tools_name="tools.func" ;;
   esac
-  tools_url="$COMMUNITY_SCRIPTS_URL/misc/${tools_name}"
+  tools_url="$(_cs_core_url "${tools_name}")"
   if command -v curl &>/dev/null; then
     tools_content=$(curl -fsSL "$tools_url")
   elif command -v wget &>/dev/null; then
