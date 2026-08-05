@@ -26,11 +26,12 @@ TYPE_RE = re.compile(r'^APP_TYPE="?([a-z]+)"?', re.M)
 # Where scripts live in a script repo, and whether to recurse.
 SCRIPT_DIRS = (("ct", "*.sh"), ("tools", "**/*.sh"), ("vm", "*.sh"))
 
-# ct/, vm/ and addon/ scripts are platform-agnostic: one script, one header,
-# both hosts. Host tools are not -- tools/pve/ never runs on Incus and
-# tools/incus/ never on Proxmox VE -- so their headers are kept apart, keyed by
-# the platform their source directory already declares.
-TOOL_PLATFORMS = ("pve", "incus")
+# A header is platform-specific when the script sits under a pve/ or incus/ path
+# segment -- tools/pve/, tools/incus/, and in future vm/incus/ or addon/incus/.
+# Everything else is agnostic: one banner, both hosts. The rule is uniform
+# across types, so a repo opts in purely by where it puts the script, and
+# get_header() falls back from the platform folder to the flat one.
+PLATFORMS = ("pve", "incus")
 
 OUT = Path("headers")
 
@@ -98,8 +99,7 @@ def main(repos: list[str]) -> int:
                 if art is None:
                     skipped.append(f"{repo}/{script.relative_to(root)}: figlet failed")
                     continue
-                for k in keys:
-                    written.setdefault(k, art)
+                written[key] = art
 
     # Rewrite the tree so removed apps do not leave orphans behind.
     for stale in sorted(OUT.rglob("*")):
