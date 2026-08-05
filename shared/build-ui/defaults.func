@@ -80,19 +80,107 @@ choose_and_set_storage_for_file() {
   # Silent operation - no output message
 }
 
-# ==============================================================================
-# SECTION 5: CONFIGURATION & DEFAULTS MANAGEMENT
-# ==============================================================================
+# ------------------------------------------------------------------------------
+# _list_os_versions()
+#
+# - Lists available OS versions for the requested template family from the host
+#   catalog
+# ------------------------------------------------------------------------------
+_list_os_versions() {
+  local ostype="${1:-}"
+  [[ -n "$ostype" ]] || return 0
+  pveam available -section system 2>/dev/null |
+    grep -E '\.(tar\.zst|tar\.xz|tar\.gz)$' |
+    awk '{print $2}' |
+    sed -nE "s/^${ostype}-([0-9]+(\.[0-9]+)?).*/\1/p" |
+    sort -u -V || true
+}
 
 # ------------------------------------------------------------------------------
-# base_settings()
+# _list_templates()
 #
-# - Defines all base/default variables for container creation
-# - Reads from environment variables (var_*)
-# - Provides fallback defaults for OS type/version
-# - App-specific values take precedence when they are HIGHER (for CPU, RAM, DISK)
-# - Sets up container type, resources, network, SSH, features, and tags
+# - Lists catalog templates matching the requested prefix/pattern
 # ------------------------------------------------------------------------------
+_list_templates() {
+  local search="${1:-}" pattern="${2:-}"
+  [[ -n "$search" ]] || return 0
+  pveam available -section system 2>/dev/null |
+    grep -E '\.(tar\.zst|tar\.xz|tar\.gz)$' |
+    awk '{print $2}' |
+    grep -E "^${search}.*${pattern}" |
+    sort -t - -k 2 -V || true
+}
+
+# ------------------------------------------------------------------------------
+# resolve_os_version()
+#
+# - Resolves var_version to the nearest version available in the host catalog
+# - Uses whiptail for interactive selection when the requested version is absent
+# ------------------------------------------------------------------------------
+resolve_os_version() {
+  local ostype="${var_os:-}" want="${var_version:-}"
+  [[ -n "$ostype" && -n "$want" ]] || return 0
+
+  # ARM64 pulls from linuxcontainers.org, the pveam catalog says nothing there
+  [[ "$(dpkg --print-architecture 2>/dev/null)" == "arm64" ]] && return 0
+
+  local -a versions=()
+  mapfile -t versions < <(_list_os_versions "$ostype")
+  [[ ${#versions[@]} -gt 0 ]] || return 0
+
+  local v
+  for v in "${versions[@]}"; do
+    [[ "$v" == "$want" ]] && return 0
+  done
+
+  # Already downloaded counts as available even if the catalog dropped it
+  if [[ -n "${TEMPLATE_STORAGE:-}" ]] &&
+    pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -q "/${ostype}-${want}-"; then
+    return 0
+  fi
+
+  local candidate
+  candidate=$(printf '%s\n' "${versions[@]}" | awk -v want="$want" '
+    function num(v,   a) { split(v, a, "."); return a[1] * 10000 + (a[2] + 0) }
+    BEGIN { w = num(want); best = ""; bestd = -1 }
+    {
+      d = num($0) - w
+      ad = (d < 0) ? -d : d
+      if (bestd < 0 || ad < bestd || (ad == bestd && d > 0)) { bestd = ad; best = $0 }
+    }
+    END { print best }
+  ')
+  [[ -n "$candidate" ]] || return 0
+
+  msg_warn "${ostype^} ${want} is not in this host's template catalog (PVE ${PVEVERSION:-unknown})"
+
+  if [[ "${PHS_SILENT:-0}" != "1" ]] && command -v whiptail &>/dev/null && [ -t 0 ] && [[ "$TERM" != "dumb" ]]; then
+    local -a menu=()
+    while read -r v; do
+      if [[ "$v" == "$candidate" ]]; then
+        menu+=("$v" "closest to ${want} (recommended)")
+      else
+        menu+=("$v" " ")
+      fi
+    done < <(printf '%s\n' "${versions[@]}" | sort -rV)
+
+    local choice
+    choice=$(whiptail --backtitle "Proxmox VE Helper Scripts" \
+      --title "OS VERSION NOT AVAILABLE" \
+      --ok-button "Use" --cancel-button "Exit" \
+      --menu "\n${ostype^} ${want} is not available on this Proxmox host.\n\nSelect the version to use instead:" \
+      20 70 8 "${menu[@]}" --default-item "$candidate" \
+      3>&1 1>&2 2>&3) || exit_script
+    candidate="$choice"
+  else
+    msg_warn "Unattended run - continuing with ${ostype} ${candidate}"
+  fi
+
+  var_version="$candidate"
+  export var_version
+  msg_ok "Using ${ostype} ${var_version} instead of ${want}"
+  return 0
+}
 base_settings() {
   # Default Settings
   CT_TYPE=${var_unprivileged:-"1"}
@@ -166,6 +254,7 @@ base_settings() {
   HN="$requested_hostname"
 
   BRG=${var_brg:-"vmbr0"}
+  SDN_VNET=${var_sdn_vnet:-""}
   NET=${var_net:-"dhcp"}
 
   # Resolve IP range if NET contains a range (e.g., 192.168.1.100/24-192.168.1.200/24)
@@ -198,28 +287,45 @@ base_settings() {
 
   APT_CACHER=${var_apt_cacher:-""}
   APT_CACHER_IP=${var_apt_cacher_ip:-""}
+  INHERIT_HOST_CA="${var_inherit_host_ca:-no}"
+  HTTP_PROXY="${var_http_proxy:-}"
+  HTTP_NO_PROXY="${var_http_no_proxy:-}"
 
   # Runtime check: Verify APT cacher is reachable if configured
   if [[ -n "$APT_CACHER_IP" && "$APT_CACHER" == "yes" ]]; then
-    if ! curl -s --connect-timeout 2 "http://${APT_CACHER_IP}:3142" >/dev/null 2>&1; then
-      msg_warn "APT Cacher configured but not reachable at ${APT_CACHER_IP}:3142"
+    local _check_port _check_url
+    _check_port=$(echo "$APT_CACHER_IP" | sed -e 's|https\?://||' -e 's|/.*||' | cut -s -d: -f2)
+    if [[ "$APT_CACHER_IP" =~ ^https?:// ]]; then
+      _check_url="$APT_CACHER_IP"
+      _check_port="${_check_port:-80}"
+    else
+      _check_port="${_check_port:-3142}"
+      _check_url="http://${APT_CACHER_IP}:${_check_port}"
+    fi
+    if ! curl -s --connect-timeout 2 "${_check_url}" >/dev/null 2>&1; then
+      msg_warn "APT Cacher configured but not reachable at ${_check_url}"
       msg_custom "⚠️" "${YW}" "Disabling APT Cacher for this installation"
       APT_CACHER=""
       APT_CACHER_IP=""
     else
-      msg_ok "APT Cacher verified at ${APT_CACHER_IP}:3142"
+      msg_ok "APT Cacher verified at ${_check_url}"
     fi
   fi
 
   MTU=${var_mtu:-""}
-  SD=${var_storage:-""}
-  NS=${var_ns:-""}
+  _sd_val="${var_searchdomain:-""}"
+  [[ -n "$_sd_val" ]] && SD="-searchdomain=$_sd_val" || SD=""
+  _ns_val="${var_ns:-""}"
+  [[ -n "$_ns_val" ]] && NS="-nameserver=$_ns_val" || NS=""
   MAC=${var_mac:-""}
   VLAN=${var_vlan:-""}
   SSH=${var_ssh:-"no"}
   SSH_AUTHORIZED_KEY=${var_ssh_authorized_key:-""}
-  UDHCPC_FIX=${var_udhcpc_fix:-""}
-  TAGS="community-script,${var_tags:-}"
+  if [[ "${var_tags:-}" == *community-script* ]]; then
+    TAGS="${var_tags:-community-script}"
+  else
+    TAGS="community-script${var_tags:+;${var_tags}}"
+  fi
   ENABLE_FUSE=${var_fuse:-"${1:-no}"}
   ENABLE_TUN=${var_tun:-"${1:-no}"}
 
@@ -228,6 +334,7 @@ base_settings() {
   ENABLE_NESTING=${var_nesting:-"1"}
   ENABLE_KEYCTL=${var_keyctl:-"0"}
   ENABLE_MKNOD=${var_mknod:-"0"}
+  ALLOW_MOUNT_FS=${var_mount_fs:-""}
   PROTECT_CT=${var_protection:-"no"}
   CT_TIMEZONE=${var_timezone:-"$timezone"}
   [[ "${CT_TIMEZONE:-}" == Etc/* ]] && CT_TIMEZONE="host" # pct doesn't accept Etc/* zones
@@ -239,6 +346,8 @@ base_settings() {
   if [ -z "$var_version" ]; then
     var_version="12"
   fi
+
+  resolve_os_version
 }
 
 # ------------------------------------------------------------------------------
@@ -257,10 +366,10 @@ load_vars_file() {
 
   # Allowed var_* keys
   local VAR_WHITELIST=(
-    var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_gpu var_keyctl
+    var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
     var_gateway var_hostname var_ipv6_method var_mac var_mknod var_mount_fs var_mtu
-    var_net var_nesting var_ns var_protection var_pw var_ram var_tags var_timezone var_tun var_unprivileged
-    var_verbose var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
+    var_net var_nesting var_ns var_os var_post_install var_protection var_pw var_ram var_sdn_vnet var_searchdomain var_tags var_timezone var_tun var_unprivileged
+    var_verbose var_version var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
   )
 
   # Whitelist check helper
@@ -343,6 +452,12 @@ load_vars_file() {
             continue
           fi
           ;;
+        var_sdn_vnet)
+          if [[ -n "$var_val" ]] && ! validate_sdn_vnet "$var_val"; then
+            msg_warn "SDN vnet '$var_val' from $file not found, ignoring"
+            continue
+          fi
+          ;;
         var_hostname)
           if ! validate_hostname "$var_val"; then
             msg_warn "Invalid hostname '$var_val' in $file, ignoring"
@@ -378,10 +493,28 @@ load_vars_file() {
             msg_warn "Invalid nesting value '$var_val' in $file (must be 0 or 1), ignoring"
             continue
           fi
+          if [[ "$var_val" == "0" && "${var_os:-debian}" != "alpine" ]]; then
+            msg_warn "Nesting disabled in $file - modern systemd-based distributions may require nesting for proper operation"
+          fi
           ;;
         var_keyctl)
           if [[ "$var_val" != "0" && "$var_val" != "1" ]]; then
             msg_warn "Invalid keyctl value '$var_val' in $file (must be 0 or 1), ignoring"
+            continue
+          fi
+          ;;
+        var_mknod)
+          if [[ "$var_val" != "0" && "$var_val" != "1" ]]; then
+            msg_warn "Invalid mknod value '$var_val' in $file (must be 0 or 1), ignoring"
+            continue
+          fi
+          ;;
+        var_mount_fs)
+          var_val="${var_val// /}"
+          var_val="${var_val%%,}"
+          var_val="${var_val##,}"
+          if [[ -n "$var_val" ]] && [[ ! "$var_val" =~ ^[a-zA-Z0-9]+(,[a-zA-Z0-9]+)*$ ]]; then
+            msg_warn "Invalid mount_fs value '$var_val' in $file (comma-separated fs names only, e.g. nfs,cifs), ignoring"
             continue
           fi
           ;;
@@ -405,6 +538,40 @@ load_vars_file() {
         var_ipv6_method)
           if [[ "$var_val" != "auto" && "$var_val" != "dhcp" && "$var_val" != "static" && "$var_val" != "none" ]]; then
             msg_warn "Invalid IPv6 method '$var_val' in $file (must be auto/dhcp/static/none), ignoring"
+            continue
+          fi
+          ;;
+        var_http_proxy)
+          if [[ -n "$var_val" ]] && ! [[ "$var_val" =~ ^https?://[^[:space:]]+(:[0-9]+)?/?$ ]]; then
+            msg_warn "Invalid HTTP proxy URL '$var_val' in $file, ignoring"
+            continue
+          fi
+          ;;
+        var_http_no_proxy)
+          if [[ -n "$var_val" ]] && [[ ! "$var_val" =~ ^[a-zA-Z0-9.*_:/-]+(,[a-zA-Z0-9.*_:/-]+)*$ ]]; then
+            msg_warn "Invalid no_proxy value '$var_val' in $file, ignoring"
+            continue
+          fi
+          ;;
+        var_inherit_host_ca)
+          if [[ "$var_val" != "yes" && "$var_val" != "no" && "$var_val" != "auto" ]]; then
+            msg_warn "Invalid host CA inheritance value '$var_val' in $file (must be yes/no/auto), ignoring"
+            continue
+          fi
+          ;;
+        var_post_install)
+          if [[ "$var_val" == *';'* || "$var_val" == *'$('* || "$var_val" == *'`'* || "$var_val" == *'&&'* || "$var_val" == *'||'* ]]; then
+            msg_warn "Invalid post-install hook path '$var_val' in $file (shell metacharacters not allowed), ignoring"
+            continue
+          fi
+          if [[ "$var_val" != /* ]]; then
+            msg_warn "Invalid post-install hook path '$var_val' in $file (must be an absolute path), ignoring"
+            continue
+          fi
+          ;;
+        var_apt_cacher_ip)
+          if [[ -n "$var_val" ]] && ! [[ "$var_val" =~ ^(https?://)?[a-zA-Z0-9._-]+(:[0-9]+)?(/.*)?$ ]]; then
+            msg_warn "Invalid APT Cacher address '$var_val' in $file, ignoring"
             continue
           fi
           ;;
@@ -435,10 +602,10 @@ default_var_settings() {
   # Allowed var_* keys (alphabetically sorted)
   # Note: Removed var_ctid (can only exist once), var_ipv6_static (static IPs are unique)
   local VAR_WHITELIST=(
-    var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_gpu var_keyctl
+    var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
     var_gateway var_hostname var_ipv6_method var_mac var_mknod var_mount_fs var_mtu
-    var_net var_nesting var_ns var_protection var_pw var_ram var_tags var_timezone var_tun var_unprivileged
-    var_verbose var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
+    var_net var_nesting var_ns var_os var_post_install var_protection var_pw var_ram var_sdn_vnet var_searchdomain var_tags var_timezone var_tun var_unprivileged
+    var_verbose var_version var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
   )
 
   # Snapshot: environment variables (highest precedence)
@@ -512,9 +679,17 @@ var_ipv6_method=none
 var_ssh=no
 # var_ssh_authorized_key=
 
-# APT cacher (optional - with example)
+# APT cacher (optional - IP or URL)
 # var_apt_cacher=yes
 # var_apt_cacher_ip=192.168.1.10
+
+# HTTP/HTTPS proxy (optional - for networks requiring a proxy)
+# var_http_proxy=http://proxy.local:8080
+# var_http_no_proxy=localhost,127.0.0.1,.local
+# var_inherit_host_ca=no
+#
+# SDN (optional)
+# var_sdn_vnet=
 
 # Features/Tags/verbosity
 var_fuse=no
@@ -532,6 +707,15 @@ var_verbose=no
 
 # Security (root PW) – empty => autologin
 # var_pw=
+
+# GitHub Personal Access Token (optional – avoids API rate limits during installs)
+# Create at https://github.com/settings/tokens – read-only public access is sufficient
+# var_github_token=ghp_your_token_here
+
+# Optional post-install script (host-side path to a *.sh on the Proxmox host)
+# Runs ON THE HOST after the container is fully provisioned.
+# Available env vars: APP, NSAPP, CTID, IP, HN, STORAGE, BRG
+# var_post_install=/opt/post-install/myhook.sh
 EOF
 
     # Now choose storages (always prompt unless just one exists)
@@ -569,6 +753,10 @@ EOF
     VERBOSE="no"
   fi
 
+  if [[ -z "${GITHUB_TOKEN:-}" && -n "${var_github_token:-}" ]]; then
+    export GITHUB_TOKEN="${var_github_token}"
+  fi
+
   # 4) Apply base settings and show summary
   METHOD="mydefaults-global"
   base_settings "$VERBOSE"
@@ -603,10 +791,10 @@ get_app_defaults_path() {
 if ! declare -p VAR_WHITELIST >/dev/null 2>&1; then
   # Note: Removed var_ctid (can only exist once), var_ipv6_static (static IPs are unique)
   declare -ag VAR_WHITELIST=(
-    var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_gpu
-    var_gateway var_hostname var_ipv6_method var_mac var_mtu
-    var_net var_ns var_pw var_ram var_tags var_tun var_unprivileged
-    var_verbose var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
+    var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
+    var_gateway var_hostname var_ipv6_method var_mac var_mknod var_mount_fs var_mtu
+    var_net var_nesting var_ns var_os var_post_install var_protection var_pw var_ram var_sdn_vnet var_searchdomain var_tags var_timezone var_tun var_unprivileged
+    var_verbose var_version var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
   )
 fi
 
@@ -750,6 +938,9 @@ _build_current_app_vars_tmp() {
   _ssh_auth="${SSH_AUTHORIZED_KEY:-}"
   _apt_cacher="${APT_CACHER:-}"
   _apt_cacher_ip="${APT_CACHER_IP:-}"
+  _http_proxy="${HTTP_PROXY:-${var_http_proxy:-}}"
+  _http_no_proxy="${HTTP_NO_PROXY:-${var_http_no_proxy:-}}"
+  _inherit_host_ca="${INHERIT_HOST_CA:-${var_inherit_host_ca:-no}}"
   _fuse="${ENABLE_FUSE:-no}"
   _tun="${ENABLE_TUN:-no}"
   _gpu="${ENABLE_GPU:-no}"
@@ -799,6 +990,9 @@ _build_current_app_vars_tmp() {
 
     [ -n "$_apt_cacher" ] && echo "var_apt_cacher=$(_sanitize_value "$_apt_cacher")"
     [ -n "$_apt_cacher_ip" ] && echo "var_apt_cacher_ip=$(_sanitize_value "$_apt_cacher_ip")"
+    [ -n "$_http_proxy" ] && echo "var_http_proxy=$(_sanitize_value "$_http_proxy")"
+    [ -n "$_http_no_proxy" ] && echo "var_http_no_proxy=$(_sanitize_value "$_http_no_proxy")"
+    [ -n "$_inherit_host_ca" ] && echo "var_inherit_host_ca=$(_sanitize_value "$_inherit_host_ca")"
 
     [ -n "$_fuse" ] && echo "var_fuse=$(_sanitize_value "$_fuse")"
     [ -n "$_tun" ] && echo "var_tun=$(_sanitize_value "$_tun")"
@@ -814,9 +1008,11 @@ _build_current_app_vars_tmp() {
 
     [ -n "$_hostname" ] && echo "var_hostname=$(_sanitize_value "$_hostname")"
     [ -n "$_searchdomain" ] && echo "var_searchdomain=$(_sanitize_value "$_searchdomain")"
+    [ -n "${var_sdn_vnet:-}" ] && echo "var_sdn_vnet=$(_sanitize_value "${var_sdn_vnet}")"
 
     [ -n "$_tpl_storage" ] && echo "var_template_storage=$(_sanitize_value "$_tpl_storage")"
     [ -n "$_ct_storage" ] && echo "var_container_storage=$(_sanitize_value "$_ct_storage")"
+    [ -n "${var_post_install:-}" ] && echo "var_post_install=$(_sanitize_value "${var_post_install}")"
   } >"$tmpf"
 
   echo "$tmpf"

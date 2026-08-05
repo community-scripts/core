@@ -230,6 +230,73 @@ root_check() {
 }
 
 # ------------------------------------------------------------------------------
+# on_pve_host()
+#
+# - Returns 0 when executed on a Proxmox VE node, 1 otherwise
+# - Cheap probe used by the guards below; never exits on its own
+# ------------------------------------------------------------------------------
+on_pve_host() {
+  command -v pveversion &>/dev/null
+}
+
+# ------------------------------------------------------------------------------
+# require_pve_host()
+#
+# - Guard for tools that drive the node itself (pct/pveam/pvesm/pvesh/qm)
+# - Aborts when not on a PVE node, then validates the PVE version
+# ------------------------------------------------------------------------------
+require_pve_host() {
+  if ! on_pve_host; then
+    msg_error "${APP:-This script} must be run on the Proxmox VE host."
+    msg_error "Proxmox tooling (pct/pveam/pvesm/qm) is not available here."
+    exit 232
+  fi
+  pve_check
+}
+
+# ------------------------------------------------------------------------------
+# confirm_not_pve_host()
+#
+# - Guard for tools that belong inside an LXC/VM but would technically run
+#   on the node as well
+# - Warns and asks for confirmation instead of hard-failing
+# ------------------------------------------------------------------------------
+confirm_not_pve_host() {
+  on_pve_host || return 0
+
+  msg_error "Running on the Proxmox VE host is NOT recommended!"
+  msg_error "${APP:-This script} is meant to be executed inside an LXC container."
+  echo ""
+  echo -n "${TAB:-  }Continue anyway? (y/N): "
+  local confirm
+  declare -f reclaim_tty >/dev/null 2>&1 && reclaim_tty
+  read -r confirm </dev/tty || true
+  if [[ ! "${confirm,,}" =~ ^(y|yes)$ ]]; then
+    msg_warn "Aborted. Please run this inside an LXC container."
+    exit 0
+  fi
+  msg_warn "Proceeding on the Proxmox VE host at your own risk!"
+}
+
+# ------------------------------------------------------------------------------
+# require_debian_like()
+#
+# - Guard for addons that have no Alpine code path
+# - Aborts early instead of failing halfway through with apt/systemd errors
+# ------------------------------------------------------------------------------
+require_debian_like() {
+  if is_alpine; then
+    msg_error "${APP:-This script} does not support Alpine Linux."
+    msg_error "Please use a Debian or Ubuntu based LXC container."
+    exit 238
+  fi
+  if ! command -v apt-get &>/dev/null; then
+    msg_error "${APP:-This script} requires a Debian or Ubuntu based system."
+    exit 238
+  fi
+}
+
+# ------------------------------------------------------------------------------
 # pve_check()
 #
 # - Validates Proxmox VE version compatibility
@@ -238,6 +305,10 @@ root_check() {
 # ------------------------------------------------------------------------------
 pve_check() {
   local PVE_VER
+  if ! on_pve_host; then
+    msg_error "${APP:-This script} must be run on the Proxmox VE host."
+    exit 232
+  fi
   PVE_VER="$(pveversion | awk -F'/' '{print $2}' | awk -F'-' '{print $1}')"
 
   # Check for Proxmox VE 8.x: allow 8.0–8.9
@@ -470,6 +541,7 @@ silent() {
   local cmd="$*"
   local caller_line="${BASH_LINENO[0]:-unknown}"
   local logfile="$(get_active_logfile)"
+  local errinfo="${logfile}.errinfo"
 
   # Dryrun mode: Show command without executing
   if [[ "${DEV_MODE_DRYRUN:-false}" == "true" ]]; then
@@ -481,11 +553,17 @@ silent() {
     return 0
   fi
 
+  # Save current error handling state before disabling.
+  # This prevents re-enabling error handling when the caller intentionally
+  # disabled it.
+  local _restore_errexit=false
+  [[ "$-" == *e* ]] && _restore_errexit=true
+
   set +Eeuo pipefail
   trap - ERR
 
   # Byte offset BEFORE the command runs - everything the log grows by is
-  # exactly this command's output
+  # exactly this command's output.
   local start_bytes=0
   [[ -f "$logfile" ]] && start_bytes=$(stat -c%s "$logfile" 2>/dev/null || echo 0)
   [[ ! "$start_bytes" =~ ^[0-9]+$ ]] && start_bytes=0
@@ -493,30 +571,23 @@ silent() {
   "$@" >>"$logfile" 2>&1
   local rc=$?
 
-  set -Eeuo pipefail
-  trap 'error_handler' ERR
+  # Restore error handling ONLY if it was active before this call.
+  if $_restore_errexit; then
+    set -Eeuo pipefail
+    trap 'error_handler' ERR
+  fi
 
   if [[ $rc -ne 0 ]]; then
-    # Source explain_exit_code if needed
-    if ! declare -f explain_exit_code >/dev/null 2>&1; then
-      source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/error_handler.func")
-    fi
-
-    local explanation
-    explanation="$(explain_exit_code "$rc")"
-
-    # Capture failure location ("where") for telemetry. silent() exits directly
-    # (the EXIT trap reports the failure), so set these before exiting.
-    FAILED_COMMAND="$cmd"
-    FAILED_LINE="$caller_line"
-    export FAILED_COMMAND FAILED_LINE
+    export _SILENT_FAILED_RC="$rc"
+    export _SILENT_FAILED_CMD="$cmd"
+    export _SILENT_FAILED_LINE="$caller_line"
+    export _SILENT_FAILED_LOG="$logfile"
 
     # ── Structured error capture (.errinfo) ──
     # Extract exactly THIS command's output (from the recorded byte offset),
     # strip ANSI/progress noise, keep the last 60 lines. This file is the
     # primary source for the telemetry error trace - self-contained, no
     # api.func dependency (containers don't source api.func).
-    local errinfo="${logfile}.errinfo"
     local flat_cmd
     flat_cmd=$(printf '%s' "$cmd" | tr '\n' ' ' | head -c 300)
     {
@@ -541,19 +612,11 @@ silent() {
       fi
     } >"$errinfo" 2>/dev/null || true
 
-    printf "\e[?25h"
-    msg_error "in line ${caller_line}: exit code ${rc} (${explanation})"
-    msg_custom "→" "${YWB}" "${cmd}"
-
-    if [[ -s "$logfile" ]]; then
-      echo -e "\n${TAB}--- Output of the failing command (last 20 lines) ---"
-      tail -c +"$((start_bytes + 1))" "$logfile" 2>/dev/null | tail -n 20
-      echo -e "${TAB}-----------------------------------"
-      echo -e "${TAB}📋 Full log: ${logfile}\n"
-    fi
-
-    exit "$rc"
+    return "$rc"
   fi
+
+  unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG 2>/dev/null || true
+  rm -f "$errinfo" 2>/dev/null || true
 }
 
 # ------------------------------------------------------------------------------
@@ -894,6 +957,39 @@ ensure_tput() {
 }
 
 # ------------------------------------------------------------------------------
+# reclaim_tty()
+#
+# - Reclaims the controlling terminal's foreground process group
+# - lxc-attach takes the terminal and does not hand it back, leaving us in a
+#   background process group. Reading from the terminal then returns EIO
+#   instead of blocking, because SIGTTIN is ignored during recovery - so the
+#   prompt fails before the user can answer and their keystroke leaks into the
+#   parent shell. Redirecting to /dev/tty does not help: the rule applies to
+#   the terminal, not to the file descriptor.
+# - pct exec/pull/enter use lxc-attach internally, so the terminal can be taken
+#   away again at any point. Call this immediately before each interactive
+#   read, not once after the install.
+# - SIGTTOU is ignored inside perl so tcsetpgrp() succeeds instead of stopping
+#   us. No-op when we already are in the foreground or there is no terminal.
+#   perl is a hard dependency of Proxmox VE.
+# ------------------------------------------------------------------------------
+reclaim_tty() {
+  command -v perl >/dev/null 2>&1 || return 0
+  [[ -e /dev/tty ]] || return 0
+
+  local pgid
+  pgid=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ') || true
+
+  perl -e '
+    use POSIX;
+    $SIG{TTOU} = "IGNORE";
+    my $pgid = $ARGV[0] || POSIX::getpgrp();
+    open(my $t, "+<", "/dev/tty") or exit 1;
+    POSIX::tcsetpgrp(fileno($t), $pgid) or exit 1;
+  ' "${pgid:-0}" 2>/dev/null || true
+}
+
+# ------------------------------------------------------------------------------
 # is_alpine()
 #
 # - Detects if running on Alpine Linux
@@ -912,6 +1008,53 @@ is_alpine() {
   fi
 
   [[ "$os_id" == "alpine" ]]
+}
+
+# ------------------------------------------------------------------------------
+# configure_http_proxy()
+#
+# - Applies var_http_proxy / var_http_no_proxy inside the container
+# - Persists proxy env for login shells, systemd, and package managers
+# - Skips APT proxy config when APT Cacher-NG is active
+# ------------------------------------------------------------------------------
+configure_http_proxy() {
+  local proxy="${HTTP_PROXY:-${http_proxy:-${var_http_proxy:-}}}"
+  local noproxy="${HTTP_NO_PROXY:-${no_proxy:-${var_http_no_proxy:-}}}"
+  [[ -z "$proxy" ]] && return 0
+  [[ -z "$noproxy" ]] && noproxy="localhost,127.0.0.1,.local"
+
+  msg_info "Configuring HTTP proxy"
+  cat >/etc/profile.d/90-http-proxy.sh <<EOF
+export http_proxy="$proxy"
+export https_proxy="$proxy"
+export HTTP_PROXY="$proxy"
+export HTTPS_PROXY="$proxy"
+export no_proxy="$noproxy"
+export NO_PROXY="$noproxy"
+EOF
+  chmod 644 /etc/profile.d/90-http-proxy.sh
+
+  if ! grep -q '^http_proxy=' /etc/environment 2>/dev/null; then
+    cat >>/etc/environment <<EOF
+http_proxy=$proxy
+https_proxy=$proxy
+HTTP_PROXY=$proxy
+HTTPS_PROXY=$proxy
+no_proxy=$noproxy
+NO_PROXY=$noproxy
+EOF
+  fi
+
+  if [[ "${CACHER:-}" != "yes" && -d /etc/apt/apt.conf.d ]]; then
+    cat >/etc/apt/apt.conf.d/95http-proxy <<EOF
+Acquire::http::Proxy "$proxy";
+Acquire::https::Proxy "$proxy";
+EOF
+  fi
+
+  export http_proxy="$proxy" https_proxy="$proxy" HTTP_PROXY="$proxy" HTTPS_PROXY="$proxy"
+  export no_proxy="$noproxy" NO_PROXY="$noproxy"
+  msg_ok "Configured HTTP proxy"
 }
 
 # ------------------------------------------------------------------------------

@@ -331,6 +331,20 @@ validate_bridge() {
 }
 
 # ------------------------------------------------------------------------------
+# validate_sdn_vnet()
+#
+# - Validates an SDN vnet name against the cluster configuration
+# - Checks /etc/pve/sdn/vnets.cfg first, then falls back to pvesh when present
+# ------------------------------------------------------------------------------
+validate_sdn_vnet() {
+  local vnet="$1"
+  [[ -z "$vnet" ]] && return 1
+  [[ -f /etc/pve/sdn/vnets.cfg ]] && grep -qE "^vnet:[[:space:]]*${vnet}([[:space:]]|$)" /etc/pve/sdn/vnets.cfg && return 0
+  command -v pvesh &>/dev/null && pvesh get "/cluster/sdn/vnets/${vnet}" &>/dev/null && return 0
+  return 1
+}
+
+# ------------------------------------------------------------------------------
 # validate_gateway_in_subnet()
 #
 # - Validates that gateway IP is in the same subnet as static IP

@@ -1158,6 +1158,7 @@ post_tool_to_api() {
     "error_category": "${error_category}",
     "install_duration": ${duration:-0},
     "pve_version": "${TM_PVE_VERSION:-}",
+    "platform": "${TM_PLATFORM:-}",
     "repo_source": "${REPO_SOURCE}",
     "repo_slug": "${REPO_SLUG:-}"
 }
@@ -1212,6 +1213,7 @@ post_addon_to_api() {
     "install_duration": ${duration:-0},
     "os_type": "${os_type}",
     "os_version": "${os_version}",
+    "platform": "${TELEMETRY_PLATFORM:-}",
     "repo_source": "${REPO_SOURCE}",
     "repo_slug": "${REPO_SLUG:-}"
 }

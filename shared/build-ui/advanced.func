@@ -31,9 +31,13 @@ advanced_settings() {
   trap 'tput rmcup 2>/dev/null || true' RETURN
 
   # Initialize defaults
-  TAGS="community-script;${var_tags:-}"
+  if [[ "${var_tags:-}" == *community-script* ]]; then
+    TAGS="${var_tags:-community-script}"
+  else
+    TAGS="community-script${var_tags:+;${var_tags}}"
+  fi
   local STEP=1
-  local MAX_STEP=28
+  local MAX_STEP=31
 
   # Store values for back navigation - inherit from var_* app defaults
   local _ct_type="${var_unprivileged:-1}"
@@ -45,6 +49,7 @@ advanced_settings() {
   local _core_count="${var_cpu:-1}"
   local _ram_size="${var_ram:-1024}"
   local _bridge="${var_brg:-vmbr0}"
+  local _sdn_vnet="${var_sdn_vnet:-}"
   local _net="${var_net:-dhcp}"
   local _gate="${var_gateway:-}"
   local _ipv6_method="${var_ipv6_method:-auto}"
@@ -52,6 +57,9 @@ advanced_settings() {
   local _ipv6_gate=""
   local _apt_cacher="${var_apt_cacher:-no}"
   local _apt_cacher_ip="${var_apt_cacher_ip:-}"
+  local _http_proxy="${HTTP_PROXY:-${var_http_proxy:-}}"
+  local _http_no_proxy="${HTTP_NO_PROXY:-${var_http_no_proxy:-}}"
+  local _inherit_host_ca="${INHERIT_HOST_CA:-${var_inherit_host_ca:-no}}"
   local _mtu="${var_mtu:-}"
   local _sd="${var_searchdomain:-}"
   local _ns="${var_ns:-}"
@@ -67,6 +75,7 @@ advanced_settings() {
   local _enable_mknod="${var_mknod:-0}"
   local _mount_fs="${var_mount_fs:-}"
   local _protect_ct="${var_protection:-no}"
+  local _post_install="${var_post_install:-}"
 
   # Detect host timezone for default (if not set via var_timezone)
   local _host_timezone=""
@@ -125,6 +134,11 @@ advanced_settings() {
           BRIDGE_MENU_OPTIONS+=("$bridge" "${description:- }")
         fi
       done <<<"$BRIDGES"
+    fi
+    if [[ -f /etc/pve/sdn/vnets.cfg ]]; then
+      while IFS= read -r vnet; do
+        [[ -n "$vnet" ]] && BRIDGE_MENU_OPTIONS+=("sdn:${vnet}" "[SDN] ${vnet}")
+      done < <(awk '/^vnet:/{print $2}' /etc/pve/sdn/vnets.cfg 2>/dev/null)
     fi
   }
   _detect_bridges
@@ -345,10 +359,12 @@ advanced_settings() {
         # Validate default bridge exists
         if validate_bridge "vmbr0"; then
           _bridge="vmbr0"
+          _sdn_vnet=""
           ((STEP++))
         else
           whiptail --msgbox "Default bridge 'vmbr0' not found!\n\nPlease configure a network bridge in Proxmox first." 10 58
-          exit 1
+          msg_error "Default bridge 'vmbr0' not found"
+          exit 116
         fi
       else
         if result=$(whiptail --backtitle "Proxmox VE Helper Scripts [Step $STEP/$MAX_STEP]" \
@@ -358,8 +374,21 @@ advanced_settings() {
           "${BRIDGE_MENU_OPTIONS[@]}" \
           3>&1 1>&2 2>&3); then
           local bridge_test="${result:-vmbr0}"
-          if validate_bridge "$bridge_test"; then
+          if [[ "$bridge_test" == "__other__" || "$bridge_test" == -* ]]; then
+            continue
+          fi
+          if [[ "$bridge_test" == sdn:* ]]; then
+            local vnet_test="${bridge_test#sdn:}"
+            if validate_sdn_vnet "$vnet_test"; then
+              _sdn_vnet="$vnet_test"
+              _bridge="${var_brg:-vmbr0}"
+              ((STEP++))
+            else
+              whiptail --msgbox "SDN vnet '$vnet_test' is not configured on this cluster." 8 58
+            fi
+          elif validate_bridge "$bridge_test"; then
             _bridge="$bridge_test"
+            _sdn_vnet=""
             ((STEP++))
           else
             whiptail --msgbox "Bridge '$bridge_test' is not available or not active." 8 58
@@ -729,6 +758,11 @@ advanced_settings() {
       else
         if [ $? -eq 1 ]; then
           _enable_nesting="0"
+          if [[ "$var_os" != "alpine" ]]; then
+            whiptail --backtitle "Proxmox VE Helper Scripts" \
+              --title "⚠️ NESTING WARNING" \
+              --msgbox "Modern systemd-based distributions (Debian 13+, Ubuntu 24.04+, etc.) may require nesting to be enabled for proper operation.\n\nWithout nesting, the container may start in a degraded state with failing services (error 243/CREDENTIALS).\n\nIf you experience issues, enable nesting in the container options." 14 68
+          fi
         else
           ((STEP--))
           continue
@@ -765,6 +799,12 @@ advanced_settings() {
     # STEP 22: Keyctl Support (Docker/systemd)
     # ═══════════════════════════════════════════════════════════════════════════
     22)
+      if [[ "$_ct_type" == "1" ]]; then
+        _enable_keyctl="1"
+        ((STEP++))
+        continue
+      fi
+
       local keyctl_default_flag="--defaultno"
       [[ "$_enable_keyctl" == "1" ]] && keyctl_default_flag=""
 
@@ -801,7 +841,7 @@ advanced_settings() {
         # Ask for IP if enabled
         if result=$(whiptail --backtitle "Proxmox VE Helper Scripts [Step $STEP/$MAX_STEP]" \
           --title "APT CACHER IP" \
-          --inputbox "\nEnter APT Cacher-NG server IP address:" 10 58 "$_apt_cacher_ip" \
+          --inputbox "\nEnter APT Cacher-NG IP or URL:\n(e.g. 192.168.1.10, http://host, https://host:443)" 12 62 "$_apt_cacher_ip" \
           3>&1 1>&2 2>&3); then
           _apt_cacher_ip="$result"
         fi
@@ -818,9 +858,84 @@ advanced_settings() {
       ;;
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # STEP 24: Container Timezone
+    # STEP 24: HTTP/HTTPS Proxy
     # ═══════════════════════════════════════════════════════════════════════════
     24)
+      local http_proxy_default_flag="--defaultno"
+      [[ -n "$_http_proxy" ]] && http_proxy_default_flag=""
+
+      if whiptail --backtitle "Proxmox VE Helper Scripts [Step $STEP/$MAX_STEP]" \
+        --title "HTTP/HTTPS PROXY" \
+        --ok-button "Next" --cancel-button "Back" \
+        $http_proxy_default_flag \
+        --yesno "\nUse HTTP/HTTPS proxy?\n\nRequired when internet access must go through a proxy server.\n(e.g. corporate networks)\n\n(App default: ${var_http_proxy:-none})" 14 62; then
+        if result=$(whiptail --backtitle "Proxmox VE Helper Scripts [Step $STEP/$MAX_STEP]" \
+          --title "HTTP PROXY URL" \
+          --inputbox "\nEnter HTTP proxy URL:\n(e.g. http://proxy.local:8080)" 12 62 "$_http_proxy" \
+          3>&1 1>&2 2>&3); then
+          _http_proxy="$result"
+          local _no_proxy_default="${_http_no_proxy:-localhost,127.0.0.1,.local}"
+          if result=$(whiptail --backtitle "Proxmox VE Helper Scripts [Step $STEP/$MAX_STEP]" \
+            --title "NO_PROXY EXCEPTIONS" \
+            --inputbox "\nEnter NO_PROXY exceptions (comma-separated):\nLeave empty for defaults." 12 62 "$_no_proxy_default" \
+            3>&1 1>&2 2>&3); then
+            _http_no_proxy="$result"
+          fi
+        fi
+      else
+        if [ $? -eq 1 ]; then
+          _http_proxy=""
+          _http_no_proxy=""
+        else
+          ((STEP--))
+          continue
+        fi
+      fi
+      ((STEP++))
+      ;;
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # STEP 25: Host CA Inheritance
+    # ═══════════════════════════════════════════════════════════════════════════
+    25)
+      local host_ca_count=0
+      local host_ca_dir="/usr/local/share/ca-certificates"
+      local cert
+      shopt -s nullglob
+      for cert in "$host_ca_dir"/*.crt; do
+        host_ca_count=$((host_ca_count + 1))
+      done
+      shopt -u nullglob
+
+      if [[ $host_ca_count -eq 0 ]]; then
+        _inherit_host_ca="no"
+        ((STEP++))
+        continue
+      fi
+
+      local host_ca_default_flag="--defaultno"
+      [[ "$_inherit_host_ca" == "yes" ]] && host_ca_default_flag=""
+      if whiptail --backtitle "Proxmox VE Helper Scripts [Step $STEP/$MAX_STEP]" \
+        --title "HOST CA INHERITANCE" \
+        --ok-button "Next" --cancel-button "Back" \
+        $host_ca_default_flag \
+        --yesno "\nInherit host CA certificates into this container?\n\nDetected on host: ${host_ca_count} certificate(s) in:\n${host_ca_dir}\n\nRecommended for private PKI / TLS-inspection environments.\n\n(App default: ${var_inherit_host_ca:-no})" 16 72; then
+        _inherit_host_ca="yes"
+      else
+        if [ $? -eq 1 ]; then
+          _inherit_host_ca="no"
+        else
+          ((STEP--))
+          continue
+        fi
+      fi
+      ((STEP++))
+      ;;
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # STEP 26: Container Timezone
+    # ═══════════════════════════════════════════════════════════════════════════
+    26)
       local tz_hint="$_ct_timezone"
       [[ -z "$tz_hint" ]] && tz_hint="(empty - will use host timezone)"
 
@@ -843,9 +958,9 @@ advanced_settings() {
       ;;
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # STEP 25: Container Protection
+    # STEP 27: Container Protection
     # ═══════════════════════════════════════════════════════════════════════════
-    25)
+    27)
       local protect_default_flag="--defaultno"
       [[ "$_protect_ct" == "yes" || "$_protect_ct" == "1" ]] && protect_default_flag=""
 
@@ -867,9 +982,9 @@ advanced_settings() {
       ;;
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # STEP 26: Device Node Creation (mknod)
+    # STEP 28: Device Node Creation (mknod)
     # ═══════════════════════════════════════════════════════════════════════════
-    26)
+    28)
       local mknod_default_flag="--defaultno"
       [[ "$_enable_mknod" == "1" ]] && mknod_default_flag=""
 
@@ -891,9 +1006,9 @@ advanced_settings() {
       ;;
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # STEP 27: Mount Filesystems
+    # STEP 29: Mount Filesystems
     # ═══════════════════════════════════════════════════════════════════════════
-    27)
+    29)
       local mount_hint=""
       [[ -n "$_mount_fs" ]] && mount_hint="$_mount_fs" || mount_hint="(none)"
 
@@ -902,6 +1017,9 @@ advanced_settings() {
         --ok-button "Next" --cancel-button "Back" \
         --inputbox "\nAllow specific filesystem mounts.\n\nComma-separated list: nfs, cifs, fuse, ext4, etc.\nLeave empty for defaults (none).\n\nCurrent: $mount_hint" 14 62 "$_mount_fs" \
         3>&1 1>&2 2>&3); then
+        result="${result// /}"
+        result="${result%%,}"
+        result="${result##,}"
         _mount_fs="$result"
         ((STEP++))
       else
@@ -910,9 +1028,59 @@ advanced_settings() {
       ;;
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # STEP 28: Verbose Mode & Confirmation
+    # STEP 30: Optional host-side post-install hook (path on the Proxmox HOST)
     # ═══════════════════════════════════════════════════════════════════════════
-    28)
+    30)
+      local _hook_prompt="Optional: absolute path to a *.sh file ON THE PROXMOX HOST.
+
+It runs as root on the HOST (NOT in the LXC) after the container
+is fully provisioned and started.
+
+Available env vars: APP, NSAPP, CTID, IP, HN, STORAGE, BRG.
+
+Leave empty to skip."
+      while true; do
+        if result=$(whiptail --backtitle "Proxmox VE Helper Scripts [Step $STEP/$MAX_STEP]" \
+          --title "POST-INSTALL HOOK (HOST)" \
+          --ok-button "Next" --cancel-button "Back" \
+          --inputbox "$_hook_prompt" 16 70 "${_post_install}" \
+          3>&1 1>&2 2>&3); then
+          result="$(printf '%s' "$result" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          if [[ -z "$result" ]]; then
+            _post_install=""
+            ((STEP++))
+            break
+          fi
+          if [[ "$result" == *';'* || "$result" == *'$('* || "$result" == *'`'* || "$result" == *'&&'* || "$result" == *'||'* ]]; then
+            whiptail --backtitle "Proxmox VE Helper Scripts" --title "INVALID PATH" \
+              --msgbox "Path contains shell metacharacters. Please provide a plain absolute file path." 10 70
+            continue
+          fi
+          if [[ "$result" != /* ]]; then
+            whiptail --backtitle "Proxmox VE Helper Scripts" --title "INVALID PATH" \
+              --msgbox "Path must be absolute (start with /).\n\nGot: $result" 10 70
+            continue
+          fi
+          if [[ ! -f "$result" ]]; then
+            if ! whiptail --backtitle "Proxmox VE Helper Scripts" --title "FILE NOT FOUND" \
+              --yesno "File does not exist on host:\n\n$result\n\nKeep this path anyway?" 12 70; then
+              continue
+            fi
+          fi
+          _post_install="$result"
+          ((STEP++))
+          break
+        else
+          ((STEP--))
+          break
+        fi
+      done
+      ;;
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # STEP 31: Verbose Mode & Confirmation
+    # ═══════════════════════════════════════════════════════════════════════════
+    31)
       local verbose_default_flag="--defaultno"
       [[ "$_verbose" == "yes" ]] && verbose_default_flag=""
 
@@ -940,6 +1108,13 @@ advanced_settings() {
       local tz_display="${_ct_timezone:-Host TZ}"
       local apt_display="${_apt_cacher:-no}"
       [[ "$_apt_cacher" == "yes" && -n "$_apt_cacher_ip" ]] && apt_display="$_apt_cacher_ip"
+      local sdn_display="${_sdn_vnet:-(none)}"
+      local http_proxy_display="${_http_proxy:-(none)}"
+      local inherit_ca_display="${_inherit_host_ca:-no}"
+      local post_install_display="${_post_install:-(none)}"
+      local post_install_warn=""
+      [[ -n "$_post_install" ]] && post_install_warn="
+  ⚠ Hook runs as root on Proxmox HOST (not in LXC)"
 
       local summary="Container Type: $ct_type_desc
 Container ID: $_ct_id
@@ -952,18 +1127,23 @@ Resources:
 
 Network:
   Bridge: $_bridge
+  SDN vnet: $sdn_display
   IPv4: $_net
   IPv6: $_ipv6_method
 
 Features:
   FUSE: $_enable_fuse | TUN: $_enable_tun
   Nesting: $nesting_desc | Keyctl: $keyctl_desc
+  Mknod: $([ "$_enable_mknod" == "1" ] && echo Enabled || echo Disabled) | Mount FS: ${_mount_fs:-(none)}
   GPU: $_enable_gpu | Protection: $protect_desc
 
 Advanced:
   Timezone: $tz_display
   APT Cacher: $apt_display
-  Verbose: $_verbose"
+  HTTP Proxy: $http_proxy_display
+  Inherit Host CAs: $inherit_ca_display
+  Verbose: $_verbose
+  Post-Install Script: ${post_install_display}${post_install_warn}"
 
       if whiptail --backtitle "Proxmox VE Helper Scripts [Step $STEP/$MAX_STEP]" \
         --title "CONFIRM SETTINGS" \
@@ -988,6 +1168,7 @@ Advanced:
   CORE_COUNT="$_core_count"
   RAM_SIZE="$_ram_size"
   BRG="$_bridge"
+  SDN_VNET="$_sdn_vnet"
   NET="$_net"
   GATE="$_gate"
   IPV6_METHOD="$_ipv6_method"
@@ -1005,10 +1186,15 @@ Advanced:
   CT_TIMEZONE="$_ct_timezone"
   APT_CACHER="$_apt_cacher"
   APT_CACHER_IP="$_apt_cacher_ip"
+  HTTP_PROXY="$_http_proxy"
+  HTTP_NO_PROXY="$_http_no_proxy"
+  INHERIT_HOST_CA="$_inherit_host_ca"
   VERBOSE="$_verbose"
+  var_post_install="$_post_install"
 
   # Update var_* based on user choice (for functions that check these)
   var_gpu="$_enable_gpu"
+  var_sdn_vnet="$_sdn_vnet"
   var_fuse="$_enable_fuse"
   var_tun="$_enable_tun"
   var_nesting="$_enable_nesting"
@@ -1019,6 +1205,9 @@ Advanced:
   var_timezone="$_ct_timezone"
   var_apt_cacher="$_apt_cacher"
   var_apt_cacher_ip="$_apt_cacher_ip"
+  var_http_proxy="$_http_proxy"
+  var_http_no_proxy="$_http_no_proxy"
+  var_inherit_host_ca="$_inherit_host_ca"
 
   # Format optional values
   [[ -n "$_mtu" ]] && MTU=",mtu=$_mtu" || MTU=""
@@ -1051,6 +1240,7 @@ Advanced:
   echo -e "${CPUCORE}${BOLD}${DGN}CPU Cores: ${BGN}$CORE_COUNT${CL}"
   echo -e "${RAMSIZE}${BOLD}${DGN}RAM Size: ${BGN}${RAM_SIZE} MiB${CL}"
   echo -e "${BRIDGE}${BOLD}${DGN}Bridge: ${BGN}$BRG${CL}"
+  [[ -n "${SDN_VNET:-}" ]] && echo -e "${BRIDGE}${BOLD}${DGN}SDN vnet: ${BGN}$SDN_VNET${CL}"
   echo -e "${NETWORK}${BOLD}${DGN}IPv4: ${BGN}$NET${CL}"
   echo -e "${NETWORK}${BOLD}${DGN}IPv6: ${BGN}$IPV6_METHOD${CL}"
   echo -e "${FUSE}${BOLD}${DGN}FUSE Support: ${BGN}${ENABLE_FUSE:-no}${CL}"
@@ -1058,9 +1248,14 @@ Advanced:
   echo -e "${CONTAINERTYPE}${BOLD}${DGN}Nesting: ${BGN}$([ "${ENABLE_NESTING:-1}" == "1" ] && echo "Enabled" || echo "Disabled")${CL}"
   [[ "${ENABLE_KEYCTL:-0}" == "1" ]] && echo -e "${CONTAINERTYPE}${BOLD}${DGN}Keyctl: ${BGN}Enabled${CL}"
   echo -e "${GPU}${BOLD}${DGN}GPU Passthrough: ${BGN}${ENABLE_GPU:-no}${CL}"
+  [[ "${ENABLE_MKNOD:-0}" == "1" ]] && echo -e "${CONTAINERTYPE}${BOLD}${DGN}Mknod: ${BGN}Enabled${CL}"
+  [[ -n "${ALLOW_MOUNT_FS:-}" ]] && echo -e "${CONTAINERTYPE}${BOLD}${DGN}Mount FS: ${BGN}${ALLOW_MOUNT_FS}${CL}"
   [[ "${PROTECT_CT:-no}" == "yes" || "${PROTECT_CT:-no}" == "1" ]] && echo -e "${CONTAINERTYPE}${BOLD}${DGN}Protection: ${BGN}Enabled${CL}"
   [[ -n "${CT_TIMEZONE:-}" ]] && echo -e "${INFO}${BOLD}${DGN}Timezone: ${BGN}$CT_TIMEZONE${CL}"
   [[ "$APT_CACHER" == "yes" ]] && echo -e "${INFO}${BOLD}${DGN}APT Cacher: ${BGN}$APT_CACHER_IP${CL}"
+  [[ -n "${HTTP_PROXY:-}" ]] && echo -e "${INFO}${BOLD}${DGN}HTTP Proxy: ${BGN}$HTTP_PROXY${CL}"
+  [[ "${INHERIT_HOST_CA:-no}" == "yes" ]] && echo -e "${INFO}${BOLD}${DGN}Host CA Inheritance: ${BGN}Enabled${CL}"
+  [[ -n "${var_post_install:-}" ]] && echo -e "${INFO}${BOLD}${DGN}Post-Install Hook: ${BGN}${var_post_install}${CL}"
   echo -e "${SEARCH}${BOLD}${DGN}Verbose Mode: ${BGN}$VERBOSE${CL}"
   echo -e "${CREATING}${BOLD}${RD}Creating a ${APP} LXC using the above advanced settings${CL}"
 
@@ -1076,11 +1271,17 @@ Advanced:
   log_msg "CPU Cores: $CORE_COUNT"
   log_msg "RAM Size: ${RAM_SIZE} MiB"
   log_msg "Bridge: $BRG"
+  [[ -n "${SDN_VNET:-}" ]] && log_msg "SDN vnet: ${SDN_VNET}"
   log_msg "IPv4: $NET"
   log_msg "IPv6: $IPV6_METHOD"
   log_msg "FUSE Support: ${ENABLE_FUSE:-no}"
   log_msg "Nesting: $([ "${ENABLE_NESTING:-1}" == "1" ] && echo "Enabled" || echo "Disabled")"
+  log_msg "Mknod: $([ "${ENABLE_MKNOD:-0}" == "1" ] && echo "Enabled" || echo "Disabled")"
+  [[ -n "${ALLOW_MOUNT_FS:-}" ]] && log_msg "Mount FS: ${ALLOW_MOUNT_FS}"
   log_msg "GPU Passthrough: ${ENABLE_GPU:-no}"
+  [[ -n "${HTTP_PROXY:-}" ]] && log_msg "HTTP Proxy: ${HTTP_PROXY}"
+  [[ "${INHERIT_HOST_CA:-no}" == "yes" ]] && log_msg "Host CA Inheritance: Enabled"
+  [[ -n "${var_post_install:-}" ]] && log_msg "Post-Install Hook: ${var_post_install}"
   log_msg "Verbose Mode: $VERBOSE"
   log_msg "Session ID: ${SESSION_ID}"
 }

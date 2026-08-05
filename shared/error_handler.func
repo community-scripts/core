@@ -376,10 +376,11 @@ error_handler() {
     active_log="$BUILD_LOG"
   fi
 
+  # stderr: the trap can fire inside a $(...) capture that would eat this as data
   if [[ -n "$active_log" && -s "$active_log" ]]; then
-    echo -e "\n${TAB}--- Last 20 lines of log ---"
-    tail -n 20 "$active_log"
-    echo -e "${TAB}-----------------------------------\n"
+    echo -e "\n${TAB}--- Last 20 lines of log ---" >&2
+    tail -n 20 "$active_log" >&2
+    echo -e "${TAB}-----------------------------------\n" >&2
   fi
 
   # ── Node.js heap OOM detection with actionable guidance ──
@@ -497,8 +498,10 @@ error_handler() {
       fi
 
       local response=""
-      local read_rc=0
-      read -t 60 -r response </dev/tty || read_rc=$?
+      local read_rc
+      declare -f reclaim_tty >/dev/null 2>&1 && reclaim_tty
+      read -t 60 -r response </dev/tty
+      read_rc=$?
       if [[ $read_rc -eq 0 ]]; then
         if [[ -z "$response" || "$response" =~ ^[Yy]$ ]]; then
           echo ""
@@ -538,15 +541,17 @@ error_handler() {
           echo -e "${GN}✔${CL} Container ${CTID} removed"
         fi
       else
-        # read itself failed (closed/broken tty, I/O error) rather than timing
-        # out - keeping the container is the reversible choice.
+        # read itself failed (e.g. broken/closed stdin, I/O error) rather than
+        # timing out - don't guess and destroy the container on a read we
+        # couldn't actually capture; keep it since that's the reversible choice.
         while read -r -t 0.1 -n 1 _ </dev/tty 2>/dev/null; do :; done
         echo ""
         if declare -f msg_error >/dev/null 2>&1; then
-          msg_error "Could not read your response (tty error) - keeping container ${CTID} for safety."
+          msg_error "Could not read your response (stdin error) - keeping container ${CTID} for safety."
           msg_error "Remove it manually if not needed: pct destroy ${CTID}"
         else
-          echo -e "${RD}Could not read your response (tty error) - keeping container ${CTID}${CL}"
+          echo -e "${YW}Could not read your response (stdin error) - keeping container ${CTID} for safety.${CL}"
+          echo -e "${YW}Remove it manually if not needed: pct destroy ${CTID}${CL}"
         fi
       fi
     fi
@@ -600,7 +605,7 @@ _stop_container_if_installing() {
 #
 # - EXIT trap handler — runs on EVERY script termination
 # - CONTAINER: ensures failure artifacts exist on non-zero exit (this also
-#   covers silent()'s direct `exit $rc`, which bypasses the ERR trap)
+#   also covers failures that bypass the ERR trap before on_exit runs)
 # - HOST: catches executions that never sent a final status:
 #   * non-zero exit → "failed" (signal codes map to "aborted")
 #   * zero exit with an "installing" record but no final → "aborted"

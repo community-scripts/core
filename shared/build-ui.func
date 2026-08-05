@@ -153,6 +153,52 @@ run_preflight() {
   return 0
 }
 
+# ------------------------------------------------------------------------------
+# maxkeys_check()
+#
+# - Checks kernel keyring limits before container creation
+# - Warns when the user keyring pool for unprivileged containers is close to
+#   exhaustion and suggests higher sysctl values
+# - Exits with dedicated error codes when limits cannot be read or are exceeded
+# ------------------------------------------------------------------------------
+maxkeys_check() {
+  local per_user_maxkeys per_user_maxbytes used_lxc_keys used_lxc_bytes
+  local threshold_keys threshold_bytes new_limit_keys new_limit_bytes
+  local failure=0
+
+  per_user_maxkeys=$(cat /proc/sys/kernel/keys/maxkeys 2>/dev/null || echo 0)
+  per_user_maxbytes=$(cat /proc/sys/kernel/keys/maxbytes 2>/dev/null || echo 0)
+
+  if [[ "$per_user_maxkeys" -eq 0 || "$per_user_maxbytes" -eq 0 ]]; then
+    msg_error "Unable to read kernel key parameters. Ensure proper permissions."
+    exit 107
+  fi
+
+  used_lxc_keys=$(awk '/100000:/ {print $2}' /proc/key-users 2>/dev/null || echo 0)
+  used_lxc_bytes=$(awk '/100000:/ {split($5, a, "/"); print a[1]}' /proc/key-users 2>/dev/null || echo 0)
+
+  threshold_keys=$((per_user_maxkeys - 100))
+  threshold_bytes=$((per_user_maxbytes - 1000))
+  new_limit_keys=$((per_user_maxkeys * 2))
+  new_limit_bytes=$((per_user_maxbytes * 2))
+
+  if [[ "$used_lxc_keys" -gt "$threshold_keys" ]]; then
+    msg_warn "Key usage is near the limit (${used_lxc_keys}/${per_user_maxkeys})"
+    echo -e "${INFO} Suggested action: Set ${GN}kernel.keys.maxkeys=${new_limit_keys}${CL} in ${BOLD}/etc/sysctl.d/98-community-scripts.conf${CL}."
+    failure=1
+  fi
+  if [[ "$used_lxc_bytes" -gt "$threshold_bytes" ]]; then
+    msg_warn "Key byte usage is near the limit (${used_lxc_bytes}/${per_user_maxbytes})"
+    echo -e "${INFO} Suggested action: Set ${GN}kernel.keys.maxbytes=${new_limit_bytes}${CL} in ${BOLD}/etc/sysctl.d/98-community-scripts.conf${CL}."
+    failure=1
+  fi
+
+  if [[ "$failure" -eq 1 ]]; then
+    msg_error "Kernel key limits exceeded - see suggestions above"
+    exit 108
+  fi
+}
+
 # ==============================================================================
 # The rest of the build UI lives in shared/build-ui/. Splitting it was a
 # maintenance change only -- every function kept its name, body and behaviour.

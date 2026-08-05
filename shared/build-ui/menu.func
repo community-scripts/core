@@ -179,6 +179,7 @@ install_script() {
   arch_check
   arm64_notice
   ssh_check
+  maxkeys_check
   diagnostics_check
 
   if systemctl is-active -q ping-instances.service; then
@@ -676,24 +677,223 @@ msg_menu() {
   echo "$default_tag"
   return 0
 }
-# ------------------------------------------------------------------------------
-# start()
-#
-# - Entry point of script
-# - On Proxmox host: calls install_script
-# - In silent mode: runs update_script with automatic cleanup
-# - Otherwise: shows update/setting menu and runs update_script with cleanup
-# ------------------------------------------------------------------------------
+
+run_addon_updates() {
+  shopt -s nullglob
+  local addons=(/usr/local/bin/update_*)
+  local a name ans
+  shopt -u nullglob
+
+  ((${#addons[@]} == 0)) && return 0
+
+  if [[ "${PHS_SILENT:-0}" == "1" ]]; then
+    msg_info "Detected ${#addons[@]} addon update script(s) - skipping (PHS_SILENT)"
+    return 0
+  fi
+
+  echo
+  echo -e "${INFO}${YW} Detected installed addon update script(s):${CL}"
+  for a in "${addons[@]}"; do
+    echo -e "${TAB}- ${a##*/update_}"
+  done
+  echo
+
+  for a in "${addons[@]}"; do
+    name="${a##*/update_}"
+    printf 'Do you also want to update addon "%s"? (y/N) [60s]: ' "$name"
+    ans=""
+    if read -r -t 60 ans </dev/tty; then :; else echo; fi
+    case "${ans,,}" in
+    y | yes)
+      bash "$a" || msg_warn "Addon update for $name failed (rc=$?)"
+      ;;
+    *)
+      msg_info "Skipped addon: $name"
+      ;;
+    esac
+  done
+}
+
+runtime_script_status_guard() {
+  local mode="${1:-}"
+  local script_slug="${SCRIPT_SLUG:-${NSAPP:-}}"
+  script_slug="$(echo "$script_slug" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+  [[ -z "$script_slug" ]] && return 0
+
+  local api_url="https://db.community-scripts.org/api/collections/script_scripts/records?filter=(slug='${script_slug}')&perPage=1&fields=slug,is_disabled,is_deleted,disable_message,deleted_message,pinned_version,pin_reason"
+  local response
+  if ! response=$(curl -fsSL --connect-timeout 2 --max-time 3 "$api_url" 2>/dev/null); then
+    msg_warn "Script status check is unavailable. Continuing without status verification."
+    return 0
+  fi
+
+  local is_deleted is_disabled deleted_message disable_message pinned_version pin_reason info_url
+  if printf '%s' "$response" | grep -qE '"items":[[:space:]]*\[[[:space:]]*\]'; then
+    return 0
+  fi
+
+  # PocketBase returns a flat, fixed-field JSON blob; sed is enough here (no jq needed).
+  is_deleted=$(printf '%s' "$response" | sed -n 's/.*"is_deleted"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' | head -1)
+  is_disabled=$(printf '%s' "$response" | sed -n 's/.*"is_disabled"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' | head -1)
+  deleted_message=$(printf '%s' "$response" | sed -n 's/.*"deleted_message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+  disable_message=$(printf '%s' "$response" | sed -n 's/.*"disable_message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+  pinned_version=$(printf '%s' "$response" | sed -n 's/.*"pinned_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+  pin_reason=$(printf '%s' "$response" | sed -n 's/.*"pin_reason"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+  is_deleted=${is_deleted:-false}
+  is_disabled=${is_disabled:-false}
+  info_url="https://community-scripts.org/scripts/${script_slug}"
+
+  if [[ "$is_deleted" == "true" ]]; then
+    msg_error "This script is no longer available in community-scripts."
+    [[ -n "$deleted_message" ]] && msg_error "$deleted_message"
+    [[ -z "$deleted_message" ]] && msg_error "This script was removed and cannot be installed or updated."
+    msg_warn "More info: ${info_url}"
+    return 1
+  fi
+
+  if [[ "$is_disabled" == "true" ]]; then
+    case "${var_ignore_disable:-}" in
+    1 | yes | true | on)
+      msg_warn "This script is currently disabled in community-scripts."
+      [[ -n "$disable_message" ]] && msg_warn "$disable_message"
+      msg_warn "Bypassing disable status via var_ignore_disable — continuing at your own risk."
+      msg_warn "More info: ${info_url}"
+      return 0
+      ;;
+    esac
+
+    msg_error "This script is currently disabled in community-scripts."
+    [[ -n "$disable_message" ]] && msg_error "$disable_message"
+    [[ -z "$disable_message" ]] && msg_error "Updates and installs are temporarily disabled for this script."
+    msg_warn "More info: ${info_url}"
+    return 1
+  fi
+
+  if [[ "$mode" == "update" && -n "$pinned_version" && -n "${NSAPP:-}" ]]; then
+    local current_file="$HOME/.${NSAPP}"
+    if [[ -f "$current_file" ]]; then
+      local installed pinned_clean installed_clean
+      installed="$(<"$current_file")"
+      pinned_clean="$pinned_version"
+      installed_clean="$installed"
+      [[ "$pinned_clean" =~ ^v[0-9] ]] && pinned_clean="${pinned_clean:1}"
+      [[ "$installed_clean" =~ ^v[0-9] ]] && installed_clean="${installed_clean:1}"
+      if [[ "$installed_clean" == "$pinned_clean" ]]; then
+        if [[ -n "$pin_reason" ]]; then
+          msg_info "You are already on the pinned version (${pinned_version}). ${pin_reason}"
+        else
+          msg_info "You are already on the pinned version (${pinned_version}). No newer update is offered intentionally — please do not open an issue unless you see an actual error."
+        fi
+        msg_info "More info: ${info_url}"
+      fi
+    fi
+  fi
+
+  return 0
+}
+check_container_os_guard() {
+  local rec_os="${var_os:-}" rec_ver="${var_version:-}"
+  rec_os="${rec_os,,}"
+  [[ -z "$rec_os" || -z "$rec_ver" ]] && return 0
+  [[ -r /etc/os-release ]] || return 0
+
+  local cur_os cur_ver
+  cur_os="$(. /etc/os-release 2>/dev/null; echo "${ID:-}")"
+  cur_ver="$(. /etc/os-release 2>/dev/null; echo "${VERSION_ID:-}")"
+  cur_os="${cur_os,,}"
+  [[ -z "$cur_os" || -z "$cur_ver" ]] && return 0
+
+  # Exact version or prefix on a dot boundary (e.g. alpine 3.22 matches 3.22.1)
+  if [[ "$cur_os" == "$rec_os" ]] && [[ "$cur_ver" == "$rec_ver" || "$cur_ver" == "$rec_ver".* ]]; then
+    return 0
+  fi
+
+  local downgraded_target=0
+  if [[ "$cur_os" == "$rec_os" ]] && [[ "$cur_ver" != "$rec_ver" ]]; then
+    if [[ "$(printf '%s\n%s\n' "$cur_ver" "$rec_ver" | sort -V | tail -n1)" == "$cur_ver" ]]; then
+      downgraded_target=1
+    fi
+  fi
+
+  case "${var_ignore_os_mismatch:-}" in
+  1 | yes | true | on)
+    msg_warn "Container OS is ${cur_os} ${cur_ver} but the script recommends ${rec_os} ${rec_ver} — continuing via var_ignore_os_mismatch (may break, no support)."
+    return 0
+    ;;
+  esac
+
+  local ignore_file="/usr/local/community-scripts/ignore-os-mismatch"
+  if [[ -f "$ignore_file" && "$(cat "$ignore_file" 2>/dev/null)" == "${rec_os} ${rec_ver}" ]]; then
+    msg_warn "Container OS is ${cur_os} ${cur_ver} but the script recommends ${rec_os} ${rec_ver} — continuing (previously ignored via ${ignore_file}, may break, no support)."
+    return 0
+  fi
+
+  local mismatch_detail remediation
+  if [[ "$downgraded_target" -eq 1 ]]; then
+    mismatch_detail="Your container runs ${cur_os} ${cur_ver}, which is newer than what this script now targets (${rec_os} ${rec_ver}).\n\nThe target was likely lowered on purpose, e.g. because ${APP:-the app} had problems on newer OS versions - check the GitHub issues for ${APP:-this app} for details.\n\nContinuing on ${cur_ver} often still works, but isn't guaranteed. If you are unsure, ask in our Discord (https://discord.gg/3AnUqsXnmK) before continuing."
+    remediation="This script now targets the older ${rec_os} ${rec_ver}. Check the GitHub issues for ${APP:-this app}, or ask in Discord (https://discord.gg/3AnUqsXnmK) if you are unsure"
+  else
+    mismatch_detail="This container runs ${cur_os} ${cur_ver}, but this script now targets ${rec_os} ${rec_ver}.\n\nUpdating on the older base OS may fail or leave ${APP:-the application} broken (e.g. required runtime versions are not available).\n\nRecommended: upgrade the container OS to ${rec_os} ${rec_ver} first, then run this update again."
+    remediation="Upgrade the container OS to ${rec_os} ${rec_ver} first, then run this update again"
+  fi
+
+  if [[ "${PHS_SILENT:-0}" != "1" ]] && command -v whiptail &>/dev/null && [ -t 0 ] && [[ "$TERM" != "dumb" ]]; then
+    local choice
+    choice=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "OS VERSION MISMATCH" --menu \
+      "${mismatch_detail}\n\nIf you continue anyway, it may break — no support is provided in that case.\n\nContinue anyway?" \
+      20 70 3 \
+      "1" "No  (cancel update)" \
+      "2" "Yes (continue this time)" \
+      "3" "Yes (continue and don't ask again)" \
+      --nocancel --default-item "1" 3>&1 1>&2 2>&3)
+    case "$choice" in
+    2)
+      msg_warn "Continuing update on ${cur_os} ${cur_ver} despite recommended ${rec_os} ${rec_ver} — may break, no support."
+      return 0
+      ;;
+    3)
+      mkdir -p "${ignore_file%/*}"
+      echo "${rec_os} ${rec_ver}" >"$ignore_file"
+      msg_warn "Continuing update on ${cur_os} ${cur_ver}; OS check for ${rec_os} ${rec_ver} disabled via ${ignore_file} — may break, no support."
+      return 0
+      ;;
+    esac
+    msg_error "Update cancelled: container OS ${cur_os} ${cur_ver} does not match the recommended ${rec_os} ${rec_ver}."
+    return 1
+  fi
+
+  msg_error "Container OS ${cur_os} ${cur_ver} does not match the recommended ${rec_os} ${rec_ver} — skipping update."
+  msg_error "${remediation} — or bypass this check (may break, no support) with: echo \"${rec_os} ${rec_ver}\" > ${ignore_file}"
+  return 1
+}
 start() {
   source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/tools.func")
   if command -v pveversion >/dev/null 2>&1; then
+    runtime_script_status_guard install || return 0
     install_script || return 0
     return 0
   elif [ ! -z ${PHS_SILENT+x} ] && [[ "${PHS_SILENT}" == "1" ]]; then
     VERBOSE="no"
     set_std_mode
     ensure_profile_loaded
+    get_lxc_ip
+    runtime_script_status_guard update || return 0
+    check_container_os_guard || return 0
     update_script
+    run_addon_updates
+    update_motd_ip
+    cleanup_lxc
+  elif ! command -v whiptail &>/dev/null || ! [ -t 0 ] || [[ "$TERM" == "dumb" ]]; then
+    msg_info "No interactive terminal detected – defaulting to silent update mode"
+    VERBOSE="no"
+    set_std_mode
+    ensure_profile_loaded
+    get_lxc_ip
+    runtime_script_status_guard update || return 0
+    check_container_os_guard || return 0
+    update_script
+    run_addon_updates
+    update_motd_ip
     cleanup_lxc
   else
     CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "${APP} LXC Update/Setting" --menu \
@@ -719,7 +919,12 @@ start() {
       ;;
     esac
     ensure_profile_loaded
+    get_lxc_ip
+    runtime_script_status_guard update || return 0
+    check_container_os_guard || return 0
     update_script
+    run_addon_updates
+    update_motd_ip
     cleanup_lxc
   fi
 }
