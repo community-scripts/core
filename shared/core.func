@@ -877,28 +877,37 @@ exit_script() {
 # - Returns header content or empty string on failure
 # ------------------------------------------------------------------------------
 get_header() {
+  # Slug must match what the generator writes: APP lowercased, spaces removed.
   local app_name=$(echo "${APP,,}" | tr -d ' ')
-  local app_type=${APP_TYPE:-ct} # Default to 'ct' if not set
-  # Addon scripts live under tools/, and the generator writes their headers
-  # into tools/headers recursively — there is no addon/headers directory.
-  [[ "$app_type" == "addon" ]] && app_type="tools"
-  local header_url="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}/${app_type}/headers/${app_name}"
-  local local_header_path="/usr/local/community-scripts/headers/${app_type}/${app_name}"
-  local repo_header=""
-
-  # Prefer header from local checkout when testing a fork/branch
-  if [[ -n "${COMMUNITY_SCRIPTS_ROOT:-}" && -f "${COMMUNITY_SCRIPTS_ROOT}/${app_type}/headers/${app_name}" ]]; then
-    repo_header="${COMMUNITY_SCRIPTS_ROOT}/${app_type}/headers/${app_name}"
+  local app_type=${APP_TYPE:-ct} # ct | addon | tools | vm
+  # ct/vm/addon render the same banner on both hosts. Host tools do not exist on
+  # both, so their headers are split by platform -- and a tool only ever runs on
+  # the platform it was written for, so the detected host IS that platform.
+  if [[ "$app_type" == "tools" ]]; then
+    local _p="pve"
+    declare -f detect_lxc_platform >/dev/null 2>&1 && _p="$(detect_lxc_platform)"
+    [[ "$_p" == incus* ]] && _p="incus" || _p="pve"
+    app_type="tools/${_p}"
   fi
-  if [[ -n "$repo_header" && -s "$repo_header" ]]; then
-    cat "$repo_header" 2>/dev/null || true
+  # Headers live in the ENGINE repo, one folder per APP_TYPE. They are generated
+  # from the script repos, so a script repo carries none of its own.
+  local core_url="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
+  local header_url="${core_url}/headers/${app_type}/${app_name}"
+  local local_header_path="/usr/local/community-scripts/headers/${app_type}/${app_name}"
+
+  # Local core checkout wins, so a fork or branch renders its own headers.
+  if [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -s "${COMMUNITY_SCRIPTS_CORE_DIR}/headers/${app_type}/${app_name}" ]]; then
+    cat "${COMMUNITY_SCRIPTS_CORE_DIR}/headers/${app_type}/${app_name}" 2>/dev/null || true
     return 0
   fi
 
   mkdir -p "$(dirname "$local_header_path")"
 
   if [ ! -s "$local_header_path" ]; then
+    # A brand-new script has no header until the generator has run. That is not
+    # an error -- header_info() simply prints nothing.
     if ! curl -fsSL "$header_url" -o "$local_header_path"; then
+      rm -f "$local_header_path"
       return 1
     fi
   fi

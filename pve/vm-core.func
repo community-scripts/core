@@ -61,9 +61,11 @@ load_cloud_init_functions() {
 
 # Function to download & save header files
 get_header() {
-  local app_name=$(echo "${APP,,}" | tr ' ' '-')
+  # Slug must match the generator: APP lowercased, spaces removed. This used
+  # tr ' ' '-', so any app with a space in its name never found its header.
+  local app_name=$(echo "${APP,,}" | tr -d ' ')
   local app_type=${APP_TYPE:-vm}
-  local header_url="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}/${app_type}/headers/${app_name}"
+  local header_url="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/headers/${app_type}/${app_name}"
   local local_header_path="/usr/local/community-scripts/headers/${app_type}/${app_name}"
 
   mkdir -p "$(dirname "$local_header_path")"
