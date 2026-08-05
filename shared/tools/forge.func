@@ -1,0 +1,3065 @@
+#!/usr/bin/env bash
+# Copyright (c) 2021-2026 community-scripts ORG
+# License: MIT | https://raw.githubusercontent.com/community-scripts/core/main/LICENSE
+
+# ==============================================================================
+# TOOLS/FORGE.FUNC - GITHUB, GITLAB AND CODEBERG RELEASES
+# ==============================================================================
+# Part of the shared helper library. Load shared/tools.func -- it sources every
+# part -- rather than this file directly; the split is for maintenance only and
+# no function name or behaviour changed with it.
+# ==============================================================================
+
+[[ -n "${_TOOLS_FORGE_LOADED:-}" ]] && return 0
+_TOOLS_FORGE_LOADED=1
+
+# ------------------------------------------------------------------------------
+# validate_github_token()
+# Checks a GitHub token via the /user endpoint.
+# Prints a status message and returns:
+#   0 - token is valid
+#   1 - token is invalid / expired (HTTP 401)
+#   2 - token has no public repo scope (HTTP 200 but missing scope)
+#   3 - network/API error
+# Also reports expiry date if the token carries an x-oauth-expiry header.
+# ------------------------------------------------------------------------------
+validate_github_token() {
+  local token="${1:-${GITHUB_TOKEN:-}}"
+  [[ -z "$token" ]] && return 3
+
+  local response headers http_code expiry_date scopes
+  headers=$(mktemp)
+  response=$(curl -sSL -w "%{http_code}" \
+    -D "$headers" \
+    -o /dev/null \
+    -H "Authorization: Bearer $token" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "https://api.github.com/user" 2>/dev/null) || {
+    rm -f "$headers"
+    return 3
+  }
+  http_code="$response"
+
+  # Read expiry header (fine-grained PATs carry this)
+  expiry_date=$(grep -i '^github-authentication-token-expiration:' "$headers" |
+    sed 's/.*: *//' | tr -d '\r\n' || true)
+  # Read token scopes (classic PATs)
+  scopes=$(grep -i '^x-oauth-scopes:' "$headers" |
+    sed 's/.*: *//' | tr -d '\r\n' || true)
+  rm -f "$headers"
+
+  case "$http_code" in
+  200)
+    if [[ -n "$expiry_date" ]]; then
+      msg_ok "GitHub token is valid (expires: $expiry_date)."
+    else
+      msg_ok "GitHub token is valid (no expiry / fine-grained PAT)."
+    fi
+    # Warn if classic PAT has no public_repo scope
+    if [[ -n "$scopes" && "$scopes" != *"public_repo"* && "$scopes" != *"repo"* ]]; then
+      msg_warn "Token has no 'public_repo' scope - private repos and some release APIs may fail."
+      return 2
+    fi
+    return 0
+    ;;
+  401)
+    msg_error "GitHub token is invalid or expired (HTTP 401)."
+    return 1
+    ;;
+  *)
+    msg_warn "GitHub token validation returned HTTP $http_code - treating as valid."
+    return 0
+    ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------
+# Prompt user to enter a GitHub Personal Access Token (PAT) interactively
+# Returns 0 if a valid token was provided, 1 otherwise
+# ------------------------------------------------------------------------------
+prompt_for_github_token() {
+  if [[ ! -t 0 ]]; then
+    # Non-interactive: pick up var_github_token if set (from default.vars / app.vars / env)
+    if [[ -z "${GITHUB_TOKEN:-}" && -n "${var_github_token:-}" ]]; then
+      export GITHUB_TOKEN="${var_github_token}"
+      msg_ok "GitHub token loaded from var_github_token."
+      return 0
+    fi
+    return 1
+  fi
+
+  # Prefer var_github_token when already set and no interactive override needed
+  if [[ -z "${GITHUB_TOKEN:-}" && -n "${var_github_token:-}" ]]; then
+    export GITHUB_TOKEN="${var_github_token}"
+    msg_ok "GitHub token loaded from var_github_token."
+    validate_github_token || true
+    return 0
+  fi
+
+  local reply
+  read -rp "${TAB}Would you like to enter a GitHub Personal Access Token (PAT)? [y/N]: " reply </dev/tty
+  reply="${reply:-n}"
+
+  if [[ ! "${reply,,}" =~ ^(y|yes)$ ]]; then
+    return 1
+  fi
+
+  local token
+  while true; do
+    read -rp "${TAB}Enter your GitHub PAT: " token </dev/tty
+    # Trim leading/trailing whitespace
+    token="$(echo "$token" | xargs)"
+    if [[ -z "$token" ]]; then
+      msg_warn "Token cannot be empty. Please try again."
+      continue
+    fi
+    if [[ "$token" =~ [[:space:]] ]]; then
+      msg_warn "Token must not contain spaces. Please try again."
+      continue
+    fi
+    # Validate before accepting
+    export GITHUB_TOKEN="$token"
+    if validate_github_token "$token"; then
+      break
+    else
+      msg_warn "Please enter a valid token, or press Ctrl+C to abort."
+      unset GITHUB_TOKEN
+    fi
+  done
+
+  msg_ok "GitHub token has been set."
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# GitHub API call with authentication and rate limit handling
+# ------------------------------------------------------------------------------
+github_api_call() {
+  local url="$1"
+  local output_file="${2:-/dev/stdout}"
+  local max_retries=3
+  local retry_delay=2
+
+  local header_args=()
+  [[ -n "${GITHUB_TOKEN:-}" ]] && header_args=(-H "Authorization: Bearer $GITHUB_TOKEN")
+
+  local attempt=1
+  while ((attempt <= max_retries)); do
+    local http_code
+    http_code=$(curl -sSL -w "%{http_code}" -o "$output_file" \
+      -H "Accept: application/vnd.github+json" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "${header_args[@]}" \
+      "$url" 2>/dev/null) || true
+
+    case "$http_code" in
+    200)
+      return 0
+      ;;
+    401)
+      msg_error "GitHub API authentication failed (HTTP 401)."
+      if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        msg_error "Your GITHUB_TOKEN appears to be invalid or expired."
+      else
+        msg_error "The repository may require authentication."
+      fi
+      if prompt_for_github_token; then
+        header_args=(-H "Authorization: Bearer $GITHUB_TOKEN")
+        continue
+      fi
+      return 22
+      ;;
+    403)
+      # Rate limit - check if we can retry
+      if [[ $attempt -lt $max_retries ]]; then
+        msg_warn "GitHub API rate limit, waiting ${retry_delay}s... (attempt $attempt/$max_retries)"
+        sleep "$retry_delay"
+        retry_delay=$((retry_delay * 2))
+        ((attempt++))
+        continue
+      fi
+      msg_error "GitHub API rate limit exceeded (HTTP 403)."
+      if prompt_for_github_token; then
+        header_args=(-H "Authorization: Bearer $GITHUB_TOKEN")
+        retry_delay=2
+        attempt=1
+        continue
+      fi
+      msg_error "To increase the limit, export a GitHub token before running the script:"
+      msg_error "  export GITHUB_TOKEN=\"ghp_your_token_here\""
+      return 22
+      ;;
+    404)
+      msg_error "GitHub repository or release not found (HTTP 404): $url"
+      return 22
+      ;;
+    000 | "")
+      if [[ $attempt -lt $max_retries ]]; then
+        sleep "$retry_delay"
+        ((attempt++))
+        continue
+      fi
+      msg_error "GitHub API connection failed (no response)."
+      msg_error "Check your network/DNS: curl -sSL https://api.github.com/rate_limit"
+      return 22
+      ;;
+    *)
+      if [[ $attempt -lt $max_retries ]]; then
+        sleep "$retry_delay"
+        ((attempt++))
+        continue
+      fi
+      msg_error "GitHub API call failed (HTTP $http_code)."
+      return 22
+      ;;
+    esac
+    ((attempt++))
+  done
+
+  msg_error "GitHub API call failed after ${max_retries} attempts: ${url}"
+  return 22
+}
+
+# ------------------------------------------------------------------------------
+# Codeberg API call with retry logic
+# ------------------------------------------------------------------------------
+codeberg_api_call() {
+  local url="$1"
+  local output_file="${2:-/dev/stdout}"
+  local max_retries=3
+  local retry_delay=2
+
+  for attempt in $(seq 1 $max_retries); do
+    local http_code
+    http_code=$(curl -sSL -w "%{http_code}" -o "$output_file" \
+      -H "Accept: application/json" \
+      "$url" 2>/dev/null) || true
+
+    case "$http_code" in
+    200)
+      return 0
+      ;;
+    401)
+      msg_error "Codeberg API authentication failed (HTTP 401)."
+      return 22
+      ;;
+    403)
+      # Rate limit - retry
+      if [[ $attempt -lt $max_retries ]]; then
+        msg_warn "Codeberg API rate limit, waiting ${retry_delay}s... (attempt $attempt/$max_retries)"
+        sleep "$retry_delay"
+        retry_delay=$((retry_delay * 2))
+        continue
+      fi
+      msg_error "Codeberg API rate limit exceeded (HTTP 403)."
+      return 22
+      ;;
+    404)
+      msg_error "Codeberg repository or release not found (HTTP 404): $url"
+      return 22
+      ;;
+    000 | "")
+      if [[ $attempt -lt $max_retries ]]; then
+        sleep "$retry_delay"
+        continue
+      fi
+      msg_error "Codeberg API connection failed (no response)."
+      msg_error "Check your network/DNS: curl -sSL https://codeberg.org"
+      return 22
+      ;;
+    *)
+      if [[ $attempt -lt $max_retries ]]; then
+        sleep "$retry_delay"
+        continue
+      fi
+      msg_error "Codeberg API call failed (HTTP $http_code)."
+      return 22
+      ;;
+    esac
+  done
+
+  msg_error "Codeberg API call failed after ${max_retries} attempts: ${url}"
+  return 22
+}
+
+# ------------------------------------------------------------------------------
+# Extract version from JSON (GitHub releases)
+# ------------------------------------------------------------------------------
+extract_version_from_json() {
+  local json="$1"
+  local field="${2:-tag_name}"
+  local strip_v="${3:-true}"
+
+  ensure_dependencies jq
+
+  local version
+  version=$(echo "$json" | jq -r ".${field} // empty")
+
+  if [[ -z "$version" ]]; then
+    msg_warn "JSON field '${field}' is empty in API response"
+    return 250
+  fi
+
+  if [[ "$strip_v" == "true" ]]; then
+    echo "${version#v}"
+  else
+    echo "$version"
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# Get latest GitHub tag (for repos that only publish tags, not releases).
+#
+# Usage:
+#   get_latest_gh_tag "owner/repo" [prefix]
+#
+# Arguments:
+#   $1 - GitHub repo (owner/repo)
+#   $2 - Optional prefix filter (e.g., "v" to only match tags starting with "v")
+#
+# Returns:
+#   Latest tag name (stdout), or returns 1 on failure
+# ------------------------------------------------------------------------------
+get_latest_gh_tag() {
+  local repo="$1"
+  local prefix="${2:-}"
+  local temp_file
+  temp_file=$(mktemp)
+
+  local tag=""
+
+  if [[ -n "$prefix" ]]; then
+    # Use git/matching-refs API for server-side prefix filtering. This avoids
+    # paging through unrelated tags (e.g. mongodb/mongo-tools where 100.x tags
+    # only appear after page 4 of /tags). Returns ALL tags matching the prefix
+    # in a single call, sorted lexicographically ascending; we pick the
+    # highest version using `sort -V`.
+    if ! github_api_call "https://api.github.com/repos/${repo}/git/matching-refs/tags/${prefix}" "$temp_file"; then
+      rm -f "$temp_file"
+      return 22
+    fi
+
+    local count
+    count=$(jq 'length' "$temp_file" 2>/dev/null || echo 0)
+    if [[ "$count" -gt 0 ]]; then
+      tag=$(jq -r '.[].ref' "$temp_file" |
+        sed 's|^refs/tags/||' |
+        sort -V |
+        tail -n1)
+    fi
+  else
+    # No prefix: just take the first (newest) tag from /tags
+    if ! github_api_call "https://api.github.com/repos/${repo}/tags?per_page=1" "$temp_file"; then
+      rm -f "$temp_file"
+      return 22
+    fi
+    tag=$(jq -r '.[0].name // empty' "$temp_file")
+  fi
+
+  rm -f "$temp_file"
+
+  if [[ -z "$tag" ]]; then
+    msg_error "No tags found for ${repo}"
+    return 250
+  fi
+
+  echo "$tag"
+}
+
+# ------------------------------------------------------------------------------
+# Get latest GitHub release version with fallback to tags
+# Usage: get_latest_github_release "owner/repo" [strip_v] [include_prerelease]
+# ------------------------------------------------------------------------------
+get_latest_github_release() {
+  local repo="$1"
+  local strip_v="${2:-true}"
+  local temp_file=$(mktemp)
+
+  if ! github_api_call "https://api.github.com/repos/${repo}/releases/latest" "$temp_file"; then
+    msg_warn "GitHub API call failed for ${repo}"
+    rm -f "$temp_file"
+    return 22
+  fi
+
+  local version
+  version=$(extract_version_from_json "$(cat "$temp_file")" "tag_name" "$strip_v")
+  rm -f "$temp_file"
+
+  if [[ -z "$version" ]]; then
+    msg_error "Could not determine latest version for ${repo}"
+    return 250
+  fi
+
+  echo "$version"
+}
+
+# ------------------------------------------------------------------------------
+# Get latest Codeberg release version
+# ------------------------------------------------------------------------------
+get_latest_codeberg_release() {
+  local repo="$1"
+  local strip_v="${2:-true}"
+  local temp_file=$(mktemp)
+
+  # Codeberg API: get all releases and pick the first non-draft/non-prerelease
+  if ! codeberg_api_call "https://codeberg.org/api/v1/repos/${repo}/releases" "$temp_file"; then
+    msg_warn "Codeberg API call failed for ${repo}"
+    rm -f "$temp_file"
+    return 22
+  fi
+
+  local version
+  # Codeberg uses same JSON structure but releases endpoint returns array
+  version=$(jq -r '[.[] | select(.draft==false and .prerelease==false)][0].tag_name // empty' "$temp_file")
+
+  if [[ "$strip_v" == "true" ]]; then
+    version="${version#v}"
+  fi
+
+  rm -f "$temp_file"
+
+  if [[ -z "$version" ]]; then
+    msg_error "Could not determine latest version for ${repo}"
+    return 250
+  fi
+
+  echo "$version"
+}
+
+# ------------------------------------------------------------------------------
+# Debug logging - using main debug_log function (line 40)
+# Supports both TOOLS_DEBUG and DEBUG environment variables
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# _download_source_tarball <url> <dest> [curl args...]
+#
+# Downloads a source .tar.gz to <dest> and verifies the gzip stream is complete
+# before returning. Source forges (GitHub/GitLab/Codeberg) build these archives
+# on the fly; for large repos the response is occasionally a truncated-but-
+# cleanly-closed gzip that curl accepts as success (HTTP 200) and which then
+# fails at extraction time. We validate with `gzip -t` and re-download on
+# failure, and abort stalled transfers (--speed-time) so a hung generation
+# retries instead of blocking for minutes. Extra args pass through to curl
+# (e.g. auth headers like -H "PRIVATE-TOKEN: ...").
+#
+# Returns: 0 on success, 250 on persistent failure.
+# ------------------------------------------------------------------------------
+_download_source_tarball() {
+  local url="$1" dest="$2"
+  shift 2
+  local attempt max=3
+  for ((attempt = 1; attempt <= max; attempt++)); do
+    if curl --connect-timeout 15 --max-time 900 --speed-limit 1024 --speed-time 60 \
+      -fsSL "$@" -o "$dest" "$url" && gzip -t "$dest" 2>/dev/null; then
+      return 0
+    fi
+    rm -f "$dest"
+    ((attempt < max)) && {
+      msg_warn "Source archive download failed or incomplete (attempt ${attempt}/${max}), retrying..."
+      sleep $((attempt * 3))
+    }
+  done
+  return 250
+}
+
+# ------------------------------------------------------------------------------
+# _deploy_source_tarball <tarball_path> <target> <workdir>
+#
+# Shared tail for the *source tarball* modes of the fetch_and_deploy_* helpers
+# (GitHub/GitLab/Codeberg archive tarballs that contain a single top-level
+# directory). Extracts <tarball_path> into <workdir>, then copies the contents
+# of that top-level directory into <target>.
+#
+#   - Honors CLEAN_INSTALL=1 (wipes <target> first, dotfiles included — back
+#     up config dotfiles like .env via create_backup and call restore_backup
+#     BEFORE any build step that sources them).
+#   - Does NOT own <workdir>: the caller creates it and is responsible for its
+#     cleanup (typically via a RETURN trap on its tmpdir).
+#   - cp failures are non-fatal here, matching the previous inline behavior.
+#
+# Returns: 0 on success (or non-fatal cp failure), 251 on extraction failure.
+# ------------------------------------------------------------------------------
+_deploy_source_tarball() {
+  local tarball="$1" target="$2" workdir="$3"
+
+  mkdir -p "$target"
+  if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
+    find "${target:?}" -mindepth 1 -delete
+  fi
+
+  tar --no-same-owner -xzf "$tarball" -C "$workdir" || {
+    msg_error "Failed to extract tarball"
+    return 251
+  }
+
+  local unpack_dir
+  unpack_dir=$(find "$workdir" -mindepth 1 -maxdepth 1 -type d | head -n1)
+
+  shopt -s dotglob nullglob
+  cp -r "$unpack_dir"/* "$target/"
+  shopt -u dotglob nullglob
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# _deploy_unpacked_archive <archive_path> <target> <workdir>
+#
+# Shared tail for the *prebuild* modes of the fetch_and_deploy_*_release helpers
+# (release assets shipped as .zip / .tar.* / .tgz / .txz). Extracts the archive
+# into <workdir>, then copies its payload into <target>. If the archive contains
+# a single top-level directory, that directory is stripped (its contents land
+# directly in <target>); otherwise the archive contents are copied as-is.
+#
+#   - Honors CLEAN_INSTALL=1 (wipes <target> first, dotfiles included — back
+#     up config dotfiles like .env via create_backup and call restore_backup
+#     BEFORE any build step that sources them).
+#   - Does NOT own <workdir>: the caller creates it and cleans it up.
+#
+# Returns: 0 on success, 65 on unsupported format, 251 on extraction failure,
+#          252 on copy failure / empty archive.
+# ------------------------------------------------------------------------------
+_deploy_unpacked_archive() {
+  local archive="$1" target="$2" workdir="$3"
+  local filename="${archive##*/}"
+
+  mkdir -p "$target"
+  if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
+    find "${target:?}" -mindepth 1 -delete
+  fi
+
+  if [[ "$filename" == *.zip ]]; then
+    ensure_dependencies unzip
+    unzip -q "$archive" -d "$workdir" || {
+      msg_error "Failed to extract ZIP archive"
+      return 251
+    }
+  elif [[ "$filename" == *.tar.* || "$filename" == *.tgz || "$filename" == *.txz ]]; then
+    tar --no-same-owner -xf "$archive" -C "$workdir" || {
+      msg_error "Failed to extract TAR archive"
+      return 251
+    }
+  elif [[ "$filename" == *.7z ]]; then
+    if [[ -f /etc/alpine-release ]]; then
+      ensure_dependencies 7zip
+    else
+      ensure_dependencies p7zip-full
+    fi
+    7z x -y -o"$workdir" "$archive" >/dev/null 2>&1 || {
+      msg_error "Failed to extract 7z archive"
+      return 251
+    }
+  else
+    msg_error "Unsupported archive format: $filename"
+    return 65
+  fi
+
+  local top_entries inner_dir
+  top_entries=$(find "$workdir" -mindepth 1 -maxdepth 1)
+  if [[ "$(echo "$top_entries" | wc -l)" -eq 1 && -d "$top_entries" ]]; then
+    inner_dir="$top_entries"
+    shopt -s dotglob nullglob
+    if compgen -G "$inner_dir/*" >/dev/null; then
+      cp -r "$inner_dir"/* "$target/" || {
+        msg_error "Failed to copy contents from $inner_dir to $target"
+        shopt -u dotglob nullglob
+        return 252
+      }
+    else
+      msg_error "Inner directory is empty: $inner_dir"
+      shopt -u dotglob nullglob
+      return 252
+    fi
+    shopt -u dotglob nullglob
+  else
+    shopt -s dotglob nullglob
+    if compgen -G "$workdir/*" >/dev/null; then
+      cp -r "$workdir"/* "$target/" || {
+        msg_error "Failed to copy contents to $target"
+        shopt -u dotglob nullglob
+        return 252
+      }
+    else
+      msg_error "Unpacked archive is empty"
+      shopt -u dotglob nullglob
+      return 252
+    fi
+    shopt -u dotglob nullglob
+  fi
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# Fetches and deploys a GitHub tag-based source tarball.
+#
+# Description:
+#   - Downloads the source tarball for a given tag from GitHub
+#   - Extracts to the target directory
+#   - Writes the version to ~/.<app>
+#
+# Usage:
+#     fetch_and_deploy_gh_tag "guacd" "apache/guacamole-server"
+#     fetch_and_deploy_gh_tag "guacd" "apache/guacamole-server" "latest" "/opt/guacamole-server"
+#
+# Arguments:
+#   $1 - App name (used for version file ~/.<app>)
+#   $2 - GitHub repo (owner/repo)
+#   $3 - Tag version (default: "latest" → auto-detect via get_latest_gh_tag)
+#   $4 - Target directory (default: /opt/$app)
+#
+# Notes:
+#   - Supports CLEAN_INSTALL=1 to wipe target before extracting
+#   - For repos that only publish tags, not GitHub Releases
+# ------------------------------------------------------------------------------
+fetch_and_deploy_gh_tag() {
+  local app="$1"
+  local repo="$2"
+  local version="${3:-latest}"
+  local target="${4:-/opt/$app}"
+  local app_lc=""
+  app_lc="$(echo "${app,,}" | tr -d ' ')"
+  local version_file="$HOME/.${app_lc}"
+
+  if [[ "$version" == "latest" ]]; then
+    version=$(get_latest_gh_tag "$repo") || {
+      msg_error "Failed to determine latest tag for ${repo}"
+      return 250
+    }
+  fi
+
+  local current_version=""
+  [[ -f "$version_file" ]] && current_version=$(<"$version_file")
+
+  if [[ "$current_version" == "$version" ]]; then
+    msg_ok "$app is already up-to-date ($version)"
+    return 0
+  fi
+
+  local tmpdir
+  tmpdir=$(mktemp -d) || return 1
+  trap 'rm -rf "$tmpdir"; trap - RETURN' RETURN
+  local tarball_url="https://github.com/${repo}/archive/refs/tags/${version}.tar.gz"
+  local filename="${app_lc}-${version}.tar.gz"
+
+  msg_info "Fetching GitHub tag: ${app} (${version})"
+
+  _download_source_tarball "$tarball_url" "$tmpdir/$filename" || {
+    msg_error "Download failed: $tarball_url"
+    return 7
+  }
+
+  _deploy_source_tarball "$tmpdir/$filename" "$target" "$tmpdir" || return 251
+
+  echo "$version" >"$version_file"
+  msg_ok "Deployed ${app} ${version} to ${target}"
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# Get the latest GitLab repository tag matching a glob pattern.
+#
+# Description:
+#   - Queries the GitLab repository tags API (up to 100 tags per page)
+#   - Filters tag names against a shell glob pattern (e.g. "web-v*" or "mobile-v*")
+#   - Always excludes pre-release tags (those containing alpha, beta, or rc)
+#   - Sorts matching tags with `sort -V` and returns the highest one
+#   - Supports GITLAB_TOKEN for private/rate-limited projects
+#
+# Usage:
+#     get_latest_gl_tag "owner/repo" "web-v*"
+#     get_latest_gl_tag "owner/repo" "mobile-v*"
+#     get_latest_gl_tag "owner/repo"          # returns newest tag (no filter)
+#
+# Arguments:
+#   $1 - GitLab repo path (namespace/project, e.g. "mygroup/myapp")
+#   $2 - Optional glob pattern to filter tag names (e.g. "web-v*")
+#
+# Returns:
+#   Latest matching tag name on stdout, or non-zero on failure
+# ------------------------------------------------------------------------------
+get_latest_gl_tag() {
+  local repo="$1"
+  local pattern="${2:-}"
+
+  local repo_encoded
+  repo_encoded=$(printf '%s' "$repo" | sed 's|/|%2F|g')
+
+  local gitlab_url="${GITLAB_URL:-https://gitlab.com}"
+  local api_base="${gitlab_url}/api/v4/projects/${repo_encoded}/repository/tags"
+  local api_timeout="--connect-timeout 10 --max-time 60"
+
+  local header=()
+  [[ -n "${GITLAB_TOKEN:-}" ]] && header=(-H "PRIVATE-TOKEN: $GITLAB_TOKEN")
+
+  # If a pattern is given, pass it as a regex search to reduce server-side results.
+  # GitLab ?search= supports anchored regex; convert leading glob prefix to regex anchor.
+  local search_param=""
+  if [[ -n "$pattern" ]]; then
+    # Strip trailing wildcard for the search hint (server-side prefix filter).
+    local prefix="${pattern%%\**}"
+    [[ -n "$prefix" ]] && search_param="?search=^${prefix}&per_page=100" || search_param="?per_page=100"
+  else
+    search_param="?per_page=100"
+  fi
+
+  local temp_file
+  temp_file=$(mktemp) || return 1
+
+  local http_code
+  http_code=$(curl $api_timeout -sSL -w "%{http_code}" -o "$temp_file" \
+    "${header[@]}" "${api_base}${search_param}" 2>/dev/null) || true
+
+  if [[ "$http_code" != "200" ]]; then
+    rm -f "$temp_file"
+    msg_error "GitLab tags API returned HTTP $http_code for $repo"
+    return 22
+  fi
+
+  local tag=""
+  if [[ -n "$pattern" ]]; then
+    # Client-side glob filter + pre-release exclusion, then version-sort to pick the highest match.
+    tag=$(jq -r '.[].name' "$temp_file" 2>/dev/null | while IFS= read -r t; do
+      case "$t" in
+      *alpha* | *beta* | *rc*) continue ;;
+      $pattern) echo "$t" ;;
+      esac
+    done | sort -V | tail -n1)
+  else
+    # No pattern: skip pre-release tags, take the first remaining (newest) one.
+    tag=$(jq -r '.[].name' "$temp_file" 2>/dev/null |
+      grep -Eiv '(alpha|beta|rc)' |
+      head -n1)
+  fi
+
+  rm -f "$temp_file"
+
+  if [[ -z "$tag" ]]; then
+    msg_error "No tags matching '${pattern:-*}' found for ${repo}"
+    return 250
+  fi
+
+  echo "$tag"
+}
+
+# ------------------------------------------------------------------------------
+# Fetches and deploys a GitLab tag-based source tarball.
+#
+# Description:
+#   - Resolves the latest tag matching the given glob pattern via get_latest_gl_tag
+#     (or uses the exact tag if one is provided instead of "latest")
+#   - Downloads the GitLab source tarball for that tag
+#   - Extracts it to the target directory
+#   - Writes the resolved tag to ~/.<app> for update-checking
+#
+# Usage:
+#     fetch_and_deploy_gl_tag "myapp" "mygroup/myrepo" "web-v*"
+#     fetch_and_deploy_gl_tag "myapp" "mygroup/myrepo" "mobile-v*" "/opt/myapp"
+#     fetch_and_deploy_gl_tag "myapp" "mygroup/myrepo" "v*"          # any v-tag
+#     fetch_and_deploy_gl_tag "myapp" "mygroup/myrepo" "web-v3.0*"   # narrow version range
+#
+# Arguments:
+#   $1 - App name (used for version file ~/.<app> and lowercase tarball name)
+#   $2 - GitLab repo path (namespace/project, e.g. "mygroup/myapp")
+#   $3 - Tag pattern: glob (e.g. "web-v*") or exact tag (e.g. "web-v3.0.0").
+#        Use "latest" to fetch the single newest tag with no pattern filter.
+#   $4 - Target directory (default: /opt/$app)
+#
+# Notes:
+#   - Supports CLEAN_INSTALL=1 to wipe target before extracting
+#   - Supports GITLAB_TOKEN for private/rate-limited projects
+#   - Supports GITLAB_URL for self-hosted GitLab (default: https://gitlab.com)
+#   - For repos that only publish tags, not formal GitLab Releases
+#     (use fetch_and_deploy_gl_release for proper Releases with assets)
+# ------------------------------------------------------------------------------
+fetch_and_deploy_gl_tag() {
+  local app="$1"
+  local repo="$2"
+  local tag_pattern="${3:-latest}"
+  local target="${4:-/opt/$app}"
+
+  local app_lc=""
+  app_lc="$(echo "${app,,}" | tr -d ' ')"
+  local version_file="$HOME/.${app_lc}"
+
+  local api_timeout="--connect-timeout 10 --max-time 60"
+  local download_timeout="--connect-timeout 15 --max-time 900"
+
+  local header=()
+  [[ -n "${GITLAB_TOKEN:-}" ]] && header=(-H "PRIVATE-TOKEN: $GITLAB_TOKEN")
+
+  # Resolve the tag: if caller passed a glob/latest, query the API.
+  # If caller passed an exact tag (no wildcards), use it directly.
+  local resolved_tag="$tag_pattern"
+  if [[ "$tag_pattern" == "latest" || "$tag_pattern" == *"*"* || "$tag_pattern" == *"?"* ]]; then
+    local glob_arg=""
+    [[ "$tag_pattern" != "latest" ]] && glob_arg="$tag_pattern"
+    resolved_tag=$(get_latest_gl_tag "$repo" "$glob_arg") || {
+      msg_error "Failed to determine latest tag matching '${tag_pattern}' for ${repo}"
+      return 250
+    }
+  fi
+
+  local current_version=""
+  [[ -f "$version_file" ]] && current_version=$(<"$version_file")
+
+  if [[ "$current_version" == "$resolved_tag" ]]; then
+    msg_ok "$app is already up-to-date ($resolved_tag)"
+    return 0
+  fi
+
+  local repo_encoded
+  repo_encoded=$(printf '%s' "$repo" | sed 's|/|%2F|g')
+
+  # GitLab source tarball URL (no release needed, works for any tag).
+  local gitlab_url="${GITLAB_URL:-https://gitlab.com}"
+  local version_safe="${resolved_tag//\//-}"
+  local tarball_url="${gitlab_url}/${repo}/-/archive/${resolved_tag}/${app_lc}-${version_safe}.tar.gz"
+
+  local tmpdir
+  tmpdir=$(mktemp -d) || return 1
+  trap 'rm -rf "$tmpdir"; trap - RETURN' RETURN
+  local filename="${app_lc}-${version_safe}.tar.gz"
+
+  msg_info "Fetching GitLab tag: ${app} (${resolved_tag})"
+
+  _download_source_tarball "$tarball_url" "$tmpdir/$filename" "${header[@]}" || {
+    msg_error "Download failed: $tarball_url"
+    return 7
+  }
+
+  _deploy_source_tarball "$tmpdir/$filename" "$target" "$tmpdir" || return 251
+
+  echo "$resolved_tag" >"$version_file"
+  msg_ok "Deployed ${app} ${resolved_tag} to ${target}"
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# Checks for new GitHub tag (for repos without releases).
+#
+# Description:
+#   - Uses get_latest_gh_tag to fetch the latest tag
+#   - Compares it to a local cached version (~/.<app>)
+#   - If newer, sets global CHECK_UPDATE_RELEASE and returns 0
+#
+# Usage:
+#     if check_for_gh_tag "guacd" "apache/guacamole-server"; then
+#       fetch_and_deploy_gh_tag "guacd" "apache/guacamole-server" "/opt/guacamole-server"
+#     fi
+#
+# Notes:
+#   - For repos that only publish tags, not GitHub Releases
+#   - Same interface as check_for_gh_release
+# ------------------------------------------------------------------------------
+check_for_gh_tag() {
+  local app="$1"
+  local repo="$2"
+  local prefix="${3:-}"
+  local app_lc=""
+  app_lc="$(echo "${app,,}" | tr -d ' ')"
+  local current_file="$HOME/.${app_lc}"
+
+  msg_info "Checking for update: ${app}"
+
+  local latest=""
+  latest=$(get_latest_gh_tag "$repo" "$prefix") || return 22
+
+  local current=""
+  [[ -f "$current_file" ]] && current="$(<"$current_file")"
+
+  if [[ -z "$current" || "$current" != "$latest" ]]; then
+    CHECK_UPDATE_RELEASE="$latest"
+    msg_ok "Update available: ${app} ${current:-not installed} → ${latest}"
+    return 0
+  fi
+
+  msg_ok "No update available: ${app} (${latest})"
+  return 1
+}
+
+# ==============================================================================
+# INSTALL FUNCTIONS
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Checks for new GitHub release (latest tag).
+#
+# Description:
+#   - Queries the GitHub API for the latest release tag
+#   - Compares it to a local cached version (~/.<app>)
+#   - If newer, sets global CHECK_UPDATE_RELEASE and returns 0
+#
+# Usage:
+#     if check_for_gh_release "flaresolverr" "FlareSolverr/FlareSolverr" [optional] "v1.1.1"; then
+#       # trigger update...
+#     fi
+#     exit 0
+#     } (end of update_script not from the function)
+#
+# Notes:
+#   - Requires `jq` (auto-installed if missing)
+#   - Does not modify anything, only checks version state
+#   - Does not support pre-releases
+# ------------------------------------------------------------------------------
+TOOLS_GH_REL_JSON=""
+
+# ------------------------------------------------------------------------------
+# Reports whether a branch-tracked app has upstream commits.
+#
+# Description:
+#   - Counterpart to check_for_gh_release for repositories that publish no
+#     releases or tags and are deployed straight from a branch.
+#   - Compares the short SHA in $HOME/.<app> against the branch tip.
+#
+# Arguments:
+#   $1 - app name (version file is $HOME/.<app>)
+#   $2 - owner/repo
+#   $3 - branch (optional, defaults to the repository default branch)
+#
+# Returns:
+#   0 - update available, short SHA exported as CHECK_UPDATE_RELEASE
+#   1 - already up to date
+#   6 - cannot resolve github.com
+# ------------------------------------------------------------------------------
+
+check_for_gh_branch() {
+  local app="$1"
+  local source="$2"
+  local branch="${3:-}"
+  local app_lc current latest ref
+  app_lc="$(echo "${app,,}" | tr -d ' ')"
+
+  msg_info "Checking for update: ${app}"
+
+  if ! getent hosts github.com >/dev/null 2>&1; then
+    msg_error "Network error: cannot resolve github.com"
+    return 6
+  fi
+
+  ensure_dependencies git
+
+  ref="HEAD"
+  [[ -n "$branch" ]] && ref="refs/heads/${branch}"
+
+  latest=$(git ls-remote "https://github.com/${source}" "$ref" 2>/dev/null | awk '{print substr($1,1,7); exit}')
+  if [[ -z "$latest" ]]; then
+    msg_error "Could not read ${ref} from ${source}"
+    return 22
+  fi
+
+  current=""
+  [[ -f "$HOME/.${app_lc}" ]] && current=$(<"$HOME/.${app_lc}")
+
+  if [[ "$current" != "$latest" ]]; then
+    CHECK_UPDATE_RELEASE="$latest"
+    msg_ok "Update available: ${app} ${current:-not installed} → ${latest}"
+    return 0
+  fi
+
+  msg_ok "No update available: ${app} (${latest})"
+  return 1
+}
+
+# ------------------------------------------------------------------------------
+# Deploys an app from a git branch instead of a release.
+#
+# Description:
+#   - For repositories that publish no releases or tags (e.g. RSSHub, which is
+#     deployed continuously from master).
+#   - Shallow-clones on first run and fast-forwards on later runs, so an update
+#     does not re-download the whole history.
+#   - Records the short commit SHA in $HOME/.<app>, mirroring how
+#     fetch_and_deploy_gh_release records the version.
+#
+# Arguments:
+#   $1 - app name
+#   $2 - owner/repo
+#   $3 - branch (optional, defaults to the repository default branch)
+#   $4 - target directory (optional, defaults to /opt/<app>)
+#
+# Variables:
+#   CLEAN_INSTALL - set to 1 to wipe the target before cloning
+# ------------------------------------------------------------------------------
+
+fetch_and_deploy_gh_branch() {
+  local app="$1"
+  local source="$2"
+  local branch="${3:-}"
+  local target="${4:-/opt/${app}}"
+  local app_lc
+  app_lc="$(echo "${app,,}" | tr -d ' ')"
+
+  if [[ -z "$app" || -z "$source" ]]; then
+    msg_error "fetch_and_deploy_gh_branch: app name and owner/repo are required"
+    return 65
+  fi
+
+  ensure_dependencies git
+
+  local -a clone_args=(--depth 1)
+  [[ -n "$branch" ]] && clone_args+=(--branch "$branch")
+
+  if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
+    rm -rf "$target"
+  fi
+
+  if [[ -d "$target/.git" ]]; then
+    msg_info "Updating ${app}"
+    local ref="HEAD"
+    [[ -n "$branch" ]] && ref="$branch"
+    $STD git -C "$target" fetch --depth 1 origin "$ref" || {
+      msg_error "Failed to fetch ${ref} from ${source}"
+      return 22
+    }
+    $STD git -C "$target" reset --hard FETCH_HEAD || {
+      msg_error "Failed to check out ${ref}"
+      return 22
+    }
+    $STD git -C "$target" clean -fd
+  else
+    msg_info "Fetching ${app}"
+    rm -rf "$target"
+    mkdir -p "$(dirname "$target")"
+    $STD git clone "${clone_args[@]}" "https://github.com/${source}" "$target" || {
+      msg_error "Failed to clone ${source}"
+      return 22
+    }
+  fi
+
+  git -C "$target" rev-parse --short=7 HEAD >"$HOME/.${app_lc}"
+  msg_ok "Deployed ${app} ($(<"$HOME/.${app_lc}"))"
+}
+
+check_for_gh_release() {
+  local app="$1"
+  local source="$2"
+  local pinned_version_in="${3:-}" # optional
+  local pin_reason="${4:-}"        # optional reason shown to user
+  local tag_prefix="${5:-}"        # optional tag prefix filter (e.g. web-v2)
+  local app_lc=""
+  app_lc="$(echo "${app,,}" | tr -d ' ')"
+  local current_file="$HOME/.${app_lc}"
+
+  msg_info "Checking for update: ${app}"
+
+  # DNS check
+  if ! getent hosts api.github.com >/dev/null 2>&1; then
+    msg_error "Network error: cannot resolve api.github.com"
+    return 6
+  fi
+
+  ensure_dependencies jq
+
+  local gh_check_json=""
+  gh_check_json=$(mktemp /tmp/tools-gh-check-XXXXXX) || return 73
+  trap 'rm -f "${gh_check_json:-}"; trap - RETURN' RETURN
+
+  # Build auth header if token is available
+  local header_args=()
+  [[ -n "${GITHUB_TOKEN:-}" ]] && header_args=(-H "Authorization: Bearer $GITHUB_TOKEN")
+
+  # Try /latest endpoint for non-pinned versions (most efficient)
+  local releases_json="" http_code=""
+
+  # For pinned versions, query the specific release tag directly
+  if [[ -n "$pinned_version_in" ]]; then
+    local pinned_version_encoded="${pinned_version_in//\//%2F}"
+    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$gh_check_json" \
+      -H 'Accept: application/vnd.github+json' \
+      -H 'X-GitHub-Api-Version: 2022-11-28' \
+      "${header_args[@]}" \
+      "https://api.github.com/repos/${source}/releases/tags/${pinned_version_encoded}" 2>/dev/null) || true
+
+    if [[ "$http_code" == "200" ]] && [[ -s "$gh_check_json" ]]; then
+      releases_json="[$(<"$gh_check_json")]"
+    elif [[ "$http_code" == "401" ]]; then
+      msg_error "GitHub API authentication failed (HTTP 401)."
+      if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        msg_error "Your GITHUB_TOKEN appears to be invalid or expired."
+      else
+        msg_error "The repository may require authentication. Try: export GITHUB_TOKEN=\"ghp_your_token\""
+      fi
+      rm -f "$gh_check_json"
+      return 22
+    elif [[ "$http_code" == "403" ]]; then
+      msg_error "GitHub API rate limit exceeded (HTTP 403)."
+      msg_error "To increase the limit, export a GitHub token before running the script:"
+      msg_error "  export GITHUB_TOKEN=\"ghp_your_token_here\""
+      rm -f "$gh_check_json"
+      return 22
+    fi
+    rm -f "$gh_check_json"
+  fi
+
+  if [[ -z "$pinned_version_in" && -z "$tag_prefix" && "${GH_INCLUDE_PRERELEASE:-0}" != "1" ]]; then
+    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$gh_check_json" \
+      -H 'Accept: application/vnd.github+json' \
+      -H 'X-GitHub-Api-Version: 2022-11-28' \
+      "${header_args[@]}" \
+      "https://api.github.com/repos/${source}/releases/latest" 2>/dev/null) || true
+
+    if [[ "$http_code" == "200" ]] && [[ -s "$gh_check_json" ]]; then
+      releases_json="[$(<"$gh_check_json")]"
+    elif [[ "$http_code" == "401" ]]; then
+      msg_error "GitHub API authentication failed (HTTP 401)."
+      if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        msg_error "Your GITHUB_TOKEN appears to be invalid or expired."
+      else
+        msg_error "The repository may require authentication. Try: export GITHUB_TOKEN=\"ghp_your_token\""
+      fi
+      rm -f "$gh_check_json"
+      return 22
+    elif [[ "$http_code" == "403" ]]; then
+      msg_error "GitHub API rate limit exceeded (HTTP 403)."
+      msg_error "To increase the limit, export a GitHub token before running the script:"
+      msg_error "  export GITHUB_TOKEN=\"ghp_your_token_here\""
+      rm -f "$gh_check_json"
+      return 22
+    fi
+    rm -f "$gh_check_json"
+  fi
+
+  # If no releases yet (pinned version, tag prefix, OR /latest failed), fetch up to 100
+  if [[ -z "$releases_json" ]]; then
+    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$gh_check_json" \
+      -H 'Accept: application/vnd.github+json' \
+      -H 'X-GitHub-Api-Version: 2022-11-28' \
+      "${header_args[@]}" \
+      "https://api.github.com/repos/${source}/releases?per_page=100" 2>/dev/null) || true
+
+    if [[ "$http_code" == "200" ]] && [[ -s "$gh_check_json" ]]; then
+      releases_json=$(<"$gh_check_json")
+    elif [[ "$http_code" == "401" ]]; then
+      msg_error "GitHub API authentication failed (HTTP 401)."
+      if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        msg_error "Your GITHUB_TOKEN appears to be invalid or expired."
+      else
+        msg_error "The repository may require authentication. Try: export GITHUB_TOKEN=\"ghp_your_token\""
+      fi
+      rm -f "$gh_check_json"
+      return 22
+    elif [[ "$http_code" == "403" ]]; then
+      msg_error "GitHub API rate limit exceeded (HTTP 403)."
+      msg_error "To increase the limit, export a GitHub token before running the script:"
+      msg_error "  export GITHUB_TOKEN=\"ghp_your_token_here\""
+      rm -f "$gh_check_json"
+      return 22
+    elif [[ "$http_code" == "000" || -z "$http_code" ]]; then
+      msg_error "GitHub API connection failed (no response)."
+      msg_error "Check your network/DNS: curl -sSL https://api.github.com/rate_limit"
+      rm -f "$gh_check_json"
+      return 7
+    else
+      msg_error "Unable to fetch releases for ${app} (HTTP ${http_code})"
+      rm -f "$gh_check_json"
+      return 22
+    fi
+    rm -f "$gh_check_json"
+  fi
+
+  if [[ -n "$tag_prefix" ]]; then
+    mapfile -t raw_tags < <(jq -r --arg p "$tag_prefix" \
+      '.[] | select(.draft==false and .prerelease==false) | select(.tag_name | startswith($p)) | .tag_name' <<<"$releases_json")
+  else
+    mapfile -t raw_tags < <(jq -r '.[] | select(.draft==false and .prerelease==false) | .tag_name' <<<"$releases_json")
+  fi
+  if ((${#raw_tags[@]} == 0)); then
+    if [[ -n "$tag_prefix" ]]; then
+      msg_error "No stable releases matching prefix '${tag_prefix}' found for ${app}"
+    else
+      msg_error "No stable releases found for ${app}"
+    fi
+    return 250
+  fi
+
+  local clean_tags=()
+  for t in "${raw_tags[@]}"; do
+    # Only strip leading 'v' when followed by a digit (e.g. v1.2.3)
+    if [[ "$t" =~ ^v[0-9] ]]; then
+      clean_tags+=("${t:1}")
+    else
+      clean_tags+=("$t")
+    fi
+  done
+
+  local latest_raw="${raw_tags[0]}"
+  local latest_clean="${clean_tags[0]}"
+
+  # current installed (stored without v)
+  local current=""
+  if [[ -f "$current_file" ]]; then
+    current="$(<"$current_file")"
+  else
+    # Migration: search for any /opt/*_version.txt
+    local legacy_files
+    mapfile -t legacy_files < <(find /opt -maxdepth 1 -type f -name "*_version.txt" 2>/dev/null)
+    if ((${#legacy_files[@]} == 1)); then
+      current="$(<"${legacy_files[0]}")"
+      echo "${current#v}" >"$current_file"
+      rm -f "${legacy_files[0]}"
+    fi
+  fi
+  if [[ "$current" =~ ^v[0-9] ]]; then
+    current="${current:1}"
+  fi
+
+  # Pinned version handling
+  if [[ -n "$pinned_version_in" ]]; then
+    local pin_clean
+    if [[ "$pinned_version_in" =~ ^v[0-9] ]]; then
+      pin_clean="${pinned_version_in:1}"
+    else
+      pin_clean="$pinned_version_in"
+    fi
+    local match_raw=""
+    for i in "${!clean_tags[@]}"; do
+      if [[ "${clean_tags[$i]}" == "$pin_clean" ]]; then
+        match_raw="${raw_tags[$i]}"
+        break
+      fi
+    done
+
+    if [[ -z "$match_raw" ]]; then
+      msg_error "Pinned version ${pinned_version_in} not found upstream"
+      return 250
+    fi
+
+    if [[ "$current" != "$pin_clean" ]]; then
+      CHECK_UPDATE_RELEASE="$match_raw"
+      msg_ok "Update available: ${app} ${current:-not installed} → ${pin_clean}"
+      return 0
+    fi
+
+    if [[ -n "$pin_reason" ]]; then
+      msg_ok "No update available: ${app} (${current}) - update held back: ${pin_reason}"
+    else
+      msg_ok "No update available: ${app} (${current}) - update temporarily held back due to issues with newer releases"
+    fi
+    return 1
+  fi
+
+  # No pinning → use latest
+  if [[ -z "$current" || "$current" != "$latest_clean" ]]; then
+    CHECK_UPDATE_RELEASE="$latest_raw"
+    msg_ok "Update available: ${app} ${current:-not installed} → ${latest_clean}"
+    return 0
+  fi
+
+  msg_ok "No update available: ${app} (${latest_clean})"
+  return 1
+}
+# ------------------------------------------------------------------------------
+# Checks for new Codeberg release (latest tag).
+#
+# Description:
+#   - Queries the Codeberg API for the latest release tag
+#   - Compares it to a local cached version (~/.<app>)
+#   - If newer, sets global CHECK_UPDATE_RELEASE and returns 0
+#
+# Usage:
+#     if check_for_codeberg_release "autocaliweb" "gelbphoenix/autocaliweb" [optional] "v0.11.3"; then
+#       # trigger update...
+#     fi
+#     exit 0
+#     } (end of update_script not from the function)
+#
+# Notes:
+#   - Requires `jq` (auto-installed if missing)
+#   - Does not modify anything, only checks version state
+#   - Does not support pre-releases
+# ------------------------------------------------------------------------------
+check_for_codeberg_release() {
+  local app="$1"
+  local source="$2"
+  local pinned_version_in="${3:-}" # optional
+  local pin_reason="${4:-}"        # optional reason shown to user
+  local app_lc="${app,,}"
+  local current_file="$HOME/.${app_lc}"
+
+  msg_info "Checking for update: ${app}"
+
+  # DNS check
+  if ! getent hosts codeberg.org >/dev/null 2>&1; then
+    msg_error "Network error: cannot resolve codeberg.org"
+    return 6
+  fi
+
+  ensure_dependencies jq
+
+  # Fetch releases from Codeberg API
+  local releases_json=""
+  releases_json=$(curl -fsSL --max-time 20 \
+    -H 'Accept: application/json' \
+    "https://codeberg.org/api/v1/repos/${source}/releases" 2>/dev/null) || {
+    msg_error "Unable to fetch releases for ${app} (codeberg.org/api/v1/repos/${source}/releases)"
+    return 22
+  }
+
+  mapfile -t raw_tags < <(jq -r '.[] | select(.draft==false and .prerelease==false) | .tag_name' <<<"$releases_json")
+  if ((${#raw_tags[@]} == 0)); then
+    msg_error "No stable releases found for ${app}"
+    return 250
+  fi
+
+  local clean_tags=()
+  for t in "${raw_tags[@]}"; do
+    # Only strip leading 'v' when followed by a digit (e.g. v1.2.3)
+    if [[ "$t" =~ ^v[0-9] ]]; then
+      clean_tags+=("${t:1}")
+    else
+      clean_tags+=("$t")
+    fi
+  done
+
+  local latest_raw="${raw_tags[0]}"
+  local latest_clean="${clean_tags[0]}"
+
+  # current installed (stored without v)
+  local current=""
+  if [[ -f "$current_file" ]]; then
+    current="$(<"$current_file")"
+  else
+    # Migration: search for any /opt/*_version.txt
+    local legacy_files
+    mapfile -t legacy_files < <(find /opt -maxdepth 1 -type f -name "*_version.txt" 2>/dev/null)
+    if ((${#legacy_files[@]} == 1)); then
+      current="$(<"${legacy_files[0]}")"
+      echo "${current#v}" >"$current_file"
+      rm -f "${legacy_files[0]}"
+    fi
+  fi
+  current="${current#v}"
+
+  # Pinned version handling
+  if [[ -n "$pinned_version_in" ]]; then
+    local pin_clean="${pinned_version_in#v}"
+    local match_raw=""
+    for i in "${!clean_tags[@]}"; do
+      if [[ "${clean_tags[$i]}" == "$pin_clean" ]]; then
+        match_raw="${raw_tags[$i]}"
+        break
+      fi
+    done
+
+    if [[ -z "$match_raw" ]]; then
+      msg_error "Pinned version ${pinned_version_in} not found upstream"
+      return 250
+    fi
+
+    if [[ "$current" != "$pin_clean" ]]; then
+      CHECK_UPDATE_RELEASE="$match_raw"
+      msg_ok "Update available: ${app} ${current:-not installed} → ${pin_clean}"
+      return 0
+    fi
+
+    if [[ -n "$pin_reason" ]]; then
+      msg_ok "No update available: ${app} (${current}) - update held back: ${pin_reason}"
+    else
+      msg_ok "No update available: ${app} (${current}) - update temporarily held back due to issues with newer releases"
+    fi
+    return 1
+  fi
+
+  # No pinning → use latest
+  if [[ -z "$current" || "$current" != "$latest_clean" ]]; then
+    CHECK_UPDATE_RELEASE="$latest_raw"
+    msg_ok "Update available: ${app} ${current:-not installed} → ${latest_clean}"
+    return 0
+  fi
+
+  msg_ok "No update available: ${app} (${latest_clean})"
+  return 1
+}
+
+fetch_and_deploy_codeberg_release() {
+  local app="$1"
+  local repo="$2"
+  local mode="${3:-tarball}" # tarball | binary | prebuild | singlefile | tag
+  local version="${var_appversion:-${4:-latest}}"
+  local target="${5:-/opt/$app}"
+  local asset_pattern="${6:-}"
+
+  local app_lc=$(echo "${app,,}" | tr -d ' ')
+  local version_file="$HOME/.${app_lc}"
+
+  local api_timeouts=(60 120 240)
+
+  local current_version=""
+  [[ -f "$version_file" ]] && current_version=$(<"$version_file")
+
+  ensure_dependencies jq
+
+  ### Tag Mode (bypass Release API) ###
+  if [[ "$mode" == "tag" ]]; then
+    if [[ "$version" == "latest" ]]; then
+      msg_error "Mode 'tag' requires explicit version (not 'latest')"
+      return 65
+    fi
+
+    local tag_name="$version"
+    [[ "$tag_name" =~ ^v ]] && version="${tag_name:1}" || version="$tag_name"
+
+    if [[ "$current_version" == "$version" ]]; then
+      $STD msg_ok "$app is already up-to-date (v$version)"
+      return 0
+    fi
+
+    # DNS check
+    if ! getent hosts "codeberg.org" &>/dev/null; then
+      msg_error "DNS resolution failed for codeberg.org – check /etc/resolv.conf or networking"
+      return 6
+    fi
+
+    local tmpdir
+    tmpdir=$(mktemp -d) || return 252
+    trap 'rm -rf "$tmpdir"; trap - RETURN' RETURN
+
+    msg_info "Fetching Codeberg tag: $app ($tag_name)"
+
+    local safe_version="${version//@/_}"
+    safe_version="${safe_version//\//_}"
+    local filename="${app_lc}-${safe_version}.tar.gz"
+    local download_success=false
+
+    # Codeberg archive URL format: https://codeberg.org/{owner}/{repo}/archive/{tag}.tar.gz
+    local archive_url="https://codeberg.org/$repo/archive/${tag_name}.tar.gz"
+    if _download_source_tarball "$archive_url" "$tmpdir/$filename"; then
+      download_success=true
+    fi
+
+    if [[ "$download_success" != "true" ]]; then
+      msg_error "Download failed for $app ($tag_name)"
+      return 250
+    fi
+
+    _deploy_source_tarball "$tmpdir/$filename" "$target" "$tmpdir" || return 251
+
+    echo "$version" >"$version_file"
+    msg_ok "Deployed: $app ($version)"
+    return 0
+  fi
+
+  # Codeberg API: https://codeberg.org/api/v1/repos/{owner}/{repo}/releases
+  local api_url="https://codeberg.org/api/v1/repos/$repo/releases"
+  if [[ "$version" != "latest" ]]; then
+    # Get release by tag: /repos/{owner}/{repo}/releases/tags/{tag}
+    api_url="https://codeberg.org/api/v1/repos/$repo/releases/tags/$version"
+  fi
+
+  # dns pre check
+  if ! getent hosts "codeberg.org" &>/dev/null; then
+    msg_error "DNS resolution failed for codeberg.org – check /etc/resolv.conf or networking"
+    return 6
+  fi
+
+  local codeberg_rel_json
+  codeberg_rel_json=$(mktemp /tmp/tools-codeberg-rel-XXXXXX) || return 73
+  trap 'rm -f "$codeberg_rel_json"; rm -rf "${tmpdir:-}" "${unpack_tmp:-}"; trap - RETURN' RETURN
+
+  local attempt=0 success=false resp http_code
+
+  while ((attempt < ${#api_timeouts[@]})); do
+    resp=$(curl --connect-timeout 10 --max-time "${api_timeouts[$attempt]}" -fsSL -w "%{http_code}" -o "$codeberg_rel_json" "$api_url") && success=true && break
+    attempt=$((attempt + 1))
+    if ((attempt < ${#api_timeouts[@]})); then
+      msg_warn "API request timed out after ${api_timeouts[$((attempt - 1))]}s, retrying... (attempt $((attempt + 1))/${#api_timeouts[@]})"
+    fi
+  done
+
+  if ! $success; then
+    msg_error "Failed to fetch release metadata from $api_url after ${#api_timeouts[@]} attempts"
+    return 22
+  fi
+
+  http_code="${resp:(-3)}"
+  [[ "$http_code" != "200" ]] && {
+    msg_error "Codeberg API returned HTTP $http_code"
+    return 22
+  }
+
+  local json tag_name
+  json=$(<"$codeberg_rel_json")
+
+  # For "latest", the API returns an array - take the first (most recent) release
+  if [[ "$version" == "latest" ]]; then
+    json=$(echo "$json" | jq '.[0]')
+  fi
+
+  tag_name=$(echo "$json" | jq -r '.tag_name // .name // empty')
+  [[ "$tag_name" =~ ^v ]] && version="${tag_name:1}" || version="$tag_name"
+
+  if [[ "$current_version" == "$version" ]]; then
+    $STD msg_ok "$app is already up-to-date (v$version)"
+    return 0
+  fi
+
+  local tmpdir
+  tmpdir=$(mktemp -d) || return 252
+  local filename="" url=""
+
+  msg_info "Fetching Codeberg release: $app ($version)"
+
+  ### Tarball Mode ###
+  if [[ "$mode" == "tarball" || "$mode" == "source" ]]; then
+    local safe_version="${version//@/_}"
+    safe_version="${safe_version//\//_}"
+    filename="${app_lc}-${safe_version}.tar.gz"
+    local download_success=false
+
+    # Codeberg archive URL format
+    local archive_url="https://codeberg.org/$repo/archive/${tag_name}.tar.gz"
+    if _download_source_tarball "$archive_url" "$tmpdir/$filename"; then
+      download_success=true
+    fi
+
+    if [[ "$download_success" != "true" ]]; then
+      msg_error "Download failed for $app ($tag_name)"
+      return 250
+    fi
+
+    _deploy_source_tarball "$tmpdir/$filename" "$target" "$tmpdir" || return 251
+
+  ### Binary Mode ###
+  elif [[ "$mode" == "binary" ]]; then
+    local arch
+    arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
+    [[ "$arch" == "x86_64" ]] && arch="amd64"
+    [[ "$arch" == "aarch64" ]] && arch="arm64"
+
+    local assets url_match=""
+    # Codeberg assets are in .assets[].browser_download_url
+    assets=$(echo "$json" | jq -r '.assets[].browser_download_url')
+
+    # If explicit filename pattern is provided, match that first
+    if [[ -n "$asset_pattern" ]]; then
+      for u in $assets; do
+        case "${u##*/}" in
+        $asset_pattern)
+          url_match="$u"
+          break
+          ;;
+        esac
+      done
+    fi
+
+    # Fall back to architecture heuristic
+    if [[ -z "$url_match" ]]; then
+      for u in $assets; do
+        [[ "$u" =~ \.deb$ ]] || continue
+        if [[ "${arch,,}" =~ ^(amd64|x86_64)$ ]]; then
+          [[ "$u" =~ (amd64|x86_64).*\.deb$ ]] || continue
+        elif [[ "${arch,,}" =~ ^(arm64|aarch64)$ ]]; then
+          [[ "$u" =~ (arm64|aarch64).*\.deb$ ]] || continue
+        fi
+        url_match="$u"
+        break
+      done
+    fi
+
+    # Fallback: any .deb file
+    if [[ -z "$url_match" ]]; then
+      for u in $assets; do
+        [[ "$u" =~ \.deb$ ]] && url_match="$u" && break
+      done
+    fi
+
+    if [[ -z "$url_match" ]]; then
+      msg_error "No suitable .deb asset found for $app"
+      return 252
+    fi
+
+    filename="${url_match##*/}"
+    curl_download "$tmpdir/$filename" "$url_match" || {
+      msg_error "Download failed: $url_match"
+      return 250
+    }
+
+    chmod 644 "$tmpdir/$filename"
+    $STD apt install -y "$tmpdir/$filename" || {
+      $STD dpkg -i "$tmpdir/$filename" || {
+        _diagnose_deb_failure "$tmpdir/$filename"
+        return 100
+      }
+    }
+
+  ### Prebuild Mode ###
+  elif [[ "$mode" == "prebuild" ]]; then
+    local pattern="${6%\"}"
+    pattern="${pattern#\"}"
+    [[ -z "$pattern" ]] && {
+      msg_error "Mode 'prebuild' requires 6th parameter (asset filename pattern)"
+      return 65
+    }
+
+    local asset_url=""
+    for u in $(echo "$json" | jq -r '.assets[].browser_download_url'); do
+      filename_candidate="${u##*/}"
+      case "$filename_candidate" in
+      $pattern)
+        asset_url="$u"
+        break
+        ;;
+      esac
+    done
+
+    [[ -z "$asset_url" ]] && {
+      msg_error "No asset matching '$pattern' found"
+      return 252
+    }
+
+    filename="${asset_url##*/}"
+    curl_download "$tmpdir/$filename" "$asset_url" || {
+      msg_error "Download failed: $asset_url"
+      return 250
+    }
+
+    local unpack_tmp
+    unpack_tmp=$(mktemp -d)
+    _deploy_unpacked_archive "$tmpdir/$filename" "$target" "$unpack_tmp" || return
+
+  ### Singlefile Mode ###
+  elif [[ "$mode" == "singlefile" ]]; then
+    local pattern="${6%\"}"
+    pattern="${pattern#\"}"
+    [[ -z "$pattern" ]] && {
+      msg_error "Mode 'singlefile' requires 6th parameter (asset filename pattern)"
+      return 65
+    }
+
+    local asset_url=""
+    for u in $(echo "$json" | jq -r '.assets[].browser_download_url'); do
+      filename_candidate="${u##*/}"
+      case "$filename_candidate" in
+      $pattern)
+        asset_url="$u"
+        break
+        ;;
+      esac
+    done
+
+    [[ -z "$asset_url" ]] && {
+      msg_error "No asset matching '$pattern' found"
+      return 252
+    }
+
+    filename="${asset_url##*/}"
+    mkdir -p "$target"
+
+    local use_filename="${USE_ORIGINAL_FILENAME:-false}"
+    local target_file="$app"
+    [[ "$use_filename" == "true" ]] && target_file="$filename"
+
+    curl_download "$target/$target_file" "$asset_url" || {
+      msg_error "Download failed: $asset_url"
+      return 250
+    }
+
+    if [[ "$target_file" != *.jar && -f "$target/$target_file" ]]; then
+      chmod +x "$target/$target_file"
+    fi
+
+  else
+    msg_error "Unknown mode: $mode"
+    return 65
+  fi
+
+  echo "$version" >"$version_file"
+  msg_ok "Deployed: $app ($version)"
+}
+
+# ------------------------------------------------------------------------------
+# Downloads and deploys latest GitHub release (source, binary, tarball, asset).
+#
+# Description:
+#   - Fetches latest release metadata from GitHub API
+#   - Supports the following modes:
+#       - tarball: Source code tarball (default if omitted)
+#       - source: Alias for tarball (same behavior)
+#       - binary: .deb package install (arch-dependent)
+#       - prebuild: Prebuilt .tar.gz archive (e.g. Go binaries)
+#       - singlefile: Standalone binary (no archive, direct chmod +x install)
+#   - Handles download, extraction/installation and version tracking in ~/.<app>
+#
+# Parameters:
+#   $1   APP               - Application name (used for install path and version file)
+#   $2   REPO              - GitHub repository in form user/repo
+#   $3   MODE              - Release type:
+#                              tarball   → source tarball (.tar.gz)
+#                              binary    → .deb file (auto-arch matched)
+#                              prebuild  → prebuilt archive (e.g. tar.gz)
+#                              singlefile→ standalone binary (chmod +x)
+#   $4   VERSION           - Optional release tag (default: latest)
+#   $5   TARGET_DIR        - Optional install path (default: /opt/<app>)
+#   $6   ASSET_FILENAME    - Required for:
+#                              - prebuild  → archive filename or pattern
+#                              - singlefile→ binary filename or pattern
+#
+# Optional:
+#   - Set GITHUB_TOKEN env var to increase API rate limit (recommended for CI/CD).
+#
+# Examples:
+#   # 1. Minimal: Fetch and deploy source tarball
+#   fetch_and_deploy_gh_release "myapp" "myuser/myapp"
+#
+#   # 2. Binary install via .deb asset (architecture auto-detected)
+#   fetch_and_deploy_gh_release "myapp" "myuser/myapp" "binary"
+#
+#   # 3. Prebuilt archive (.tar.gz) with asset filename match
+#   fetch_and_deploy_gh_release "hanko" "teamhanko/hanko" "prebuild" "latest" "/opt/hanko" "hanko_Linux_x86_64.tar.gz"
+#
+#   # 4. Single binary (chmod +x) like Argus, Promtail etc.
+#   fetch_and_deploy_gh_release "argus" "release-argus/Argus" "singlefile" "0.26.3" "/opt/argus" "Argus-.*linux-amd64"
+#
+# Notes:
+#   - For binary/prebuild/singlefile modes: if the target release has no
+#     matching asset, the function scans older releases and prompts the user
+#     (60s timeout, default yes) to use a previous version that has the asset.
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# Scans older GitHub releases for a matching asset when the latest release
+# is missing the expected file. Used internally by fetch_and_deploy_gh_release.
+#
+# Arguments:
+#   $1 - GitHub repo (owner/repo)
+#   $2 - mode (binary|prebuild|singlefile)
+#   $3 - asset_pattern (glob pattern for asset filename)
+#   $4 - tag to skip (the already-checked release)
+#
+# Output:
+#   Prints the release JSON of the first older release that has a matching asset.
+#   Returns 0 on success, 1 if no matching release found or user declined.
+# ------------------------------------------------------------------------------
+_gh_scan_older_releases() {
+  local repo="$1"
+  local mode="$2"
+  local asset_pattern="$3"
+  local skip_tag="$4"
+
+  local header=()
+  [[ -n "${GITHUB_TOKEN:-}" ]] && header=(-H "Authorization: token $GITHUB_TOKEN")
+
+  local releases_list
+  releases_list=$(curl --connect-timeout 10 --max-time 30 -fsSL \
+    -H 'Accept: application/vnd.github+json' \
+    -H 'X-GitHub-Api-Version: 2022-11-28' \
+    "${header[@]}" \
+    "https://api.github.com/repos/${repo}/releases?per_page=15" 2>/dev/null) || {
+    msg_warn "Failed to fetch older releases for ${repo}"
+    return 22
+  }
+
+  local count
+  count=$(echo "$releases_list" | jq 'length')
+
+  for ((i = 0; i < count; i++)); do
+    local rel_tag rel_draft rel_prerelease
+    rel_tag=$(echo "$releases_list" | jq -r ".[$i].tag_name")
+    rel_draft=$(echo "$releases_list" | jq -r ".[$i].draft")
+    rel_prerelease=$(echo "$releases_list" | jq -r ".[$i].prerelease")
+
+    # Skip drafts, prereleases, and the tag we already checked
+    [[ "$rel_draft" == "true" || "$rel_prerelease" == "true" ]] && continue
+    [[ "$rel_tag" == "$skip_tag" ]] && continue
+
+    local has_match=false
+
+    if [[ "$mode" == "binary" ]]; then
+      local arch
+      arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
+      [[ "$arch" == "x86_64" ]] && arch="amd64"
+      [[ "$arch" == "aarch64" ]] && arch="arm64"
+
+      # Check with explicit pattern first, then arch heuristic, then any .deb
+      if [[ -n "$asset_pattern" ]]; then
+        has_match=$(echo "$releases_list" | jq -r --arg pat "$asset_pattern" ".[$i].assets[].name" | while read -r name; do
+          case "$name" in $asset_pattern)
+            echo true
+            break
+            ;;
+          esac
+        done)
+      fi
+      if [[ "$has_match" != "true" ]]; then
+        if [[ "${arch,,}" =~ ^(amd64|x86_64)$ ]]; then
+          has_match=$(echo "$releases_list" | jq -r ".[$i].assets[].browser_download_url" | grep -qE '(amd64|x86_64).*\.deb$' && echo true)
+        elif [[ "${arch,,}" =~ ^(arm64|aarch64)$ ]]; then
+          has_match=$(echo "$releases_list" | jq -r ".[$i].assets[].browser_download_url" | grep -qE '(arm64|aarch64).*\.deb$' && echo true)
+        fi
+      fi
+      if [[ "$has_match" != "true" ]]; then
+        has_match=$(echo "$releases_list" | jq -r ".[$i].assets[].browser_download_url" | grep -qE '\.deb$' && echo true)
+      fi
+
+    elif [[ "$mode" == "prebuild" || "$mode" == "singlefile" ]]; then
+      has_match=$(echo "$releases_list" | jq -r ".[$i].assets[].name" | while read -r name; do
+        case "$name" in $asset_pattern)
+          echo true
+          break
+          ;;
+        esac
+      done)
+    fi
+
+    if [[ "$has_match" == "true" ]]; then
+      local rel_version="$rel_tag"
+      [[ "$rel_tag" =~ ^v ]] && rel_version="${rel_tag:1}"
+
+      local use_fallback="y"
+      if [[ -t 0 ]]; then
+        msg_warn "Release ${skip_tag} has no matching asset. Previous release ${rel_tag} has a compatible asset."
+        read -rp "Use version ${rel_tag} instead? [Y/n] (auto-yes in 60s): " -t 60 use_fallback </dev/tty || use_fallback="y"
+        use_fallback="${use_fallback:-y}"
+      fi
+
+      if [[ "${use_fallback,,}" == "y" || "${use_fallback,,}" == "yes" ]]; then
+        echo "$releases_list" | jq ".[$i]"
+        return 0
+      else
+        return 250
+      fi
+    fi
+  done
+
+  return 250
+}
+
+fetch_and_deploy_gh_release() {
+  local app="$1"
+  local repo="$2"
+  local mode="${3:-tarball}" # tarball | binary | prebuild | singlefile
+  local version="${var_appversion:-${4:-latest}}"
+  local target="${5:-/opt/$app}"
+  local asset_pattern="${6:-}"
+  local tag_prefix="${7:-}"
+
+  # Validate app name to prevent /root/. directory issues
+  if [[ -z "$app" ]]; then
+    # Derive app name from repo if not provided
+    app="${repo##*/}"
+    if [[ -z "$app" ]]; then
+      msg_error "fetch_and_deploy_gh_release requires app name or valid repo"
+      return 65
+    fi
+  fi
+
+  local app_lc=$(echo "${app,,}" | tr -d ' ')
+  local version_file="$HOME/.${app_lc}"
+
+  local api_timeouts=(60 120 240)
+
+  local current_version=""
+  [[ -f "$version_file" ]] && current_version=$(<"$version_file")
+
+  ensure_dependencies jq
+
+  if [[ -n "${TOOLS_GH_REL_JSON:-}" && -f "$TOOLS_GH_REL_JSON" ]]; then
+    rm -f "$TOOLS_GH_REL_JSON"
+  fi
+  local gh_rel_json
+  gh_rel_json=$(mktemp /tmp/tools-gh-rel-XXXXXX) || return 73
+  TOOLS_GH_REL_JSON="$gh_rel_json"
+
+  local api_url="https://api.github.com/repos/$repo/releases"
+  if [[ "$version" != "latest" ]]; then
+    api_url="$api_url/tags/$version"
+  elif [[ -n "$tag_prefix" || "${GH_INCLUDE_PRERELEASE:-0}" == "1" ]]; then
+    # /releases/latest hides prereleases, so projects that only ship betas
+    # (e.g. RustFS) need the full list plus the filter further below.
+    api_url="$api_url?per_page=100"
+  else
+    api_url="$api_url/latest"
+  fi
+  local header=()
+  [[ -n "${GITHUB_TOKEN:-}" ]] && header=(-H "Authorization: token $GITHUB_TOKEN")
+
+  # dns pre check
+  local gh_host
+  gh_host=$(awk -F/ '{print $3}' <<<"$api_url")
+  if ! getent hosts "$gh_host" &>/dev/null; then
+    msg_error "DNS resolution failed for $gh_host – check /etc/resolv.conf or networking"
+    return 6
+  fi
+
+  local max_retries=${#api_timeouts[@]} retry_delay=2 attempt=1 success=false http_code
+
+  while ((attempt <= max_retries)); do
+    http_code=$(curl --connect-timeout 10 --max-time "${api_timeouts[$((attempt - 1))]:-240}" -sSL -w "%{http_code}" -o "$gh_rel_json" "${header[@]}" "$api_url" 2>/dev/null) || true
+    if [[ "$http_code" == "200" ]]; then
+      success=true
+      break
+    elif [[ "$http_code" == "401" ]]; then
+      msg_error "GitHub API authentication failed (HTTP 401)."
+      if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        msg_error "Your GITHUB_TOKEN appears to be invalid or expired."
+      else
+        msg_error "The repository may require authentication."
+      fi
+      if prompt_for_github_token; then
+        header=(-H "Authorization: token $GITHUB_TOKEN")
+        continue
+      fi
+      break
+    elif [[ "$http_code" == "403" ]]; then
+      if ((attempt < max_retries)); then
+        msg_warn "GitHub API rate limit hit, retrying in ${retry_delay}s... (attempt $attempt/$max_retries)"
+        sleep "$retry_delay"
+        retry_delay=$((retry_delay * 2))
+      else
+        msg_error "GitHub API rate limit exceeded (HTTP 403)."
+        if prompt_for_github_token; then
+          header=(-H "Authorization: token $GITHUB_TOKEN")
+          retry_delay=2
+          attempt=1
+          continue
+        fi
+      fi
+    else
+      sleep "$retry_delay"
+    fi
+    ((attempt++))
+  done
+
+  if ! $success; then
+    if [[ "$http_code" == "000" || -z "$http_code" ]]; then
+      msg_error "GitHub API connection failed (no response)."
+      msg_error "Check your network/DNS: curl -sSL https://api.github.com/rate_limit"
+    elif [[ "$http_code" != "401" ]]; then
+      msg_error "Failed to fetch release metadata (HTTP $http_code)"
+    fi
+    return 22
+  fi
+
+  local json tag_name
+  json=$(<"$gh_rel_json")
+  if [[ "$version" == "latest" && ( -n "$tag_prefix" || "${GH_INCLUDE_PRERELEASE:-0}" == "1" ) ]]; then
+    local _allow_pre="false"
+    [[ "${GH_INCLUDE_PRERELEASE:-0}" == "1" ]] && _allow_pre="true"
+    json=$(echo "$json" | jq --arg p "$tag_prefix" --argjson pre "$_allow_pre" \
+      '[.[] | select(.draft==false) | select($pre or .prerelease==false) | select(.tag_name | startswith($p))][0] // empty')
+    if [[ -z "$json" || "$json" == "null" ]]; then
+      msg_error "No matching release found for $repo on GitHub"
+      return 1
+    fi
+  fi
+  tag_name=$(echo "$json" | jq -r '.tag_name // .name // empty')
+  # Only strip leading 'v' when followed by a digit (e.g. v1.2.3), not words like "version/..."
+  [[ "$tag_name" =~ ^v[0-9] ]] && version="${tag_name:1}" || version="$tag_name"
+  # Sanitize version for use in filenames (replace / with -)
+  local version_safe="${version//\//-}"
+
+  if [[ "$current_version" == "$version" ]]; then
+    $STD msg_ok "$app is already up-to-date (v$version)"
+    return 0
+  fi
+
+  local tmpdir
+  tmpdir=$(mktemp -d) || return 1
+  trap 'rm -rf "$tmpdir" "${unpack_tmp:-}"; trap - RETURN' RETURN
+  local filename="" url=""
+
+  msg_info "Fetching GitHub release: $app ($version)"
+
+  local clean_install=false
+  [[ -n "${CLEAN_INSTALL:-}" && "$CLEAN_INSTALL" == "1" ]] && clean_install=true
+
+  ### Tarball Mode ###
+  if [[ "$mode" == "tarball" || "$mode" == "source" ]]; then
+    # GitHub API's tarball_url/zipball_url can return HTTP 300 Multiple Choices
+    # when a branch and tag share the same name. Use explicit refs/tags/ URL instead.
+    local direct_tarball_url="https://github.com/$repo/archive/refs/tags/$tag_name.tar.gz"
+    filename="${app_lc}-${version_safe}.tar.gz"
+
+    _download_source_tarball "$direct_tarball_url" "$tmpdir/$filename" || {
+      msg_error "Download failed: $direct_tarball_url"
+      return 250
+    }
+
+    _deploy_source_tarball "$tmpdir/$filename" "$target" "$tmpdir" || return 251
+
+    ### Binary Mode ###
+  elif [[ "$mode" == "binary" ]]; then
+    local arch
+    arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
+    [[ "$arch" == "x86_64" ]] && arch="amd64"
+    [[ "$arch" == "aarch64" ]] && arch="arm64"
+
+    local assets url_match=""
+    assets=$(echo "$json" | jq -r '.assets[].browser_download_url')
+
+    # If explicit filename pattern is provided (param $6), match that first
+    if [[ -n "$asset_pattern" ]]; then
+      for u in $assets; do
+        case "${u##*/}" in
+        $asset_pattern)
+          url_match="$u"
+          break
+          ;;
+        esac
+      done
+    fi
+
+    # If no match via explicit pattern, fall back to architecture heuristic
+    if [[ -z "$url_match" ]]; then
+      for u in $assets; do
+        [[ "$u" =~ \.deb$ ]] || continue
+        if [[ "${arch,,}" =~ ^(amd64|x86_64)$ ]]; then
+          [[ "$u" =~ (amd64|x86_64).*\.deb$ ]] || continue
+        elif [[ "${arch,,}" =~ ^(arm64|aarch64)$ ]]; then
+          [[ "$u" =~ (arm64|aarch64).*\.deb$ ]] || continue
+        fi
+        url_match="$u"
+        break
+      done
+    fi
+
+    # Fallback: any .deb file
+    if [[ -z "$url_match" ]]; then
+      for u in $assets; do
+        [[ "$u" =~ \.deb$ ]] && url_match="$u" && break
+      done
+    fi
+
+    # Fallback: scan older releases for a matching .deb asset
+    if [[ -z "$url_match" ]]; then
+      local fallback_json
+      if fallback_json=$(_gh_scan_older_releases "$repo" "binary" "$asset_pattern" "$tag_name"); then
+        json="$fallback_json"
+        tag_name=$(echo "$json" | jq -r '.tag_name // .name // empty')
+        [[ "$tag_name" =~ ^v ]] && version="${tag_name:1}" || version="$tag_name"
+        msg_info "Fetching GitHub release: $app ($version)"
+        assets=$(echo "$json" | jq -r '.assets[].browser_download_url')
+        if [[ -n "$asset_pattern" ]]; then
+          for u in $assets; do
+            case "${u##*/}" in $asset_pattern)
+              url_match="$u"
+              break
+              ;;
+            esac
+          done
+        fi
+        if [[ -z "$url_match" ]]; then
+          for u in $assets; do
+            [[ "$u" =~ \.deb$ ]] || continue
+            if [[ "${arch,,}" =~ ^(amd64|x86_64)$ ]]; then
+              [[ "$u" =~ (amd64|x86_64).*\.deb$ ]] || continue
+            elif [[ "${arch,,}" =~ ^(arm64|aarch64)$ ]]; then
+              [[ "$u" =~ (arm64|aarch64).*\.deb$ ]] || continue
+            fi
+            url_match="$u"
+            break
+          done
+        fi
+        if [[ -z "$url_match" ]]; then
+          for u in $assets; do
+            [[ "$u" =~ \.deb$ ]] && url_match="$u" && break
+          done
+        fi
+      fi
+    fi
+
+    if [[ -z "$url_match" ]]; then
+      msg_error "No suitable .deb asset found for $app"
+      return 252
+    fi
+
+    filename="${url_match##*/}"
+    curl_download "$tmpdir/$filename" "$url_match" || {
+      msg_error "Download failed: $url_match"
+      return 250
+    }
+
+    chmod 644 "$tmpdir/$filename"
+    # SYSTEMD_OFFLINE=1 prevents systemd-tmpfiles failures in unprivileged LXC (Debian 13+/systemd 257+)
+    # Support DPKG_CONFOLD/DPKG_CONFNEW env vars for config file handling during .deb upgrades
+    local dpkg_opts=""
+    [[ "${DPKG_FORCE_CONFOLD:-}" == "1" ]] && dpkg_opts="-o Dpkg::Options::=--force-confold"
+    [[ "${DPKG_FORCE_CONFNEW:-}" == "1" ]] && dpkg_opts="-o Dpkg::Options::=--force-confnew"
+    DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 $STD apt install -y $dpkg_opts "$tmpdir/$filename" || {
+      SYSTEMD_OFFLINE=1 $STD dpkg -i "$tmpdir/$filename" || {
+        _diagnose_deb_failure "$tmpdir/$filename"
+        return 100
+      }
+    }
+
+    ### Prebuild Mode ###
+  elif [[ "$mode" == "prebuild" ]]; then
+    local pattern="${6%\"}"
+    pattern="${pattern#\"}"
+    [[ -z "$pattern" ]] && {
+      msg_error "Mode 'prebuild' requires 6th parameter (asset filename pattern)"
+      return 65
+    }
+
+    local asset_url=""
+    for u in $(echo "$json" | jq -r '.assets[].browser_download_url'); do
+      filename_candidate="${u##*/}"
+      case "$filename_candidate" in
+      $pattern)
+        asset_url="$u"
+        break
+        ;;
+      esac
+    done
+
+    # Fallback: scan older releases for a matching asset
+    if [[ -z "$asset_url" ]]; then
+      local fallback_json
+      if fallback_json=$(_gh_scan_older_releases "$repo" "prebuild" "$pattern" "$tag_name"); then
+        json="$fallback_json"
+        tag_name=$(echo "$json" | jq -r '.tag_name // .name // empty')
+        [[ "$tag_name" =~ ^v ]] && version="${tag_name:1}" || version="$tag_name"
+        msg_info "Fetching GitHub release: $app ($version)"
+        for u in $(echo "$json" | jq -r '.assets[].browser_download_url'); do
+          filename_candidate="${u##*/}"
+          case "$filename_candidate" in $pattern)
+            asset_url="$u"
+            break
+            ;;
+          esac
+        done
+      fi
+    fi
+
+    [[ -z "$asset_url" ]] && {
+      msg_error "No asset matching '$pattern' found"
+      return 252
+    }
+
+    filename="${asset_url##*/}"
+    curl_download "$tmpdir/$filename" "$asset_url" || {
+      msg_error "Download failed: $asset_url"
+      return 250
+    }
+
+    local unpack_tmp
+    unpack_tmp=$(mktemp -d)
+    _deploy_unpacked_archive "$tmpdir/$filename" "$target" "$unpack_tmp" || return
+
+    ### Singlefile Mode ###
+  elif [[ "$mode" == "singlefile" ]]; then
+    local pattern="${6%\"}"
+    pattern="${pattern#\"}"
+    [[ -z "$pattern" ]] && {
+      msg_error "Mode 'singlefile' requires 6th parameter (asset filename pattern)"
+      return 65
+    }
+
+    local asset_url=""
+    for u in $(echo "$json" | jq -r '.assets[].browser_download_url'); do
+      filename_candidate="${u##*/}"
+      case "$filename_candidate" in
+      $pattern)
+        asset_url="$u"
+        break
+        ;;
+      esac
+    done
+
+    # Fallback: scan older releases for a matching asset
+    if [[ -z "$asset_url" ]]; then
+      local fallback_json
+      if fallback_json=$(_gh_scan_older_releases "$repo" "singlefile" "$pattern" "$tag_name"); then
+        json="$fallback_json"
+        tag_name=$(echo "$json" | jq -r '.tag_name // .name // empty')
+        [[ "$tag_name" =~ ^v ]] && version="${tag_name:1}" || version="$tag_name"
+        msg_info "Fetching GitHub release: $app ($version)"
+        for u in $(echo "$json" | jq -r '.assets[].browser_download_url'); do
+          filename_candidate="${u##*/}"
+          case "$filename_candidate" in $pattern)
+            asset_url="$u"
+            break
+            ;;
+          esac
+        done
+      fi
+    fi
+    [[ -z "$asset_url" ]] && {
+      msg_error "No asset matching '$pattern' found"
+      return 252
+    }
+
+    filename="${asset_url##*/}"
+    mkdir -p "$target"
+
+    local use_filename="${USE_ORIGINAL_FILENAME:-false}"
+    local target_file="$app"
+    [[ "$use_filename" == "true" ]] && target_file="$filename"
+
+    curl_download "$target/$target_file" "$asset_url" || {
+      msg_error "Download failed: $asset_url"
+      return 250
+    }
+
+    if [[ "$target_file" != *.jar && -f "$target/$target_file" ]]; then
+      chmod +x "$target/$target_file"
+    fi
+
+  else
+    msg_error "Unknown mode: $mode"
+    return 65
+  fi
+
+  echo "$version" >"$version_file"
+  msg_ok "Deployed: $app ($version)"
+}
+
+# ------------------------------------------------------------------------------
+# Installs Adminer (Debian/Ubuntu via APT, Alpine via direct download).
+#
+# Description:
+#   - Adds Adminer to Apache or web root
+#   - Supports Alpine and Debian-based systems
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Fetch and deploy from URL
+# Downloads an archive (zip, tar.gz, or .deb) from a URL and extracts/installs it
+#
+# Usage: fetch_and_deploy_from_url "url" "directory"
+#   url       - URL to the archive (zip, tar.gz, or .deb)
+#   directory - Destination path where the archive will be extracted
+#               (not used for .deb packages)
+#
+# Examples:
+#   fetch_and_deploy_from_url "https://example.com/app.tar.gz" "/opt/myapp"
+#   fetch_and_deploy_from_url "https://example.com/app.zip" "/opt/myapp"
+#   fetch_and_deploy_from_url "https://example.com/package.deb" ""
+# ------------------------------------------------------------------------------
+fetch_and_deploy_from_url() {
+  local url="$1"
+  local directory="${2:-}"
+
+  if [[ -z "$url" ]]; then
+    msg_error "URL parameter is required"
+    return 65
+  fi
+
+  local filename="${url##*/}"
+
+  msg_info "Downloading from $url"
+
+  local tmpdir
+  tmpdir=$(mktemp -d) || {
+    msg_error "Failed to create temporary directory"
+    return 252
+  }
+  trap 'rm -rf "$tmpdir" "${unpack_tmp:-}"; trap - RETURN' RETURN
+
+  curl -fsSL -o "$tmpdir/$filename" "$url" || {
+    msg_error "Download failed: $url"
+    return 250
+  }
+
+  # Auto-detect archive type using file description
+  local file_desc
+  file_desc=$(file -b "$tmpdir/$filename")
+
+  local archive_type="unknown"
+
+  if [[ "$file_desc" =~ gzip.*compressed|gzip\ compressed\ data ]]; then
+    archive_type="tar"
+  elif [[ "$file_desc" =~ Zip.*archive|ZIP\ archive ]]; then
+    archive_type="zip"
+  elif [[ "$file_desc" =~ Debian.*package|Debian\ binary\ package ]]; then
+    archive_type="deb"
+  elif [[ "$file_desc" =~ POSIX.*tar.*archive|tar\ archive ]]; then
+    archive_type="tar"
+  else
+    msg_error "Unsupported or unknown archive type: $file_desc"
+    return 65
+  fi
+
+  msg_info "Detected archive type: $archive_type (file type: $file_desc)"
+
+  if [[ "$archive_type" == "deb" ]]; then
+    msg_info "Installing .deb package"
+
+    chmod 644 "$tmpdir/$filename"
+    $STD apt install -y "$tmpdir/$filename" || {
+      $STD dpkg -i "$tmpdir/$filename" || {
+        _diagnose_deb_failure "$tmpdir/$filename"
+        return 100
+      }
+    }
+
+    msg_ok "Successfully installed .deb package"
+    return 0
+  fi
+
+  if [[ -z "$directory" ]]; then
+    msg_error "Directory parameter is required for archive extraction"
+    return 65
+  fi
+
+  msg_info "Extracting archive to $directory"
+
+  mkdir -p "$directory"
+
+  if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
+    find "${directory:?}" -mindepth 1 -delete
+  fi
+
+  local unpack_tmp
+  unpack_tmp=$(mktemp -d)
+
+  if [[ "$archive_type" == "zip" ]]; then
+    ensure_dependencies unzip
+    unzip -q "$tmpdir/$filename" -d "$unpack_tmp" || {
+      msg_error "Failed to extract ZIP archive"
+      return 251
+    }
+  elif [[ "$archive_type" == "tar" ]]; then
+    tar --no-same-owner -xf "$tmpdir/$filename" -C "$unpack_tmp" || {
+      msg_error "Failed to extract TAR archive"
+      return 251
+    }
+  fi
+
+  local top_entries
+  top_entries=$(find "$unpack_tmp" -mindepth 1 -maxdepth 1)
+
+  if [[ "$(echo "$top_entries" | wc -l)" -eq 1 && -d "$top_entries" ]]; then
+    local inner_dir="$top_entries"
+    shopt -s dotglob nullglob
+    if compgen -G "$inner_dir/*" >/dev/null; then
+      cp -r "$inner_dir"/* "$directory/" || {
+        msg_error "Failed to copy contents from $inner_dir to $directory"
+        shopt -u dotglob nullglob
+        return 252
+      }
+    else
+      msg_error "Inner directory is empty: $inner_dir"
+      shopt -u dotglob nullglob
+      return 252
+    fi
+    shopt -u dotglob nullglob
+  else
+    shopt -s dotglob nullglob
+    if compgen -G "$unpack_tmp/*" >/dev/null; then
+      cp -r "$unpack_tmp"/* "$directory/" || {
+        msg_error "Failed to copy contents to $directory"
+        shopt -u dotglob nullglob
+        return 252
+      }
+    else
+      msg_error "Unpacked archive is empty"
+      shopt -u dotglob nullglob
+      return 252
+    fi
+    shopt -u dotglob nullglob
+  fi
+
+  msg_ok "Successfully deployed archive to $directory"
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# Get latest GitLab release version.
+# Usage: get_latest_gitlab_release "owner/repo" [strip_v]
+# ------------------------------------------------------------------------------
+get_latest_gitlab_release() {
+  local repo="$1"
+  local strip_v="${2:-true}"
+
+  local repo_encoded
+  repo_encoded=$(printf '%s' "$repo" | sed 's|/|%2F|g')
+
+  local header=()
+  [[ -n "${GITLAB_TOKEN:-}" ]] && header=(-H "PRIVATE-TOKEN: $GITLAB_TOKEN")
+
+  local temp_file
+  temp_file=$(mktemp)
+
+  local gitlab_url="${GITLAB_URL:-https://gitlab.com}"
+  local http_code
+  http_code=$(curl --connect-timeout 10 --max-time 30 -sSL \
+    -w "%{http_code}" -o "$temp_file" \
+    "${header[@]}" \
+    "${gitlab_url}/api/v4/projects/$repo_encoded/releases?per_page=1&order_by=released_at&sort=desc" 2>/dev/null) || true
+
+  if [[ "$http_code" != "200" ]]; then
+    rm -f "$temp_file"
+    msg_warn "GitLab API call failed for ${repo} (HTTP ${http_code})"
+    return 22
+  fi
+
+  local version
+  version=$(jq -r '.[0].tag_name // empty' "$temp_file")
+  rm -f "$temp_file"
+
+  if [[ -z "$version" ]]; then
+    msg_error "Could not determine latest version for ${repo}"
+    return 250
+  fi
+
+  if [[ "$strip_v" == "true" ]]; then
+    [[ "$version" =~ ^v[0-9] ]] && version="${version:1}"
+  fi
+
+  echo "$version"
+}
+
+# ------------------------------------------------------------------------------
+# Checks for new GitLab release (latest tag).
+#
+# Description:
+#   - Queries the GitLab API for the latest release tag
+#   - Compares it to a local cached version (~/.<app>)
+#   - If newer, sets global CHECK_UPDATE_RELEASE and returns 0
+#
+# Usage:
+#     if check_for_gl_release "myapp" "owner/repo" [optional] "v1.2.3"; then
+#       # trigger update...
+#     fi
+#     exit 0
+#     } (end of update_script not from the function)
+#
+# Notes:
+#   - Requires `jq` (auto-installed if missing)
+#   - Supports GITLAB_TOKEN env var for private/rate-limited repos
+#   - Supports GITLAB_URL for self-hosted GitLab (default: https://gitlab.com)
+#   - Does not modify anything, only checks version state
+# ------------------------------------------------------------------------------
+check_for_gl_release() {
+  local app="$1"
+  local source="$2"
+  local pinned_version_in="${3:-}" # optional
+  local pin_reason="${4:-}"        # optional reason shown to user
+  local tag_prefix="${5:-}"        # optional tag prefix filter (e.g. web-v2)
+  local app_lc="${app,,}"
+  local current_file="$HOME/.${app_lc}"
+
+  local gitlab_url="${GITLAB_URL:-https://gitlab.com}"
+  local gitlab_hostname="${gitlab_url#*://}"
+  gitlab_hostname="${gitlab_hostname%%/*}"
+
+  msg_info "Checking for update: ${app}"
+
+  # DNS check
+  if ! getent hosts "$gitlab_hostname" >/dev/null 2>&1; then
+    msg_error "Network error: cannot resolve $gitlab_hostname"
+    return 6
+  fi
+
+  ensure_dependencies jq
+
+  local gl_check_json
+  gl_check_json=$(mktemp /tmp/tools-gl-check-XXXXXX) || return 73
+  trap 'rm -f "$gl_check_json"; trap - RETURN' RETURN
+
+  local repo_encoded
+  repo_encoded=$(printf '%s' "$source" | sed 's|/|%2F|g')
+
+  local header=()
+  [[ -n "${GITLAB_TOKEN:-}" ]] && header=(-H "PRIVATE-TOKEN: $GITLAB_TOKEN")
+
+  local releases_json="" http_code=""
+
+  # For pinned versions, try to fetch the specific release tag first
+  if [[ -n "$pinned_version_in" ]]; then
+    local pinned_encoded="${pinned_version_in//\//%2F}"
+    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$gl_check_json" \
+      "${header[@]}" \
+      "${gitlab_url}/api/v4/projects/$repo_encoded/releases/$pinned_encoded" 2>/dev/null) || true
+    if [[ "$http_code" == "200" ]] && [[ -s "$gl_check_json" ]]; then
+      releases_json="[$(<"$gl_check_json")]"
+    fi
+    rm -f "$gl_check_json"
+  fi
+
+  # Fetch full releases list if needed
+  if [[ -z "$releases_json" ]]; then
+    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$gl_check_json" \
+      "${header[@]}" \
+      "${gitlab_url}/api/v4/projects/$repo_encoded/releases?per_page=100&order_by=released_at&sort=desc" 2>/dev/null) || true
+
+    if [[ "$http_code" == "200" ]] && [[ -s "$gl_check_json" ]]; then
+      releases_json=$(<"$gl_check_json")
+    elif [[ "$http_code" == "401" ]]; then
+      msg_error "GitLab API authentication failed (HTTP 401)."
+      if [[ -n "${GITLAB_TOKEN:-}" ]]; then
+        msg_error "Your GITLAB_TOKEN appears to be invalid or expired."
+      else
+        msg_error "The repository may require authentication. Try: export GITLAB_TOKEN=\"glpat-your_token\""
+      fi
+      rm -f "$gl_check_json"
+      return 22
+    elif [[ "$http_code" == "404" ]]; then
+      msg_error "GitLab project not found (HTTP 404). Ensure '${source}' is correct and publicly accessible."
+      rm -f "$gl_check_json"
+      return 22
+    elif [[ "$http_code" == "429" ]]; then
+      msg_error "GitLab API rate limit exceeded (HTTP 429)."
+      msg_error "To increase the limit, export a GitLab token: export GITLAB_TOKEN=\"glpat-your_token_here\""
+      rm -f "$gl_check_json"
+      return 22
+    elif [[ "$http_code" == "000" || -z "$http_code" ]]; then
+      msg_error "GitLab API connection failed (no response)."
+      msg_error "Check your network/DNS: curl -sSL ${gitlab_url}/api/v4/version"
+      rm -f "$gl_check_json"
+      return 7
+    else
+      msg_error "Unable to fetch releases for ${app} (HTTP ${http_code})"
+      rm -f "$gl_check_json"
+      return 22
+    fi
+    rm -f "$gl_check_json"
+  fi
+
+  if [[ -n "$tag_prefix" ]]; then
+    mapfile -t raw_tags < <(jq -r --arg p "$tag_prefix" \
+      '.[] | select(.tag_name | startswith($p)) | .tag_name' <<<"$releases_json")
+  else
+    mapfile -t raw_tags < <(jq -r '.[] | .tag_name' <<<"$releases_json")
+  fi
+  if ((${#raw_tags[@]} == 0)); then
+    if [[ -n "$tag_prefix" ]]; then
+      msg_error "No releases matching prefix '${tag_prefix}' found for ${app} on GitLab"
+    else
+      msg_error "No releases found for ${app} on GitLab"
+    fi
+    return 250
+  fi
+
+  local clean_tags=()
+  for t in "${raw_tags[@]}"; do
+    # Only strip leading 'v' when followed by a digit (e.g. v1.2.3)
+    if [[ "$t" =~ ^v[0-9] ]]; then
+      clean_tags+=("${t:1}")
+    else
+      clean_tags+=("$t")
+    fi
+  done
+
+  local latest_raw="${raw_tags[0]}"
+  local latest_clean="${clean_tags[0]}"
+
+  # current installed (stored without v)
+  local current=""
+  if [[ -f "$current_file" ]]; then
+    current="$(<"$current_file")"
+  else
+    # Migration: search for any /opt/*_version.txt
+    local legacy_files
+    mapfile -t legacy_files < <(find /opt -maxdepth 1 -type f -name "*_version.txt" 2>/dev/null)
+    if ((${#legacy_files[@]} == 1)); then
+      current="$(<"${legacy_files[0]}")"
+      echo "${current#v}" >"$current_file"
+      rm -f "${legacy_files[0]}"
+    fi
+  fi
+  if [[ "$current" =~ ^v[0-9] ]]; then
+    current="${current:1}"
+  fi
+
+  # Pinned version handling
+  if [[ -n "$pinned_version_in" ]]; then
+    local pin_clean
+    if [[ "$pinned_version_in" =~ ^v[0-9] ]]; then
+      pin_clean="${pinned_version_in:1}"
+    else
+      pin_clean="$pinned_version_in"
+    fi
+    local match_raw=""
+    for i in "${!clean_tags[@]}"; do
+      if [[ "${clean_tags[$i]}" == "$pin_clean" ]]; then
+        match_raw="${raw_tags[$i]}"
+        break
+      fi
+    done
+
+    if [[ -z "$match_raw" ]]; then
+      msg_error "Pinned version ${pinned_version_in} not found upstream"
+      return 250
+    fi
+
+    if [[ "$current" != "$pin_clean" ]]; then
+      CHECK_UPDATE_RELEASE="$match_raw"
+      msg_ok "Update available: ${app} ${current:-not installed} → ${pin_clean}"
+      return 0
+    fi
+
+    if [[ -n "$pin_reason" ]]; then
+      msg_ok "No update available: ${app} (${current}) - update held back: ${pin_reason}"
+    else
+      msg_ok "No update available: ${app} (${current}) - update temporarily held back due to issues with newer releases"
+    fi
+    return 1
+  fi
+
+  # No pinning → use latest
+  if [[ -z "$current" || "$current" != "$latest_clean" ]]; then
+    CHECK_UPDATE_RELEASE="$latest_raw"
+    msg_ok "Update available: ${app} ${current:-not installed} → ${latest_clean}"
+    return 0
+  fi
+
+  msg_ok "No update available: ${app} (${latest_clean})"
+  return 1
+}
+
+# ------------------------------------------------------------------------------
+# Scan older GitLab releases for a matching asset (fallback helper).
+#
+# Description:
+#   When the latest release does not contain the expected asset
+#   (e.g. .deb for the current arch, or a custom pattern), walks back
+#   through up to 15 recent releases and returns the first release JSON
+#   that has a matching asset. Used internally by fetch_and_deploy_gl_release.
+#
+# Usage (internal):
+#   _gl_scan_older_releases "owner/repo" "owner%2Frepo" "https://gitlab.com" \
+#     "binary|prebuild|singlefile" "$asset_pattern" "$skip_tag"
+#
+# Returns:
+#   - stdout: JSON of the matching release (single object) on success
+#   - 0 on success, 22 on API error, 250 if no match found
+# ------------------------------------------------------------------------------
+_gl_scan_older_releases() {
+  local repo="$1"
+  local repo_encoded="$2"
+  local base_url="${3:-https://gitlab.com}"
+  local mode="$4"
+  local asset_pattern="$5"
+  local skip_tag="$6"
+
+  local header=()
+  [[ -n "${GITLAB_TOKEN:-}" ]] && header=(-H "PRIVATE-TOKEN: $GITLAB_TOKEN")
+
+  local releases_list
+  releases_list=$(curl --connect-timeout 10 --max-time 30 -fsSL \
+    "${header[@]}" \
+    "${base_url}/api/v4/projects/${repo_encoded}/releases?per_page=15&order_by=released_at&sort=desc" 2>/dev/null) || {
+    msg_warn "Failed to fetch older releases for ${repo}"
+    return 22
+  }
+
+  local count
+  count=$(echo "$releases_list" | jq 'length' 2>/dev/null || echo 0)
+  [[ "$count" -eq 0 ]] && return 250
+
+  for ((i = 0; i < count; i++)); do
+    local rel_tag
+    rel_tag=$(echo "$releases_list" | jq -r ".[$i].tag_name")
+
+    # Skip the tag we already checked
+    [[ "$rel_tag" == "$skip_tag" ]] && continue
+
+    # Asset URLs for this release (direct_asset_url preferred, fallback to url)
+    local asset_urls
+    asset_urls=$(echo "$releases_list" | jq -r ".[$i].assets.links // [] | .[] | .direct_asset_url // .url")
+    [[ -z "$asset_urls" ]] && continue
+
+    local has_match=false
+
+    if [[ "$mode" == "binary" ]]; then
+      local arch
+      arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
+      [[ "$arch" == "x86_64" ]] && arch="amd64"
+      [[ "$arch" == "aarch64" ]] && arch="arm64"
+
+      # Check with explicit pattern first, then arch heuristic, then any .deb
+      if [[ -n "$asset_pattern" ]]; then
+        while read -r u; do
+          case "${u##*/}" in $asset_pattern)
+            has_match=true
+            break
+            ;;
+          esac
+        done <<<"$asset_urls"
+      fi
+      if [[ "$has_match" != "true" ]]; then
+        echo "$asset_urls" | grep -qE "($arch|amd64|x86_64|aarch64|arm64).*\.deb$" && has_match=true
+      fi
+      if [[ "$has_match" != "true" ]]; then
+        echo "$asset_urls" | grep -qE '\.deb$' && has_match=true
+      fi
+
+    elif [[ "$mode" == "prebuild" || "$mode" == "singlefile" ]]; then
+      while read -r u; do
+        case "${u##*/}" in $asset_pattern)
+          has_match=true
+          break
+          ;;
+        esac
+      done <<<"$asset_urls"
+    fi
+
+    if [[ "$has_match" == "true" ]]; then
+      local use_fallback="y"
+      if [[ -t 0 ]]; then
+        msg_warn "Release ${skip_tag} has no matching asset. Previous release ${rel_tag} has a compatible asset."
+        read -rp "Use version ${rel_tag} instead? [Y/n] (auto-yes in 60s): " -t 60 use_fallback </dev/tty || use_fallback="y"
+        use_fallback="${use_fallback:-y}"
+      fi
+
+      if [[ "${use_fallback,,}" == "y" || "${use_fallback,,}" == "yes" ]]; then
+        echo "$releases_list" | jq ".[$i]"
+        return 0
+      else
+        return 250
+      fi
+    fi
+  done
+
+  return 250
+}
+
+fetch_and_deploy_gl_release() {
+  local app="$1"
+  local repo="$2"
+  local mode="${3:-tarball}"
+  local version="${var_appversion:-${4:-latest}}"
+  local target="${5:-/opt/$app}"
+  local asset_pattern="${6:-}"
+  local tag_prefix="${7:-}"
+
+  if [[ -z "$app" ]]; then
+    app="${repo##*/}"
+    if [[ -z "$app" ]]; then
+      msg_error "fetch_and_deploy_gl_release requires app name or valid repo"
+      return 1
+    fi
+  fi
+
+  local app_lc=$(echo "${app,,}" | tr -d ' ')
+  local version_file="$HOME/.${app_lc}"
+
+  local api_timeout="--connect-timeout 10 --max-time 60"
+  local download_timeout="--connect-timeout 15 --max-time 900"
+
+  local current_version=""
+  [[ -f "$version_file" ]] && current_version=$(<"$version_file")
+
+  ensure_dependencies jq
+
+  local gl_rel_json
+  gl_rel_json=$(mktemp /tmp/tools-gl-rel-XXXXXX) || return 73
+  trap 'rm -f "$gl_rel_json"; rm -rf "${tmpdir:-}" "${unpack_tmp:-}"; trap - RETURN' RETURN
+
+  local repo_encoded
+  repo_encoded=$(printf '%s' "$repo" | sed 's|/|%2F|g')
+
+  local gitlab_url="${GITLAB_URL:-https://gitlab.com}"
+  local api_base="${gitlab_url}/api/v4/projects/$repo_encoded/releases"
+  local api_url
+  if [[ "$version" != "latest" ]]; then
+    api_url="$api_base/$version"
+  elif [[ -n "$tag_prefix" ]]; then
+    api_url="$api_base?per_page=100&order_by=released_at&sort=desc"
+  else
+    api_url="$api_base?per_page=1&order_by=released_at&sort=desc"
+  fi
+
+  local header=()
+  [[ -n "${GITLAB_TOKEN:-}" ]] && header=(-H "PRIVATE-TOKEN: $GITLAB_TOKEN")
+
+  local max_retries=3 retry_delay=2 attempt=1 success=false http_code
+
+  while ((attempt <= max_retries)); do
+    http_code=$(curl $api_timeout -sSL -w "%{http_code}" -o "$gl_rel_json" "${header[@]}" "$api_url" 2>/dev/null) || true
+    if [[ "$http_code" == "200" ]]; then
+      success=true
+      break
+    elif [[ "$http_code" == "429" ]]; then
+      if ((attempt < max_retries)); then
+        msg_warn "GitLab API rate limit hit, retrying in ${retry_delay}s... (attempt $attempt/$max_retries)"
+        sleep "$retry_delay"
+        retry_delay=$((retry_delay * 2))
+      fi
+    else
+      sleep "$retry_delay"
+    fi
+    ((attempt++))
+  done
+
+  if ! $success; then
+    if [[ "$http_code" == "401" ]]; then
+      msg_error "GitLab API authentication failed (HTTP 401)."
+      if [[ -n "${GITLAB_TOKEN:-}" ]]; then
+        msg_error "Your GITLAB_TOKEN appears to be invalid or expired."
+      else
+        msg_error "The repository may require authentication. Try: export GITLAB_TOKEN=\"glpat-your_token\""
+      fi
+    elif [[ "$http_code" == "404" ]]; then
+      msg_error "GitLab project or release not found (HTTP 404)."
+      msg_error "Ensure '$repo' is correct and the project is accessible."
+    elif [[ "$http_code" == "429" ]]; then
+      msg_error "GitLab API rate limit exceeded (HTTP 429)."
+      msg_error "To increase the limit, export a GitLab token before running the script:"
+      msg_error "  export GITLAB_TOKEN=\"glpat-your_token_here\""
+    elif [[ "$http_code" == "000" || -z "$http_code" ]]; then
+      msg_error "GitLab API connection failed (no response)."
+      msg_error "Check your network/DNS: curl -sSL ${gitlab_url}/api/v4/version"
+    else
+      msg_error "Failed to fetch release metadata (HTTP $http_code)"
+    fi
+    return 1
+  fi
+
+  local json tag_name
+  json=$(<"$gl_rel_json")
+
+  if [[ "$version" == "latest" ]]; then
+    if [[ -n "$tag_prefix" ]]; then
+      json=$(echo "$json" | jq --arg p "$tag_prefix" \
+        '[.[] | select(.tag_name | startswith($p))][0] // empty')
+    else
+      json=$(echo "$json" | jq '.[0] // empty')
+    fi
+    if [[ -z "$json" || "$json" == "null" ]]; then
+      if [[ -n "$tag_prefix" ]]; then
+        msg_error "No release matching prefix '${tag_prefix}' found for $repo on GitLab"
+      else
+        msg_error "No releases found for $repo on GitLab"
+      fi
+      return 1
+    fi
+  fi
+
+  tag_name=$(echo "$json" | jq -r '.tag_name // empty')
+  if [[ -z "$tag_name" ]]; then
+    msg_error "Could not determine tag name from release metadata"
+    return 1
+  fi
+  [[ "$tag_name" =~ ^v[0-9] ]] && version="${tag_name:1}" || version="$tag_name"
+  local version_safe="${version//\//-}"
+
+  if [[ "$current_version" == "$version" ]]; then
+    $STD msg_ok "$app is already up-to-date (v$version)"
+    return 0
+  fi
+
+  local tmpdir
+  tmpdir=$(mktemp -d) || return 1
+  local filename=""
+
+  msg_info "Fetching GitLab release: $app ($version)"
+
+  _gl_asset_urls() {
+    local release_json="$1"
+    echo "$release_json" | jq -r '
+      (.assets.links // [])[] | .direct_asset_url // .url
+    '
+  }
+
+  ### Tarball Mode ###
+  if [[ "$mode" == "tarball" || "$mode" == "source" ]]; then
+    local direct_tarball_url="${gitlab_url}/$repo/-/archive/$tag_name/${app_lc}-${version_safe}.tar.gz"
+    filename="${app_lc}-${version_safe}.tar.gz"
+
+    _download_source_tarball "$direct_tarball_url" "$tmpdir/$filename" "${header[@]}" || {
+      msg_error "Download failed: $direct_tarball_url"
+      return 1
+    }
+
+    _deploy_source_tarball "$tmpdir/$filename" "$target" "$tmpdir" || return 1
+
+  ### Binary Mode ###
+  elif [[ "$mode" == "binary" ]]; then
+    local arch
+    arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
+    [[ "$arch" == "x86_64" ]] && arch="amd64"
+    [[ "$arch" == "aarch64" ]] && arch="arm64"
+
+    local assets url_match=""
+    assets=$(_gl_asset_urls "$json")
+
+    if [[ -n "$asset_pattern" ]]; then
+      for u in $assets; do
+        case "${u##*/}" in
+        $asset_pattern)
+          url_match="$u"
+          break
+          ;;
+        esac
+      done
+    fi
+
+    if [[ -z "$url_match" ]]; then
+      for u in $assets; do
+        if [[ "$u" =~ ($arch|amd64|x86_64|aarch64|arm64).*\.deb$ ]]; then
+          url_match="$u"
+          break
+        fi
+      done
+    fi
+
+    if [[ -z "$url_match" ]]; then
+      for u in $assets; do
+        [[ "$u" =~ \.deb$ ]] && url_match="$u" && break
+      done
+    fi
+
+    if [[ -z "$url_match" ]]; then
+      local fallback_json
+      if fallback_json=$(_gl_scan_older_releases "$repo" "$repo_encoded" "$gitlab_url" "binary" "$asset_pattern" "$tag_name"); then
+        json="$fallback_json"
+        tag_name=$(echo "$json" | jq -r '.tag_name // empty')
+        [[ "$tag_name" =~ ^v[0-9] ]] && version="${tag_name:1}" || version="$tag_name"
+        msg_info "Fetching GitLab release: $app ($version)"
+        assets=$(_gl_asset_urls "$json")
+        if [[ -n "$asset_pattern" ]]; then
+          for u in $assets; do
+            case "${u##*/}" in $asset_pattern)
+              url_match="$u"
+              break
+              ;;
+            esac
+          done
+        fi
+        if [[ -z "$url_match" ]]; then
+          for u in $assets; do
+            [[ "$u" =~ ($arch|amd64|x86_64|aarch64|arm64).*\.deb$ ]] && url_match="$u" && break
+          done
+        fi
+        if [[ -z "$url_match" ]]; then
+          for u in $assets; do
+            [[ "$u" =~ \.deb$ ]] && url_match="$u" && break
+          done
+        fi
+      fi
+    fi
+
+    if [[ -z "$url_match" ]]; then
+      msg_error "No suitable .deb asset found for $app"
+      return 1
+    fi
+
+    filename="${url_match##*/}"
+    curl $download_timeout -fsSL "${header[@]}" -o "$tmpdir/$filename" "$url_match" || {
+      msg_error "Download failed: $url_match"
+      return 1
+    }
+
+    chmod 644 "$tmpdir/$filename"
+    local dpkg_opts=""
+    [[ "${DPKG_FORCE_CONFOLD:-}" == "1" ]] && dpkg_opts="-o Dpkg::Options::=--force-confold"
+    [[ "${DPKG_FORCE_CONFNEW:-}" == "1" ]] && dpkg_opts="-o Dpkg::Options::=--force-confnew"
+    DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 $STD apt install -y $dpkg_opts "$tmpdir/$filename" || {
+      SYSTEMD_OFFLINE=1 $STD dpkg -i "$tmpdir/$filename" || {
+        _diagnose_deb_failure "$tmpdir/$filename"
+        return 1
+      }
+    }
+
+  ### Prebuild Mode ###
+  elif [[ "$mode" == "prebuild" ]]; then
+    local pattern="${6%\"}"
+    pattern="${pattern#\"}"
+    [[ -z "$pattern" ]] && {
+      msg_error "Mode 'prebuild' requires 6th parameter (asset filename pattern)"
+      return 1
+    }
+
+    local asset_url=""
+    for u in $(_gl_asset_urls "$json"); do
+      filename_candidate="${u##*/}"
+      case "$filename_candidate" in
+      $pattern)
+        asset_url="$u"
+        break
+        ;;
+      esac
+    done
+
+    if [[ -z "$asset_url" ]]; then
+      local fallback_json
+      if fallback_json=$(_gl_scan_older_releases "$repo" "$repo_encoded" "$gitlab_url" "prebuild" "$pattern" "$tag_name"); then
+        json="$fallback_json"
+        tag_name=$(echo "$json" | jq -r '.tag_name // empty')
+        [[ "$tag_name" =~ ^v[0-9] ]] && version="${tag_name:1}" || version="$tag_name"
+        msg_info "Fetching GitLab release: $app ($version)"
+        for u in $(_gl_asset_urls "$json"); do
+          filename_candidate="${u##*/}"
+          case "$filename_candidate" in $pattern)
+            asset_url="$u"
+            break
+            ;;
+          esac
+        done
+      fi
+    fi
+
+    [[ -z "$asset_url" ]] && {
+      msg_error "No asset matching '$pattern' found"
+      return 1
+    }
+
+    filename="${asset_url##*/}"
+    curl $download_timeout -fsSL "${header[@]}" -o "$tmpdir/$filename" "$asset_url" || {
+      msg_error "Download failed: $asset_url"
+      return 1
+    }
+
+    local unpack_tmp
+    unpack_tmp=$(mktemp -d)
+    _deploy_unpacked_archive "$tmpdir/$filename" "$target" "$unpack_tmp" || return
+
+  ### Singlefile Mode ###
+  elif [[ "$mode" == "singlefile" ]]; then
+    local pattern="${6%\"}"
+    pattern="${pattern#\"}"
+    [[ -z "$pattern" ]] && {
+      msg_error "Mode 'singlefile' requires 6th parameter (asset filename pattern)"
+      return 1
+    }
+
+    local asset_url=""
+    for u in $(_gl_asset_urls "$json"); do
+      filename_candidate="${u##*/}"
+      case "$filename_candidate" in
+      $pattern)
+        asset_url="$u"
+        break
+        ;;
+      esac
+    done
+
+    if [[ -z "$asset_url" ]]; then
+      local fallback_json
+      if fallback_json=$(_gl_scan_older_releases "$repo" "$repo_encoded" "$gitlab_url" "singlefile" "$pattern" "$tag_name"); then
+        json="$fallback_json"
+        tag_name=$(echo "$json" | jq -r '.tag_name // empty')
+        [[ "$tag_name" =~ ^v[0-9] ]] && version="${tag_name:1}" || version="$tag_name"
+        msg_info "Fetching GitLab release: $app ($version)"
+        for u in $(_gl_asset_urls "$json"); do
+          filename_candidate="${u##*/}"
+          case "$filename_candidate" in $pattern)
+            asset_url="$u"
+            break
+            ;;
+          esac
+        done
+      fi
+    fi
+
+    [[ -z "$asset_url" ]] && {
+      msg_error "No asset matching '$pattern' found"
+      return 1
+    }
+
+    filename="${asset_url##*/}"
+    mkdir -p "$target"
+
+    local use_filename="${USE_ORIGINAL_FILENAME:-false}"
+    local target_file="$app"
+    [[ "$use_filename" == "true" ]] && target_file="$filename"
+
+    curl $download_timeout -fsSL "${header[@]}" -o "$target/$target_file" "$asset_url" || {
+      msg_error "Download failed: $asset_url"
+      return 1
+    }
+
+    if [[ "$target_file" != *.jar && -f "$target/$target_file" ]]; then
+      chmod +x "$target/$target_file"
+    fi
+
+  else
+    msg_error "Unknown mode: $mode"
+    return 1
+  fi
+
+  echo "$version" >"$version_file"
+  msg_ok "Deployed: $app ($version)"
+}

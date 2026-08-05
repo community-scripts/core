@@ -1,0 +1,2422 @@
+#!/usr/bin/env bash
+# Copyright (c) 2021-2026 community-scripts ORG
+# License: MIT | https://raw.githubusercontent.com/community-scripts/core/main/LICENSE
+
+# ==============================================================================
+# TOOLS/SYSTEM.FUNC - PACKAGES, REPOSITORIES, OS PROBES, SERVICES
+# ==============================================================================
+# Part of the shared helper library. Load shared/tools.func -- it sources every
+# part -- rather than this file directly; the split is for maintenance only and
+# no function name or behaviour changed with it.
+# ==============================================================================
+
+[[ -n "${_TOOLS_SYSTEM_LOADED:-}" ]] && return 0
+_TOOLS_SYSTEM_LOADED=1
+
+# ------------------------------------------------------------------------------
+# Debug helper - outputs to stderr when TOOLS_DEBUG is enabled
+# Usage: debug_log "message"
+# ------------------------------------------------------------------------------
+debug_log() {
+  if [[ "${TOOLS_DEBUG:-false}" == "true" || "${TOOLS_DEBUG:-0}" == "1" || "${DEBUG:-0}" == "1" ]]; then
+    echo "[DEBUG] $*" >&2
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# Robust curl wrapper with retry logic, timeouts, and error handling
+#
+# Usage:
+#   curl_with_retry "https://example.com/file" "/tmp/output"
+#   curl_with_retry "https://api.github.com/..." "-" | jq .
+#   CURL_RETRIES=5 curl_with_retry "https://slow.server/file" "/tmp/out"
+#
+# Parameters:
+#   $1 - URL to download
+#   $2 - Output file path (use "-" for stdout)
+#   $3 - (optional) Additional curl options as string
+#
+# Variables:
+#   CURL_RETRIES     - Number of retries (default: 3)
+#   CURL_TIMEOUT     - Max time per attempt in seconds (default: 60)
+#   CURL_CONNECT_TO  - Connection timeout in seconds (default: 10)
+#
+# Returns: 0 on success, 1 on failure after all retries
+# ------------------------------------------------------------------------------
+curl_with_retry() {
+  local url="$1"
+  local output="${2:--}"
+  local extra_opts="${3:-}"
+  local retries="${CURL_RETRIES:-3}"
+  local timeout="${CURL_TIMEOUT:-60}"
+  local connect_timeout="${CURL_CONNECT_TO:-10}"
+
+  local attempt=1
+  local success=false
+  local backoff=1
+
+  # Extract hostname for DNS pre-check
+  local host
+  host=$(echo "$url" | sed -E 's|^https?://([^/:]+).*|\1|')
+
+  # DNS pre-check - fail fast if host is unresolvable
+  if ! getent hosts "$host" &>/dev/null; then
+    debug_log "DNS resolution failed for $host"
+    return 6
+  fi
+
+  while [[ $attempt -le $retries ]]; do
+    debug_log "curl attempt $attempt/$retries: $url"
+
+    # Build curl command as array to avoid command injection via extra_opts
+    local -a curl_args=(curl -fsSL --connect-timeout "$connect_timeout" --max-time "$timeout")
+    [[ -n "$extra_opts" ]] && read -ra _extra <<<"$extra_opts" && curl_args+=("${_extra[@]}")
+
+    if [[ "$output" == "-" ]]; then
+      if "${curl_args[@]}" "$url"; then
+        success=true
+        break
+      fi
+    else
+      if "${curl_args[@]}" -o "$output" "$url"; then
+        success=true
+        break
+      fi
+    fi
+
+    debug_log "curl attempt $attempt failed (timeout=${timeout}s), waiting ${backoff}s before retry..."
+    sleep "$backoff"
+    # Exponential backoff: 1, 2, 4, 8... capped at 30s
+    backoff=$((backoff * 2))
+    ((backoff > 30)) && backoff=30
+    # Double --max-time on each retry so slow connections can finish
+    timeout=$((timeout * 2))
+    ((attempt++))
+  done
+
+  if [[ "$success" == "true" ]]; then
+    debug_log "curl successful: $url"
+    return 0
+  else
+    debug_log "curl FAILED after $retries attempts: $url"
+    return 7
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# Robust curl wrapper for API calls (returns HTTP code + body)
+#
+# Usage:
+#   response=$(curl_api_with_retry "https://api.github.com/repos/owner/repo/releases/latest")
+#   http_code=$(curl_api_with_retry "https://api.github.com/..." "/tmp/body.json")
+#
+# Parameters:
+#   $1 - URL to call
+#   $2 - (optional) Output file for body (default: stdout)
+#   $3 - (optional) Additional curl options as string
+#
+# Returns: HTTP status code, body in file or stdout
+# ------------------------------------------------------------------------------
+curl_api_with_retry() {
+  local url="$1"
+  local body_file="${2:-}"
+  local extra_opts="${3:-}"
+  local retries="${CURL_RETRIES:-3}"
+  local timeout="${CURL_TIMEOUT:-60}"
+  local connect_timeout="${CURL_CONNECT_TO:-10}"
+
+  local attempt=1
+  local http_code=""
+
+  while [[ $attempt -le $retries ]]; do
+    debug_log "curl API attempt $attempt/$retries: $url"
+
+    # Build curl command as array to avoid command injection via extra_opts
+    local -a curl_args=(curl -fsSL --connect-timeout "$connect_timeout" --max-time "$timeout" -w '%{http_code}')
+    [[ -n "$extra_opts" ]] && read -ra _extra <<<"$extra_opts" && curl_args+=("${_extra[@]}")
+
+    if [[ -n "$body_file" ]]; then
+      http_code=$("${curl_args[@]}" -o "$body_file" "$url" 2>/dev/null) || true
+    else
+      # Capture body and http_code separately
+      local tmp_body="/tmp/curl_api_body_$$"
+      http_code=$("${curl_args[@]}" -o "$tmp_body" "$url" 2>/dev/null) || true
+      if [[ -f "$tmp_body" ]]; then
+        cat "$tmp_body"
+        rm -f "$tmp_body"
+      fi
+    fi
+
+    # Success on 2xx codes
+    if [[ "$http_code" =~ ^2[0-9]{2}$ ]]; then
+      debug_log "curl API successful: $url (HTTP $http_code)"
+      echo "$http_code"
+      return 0
+    fi
+
+    debug_log "curl API attempt $attempt failed (HTTP $http_code, timeout=${timeout}s), waiting ${attempt}s..."
+    sleep "$attempt"
+    # Double --max-time on each retry so slow connections can finish
+    timeout=$((timeout * 2))
+    ((attempt++))
+  done
+
+  debug_log "curl API FAILED after $retries attempts: $url"
+  echo "$http_code"
+  return 7
+}
+
+# ------------------------------------------------------------------------------
+# Download and install GPG key with retry logic and validation
+#
+# Usage:
+#   download_gpg_key "https://example.com/key.gpg" "/etc/apt/keyrings/example.gpg"
+#   download_gpg_key "https://example.com/key.asc" "/etc/apt/keyrings/example.gpg" "dearmor"
+#
+# Parameters:
+#   $1 - URL to GPG key
+#   $2 - Output path for keyring file
+#   $3 - (optional) "dearmor" to convert ASCII-armored key to binary
+#
+# Features:
+#   - Auto-detects key format (binary vs armored)
+#   - Validates downloaded key
+#   - Multiple mirror fallback support
+#
+# Returns: 0 on success, 1 on failure
+# ------------------------------------------------------------------------------
+download_gpg_key() {
+  local url="$1"
+  local output="$2"
+  local mode="${3:-auto}" # auto, dearmor, or binary
+  local retries="${CURL_RETRIES:-3}"
+  local timeout="${CURL_TIMEOUT:-30}"
+  local temp_key
+  temp_key=$(mktemp)
+
+  mkdir -p "$(dirname "$output")"
+
+  local attempt=1
+  while [[ $attempt -le $retries ]]; do
+    debug_log "GPG key download attempt $attempt/$retries: $url"
+
+    # Download to temp file first
+    if ! curl -fsSL --connect-timeout 10 --max-time "$timeout" -o "$temp_key" "$url" 2>/dev/null; then
+      debug_log "GPG key download attempt $attempt failed, waiting ${attempt}s..."
+      sleep "$attempt"
+      ((attempt++))
+      continue
+    fi
+
+    # Auto-detect key format if mode is auto
+    if [[ "$mode" == "auto" ]]; then
+      if file "$temp_key" 2>/dev/null | grep -qi "pgp\\|gpg\\|public key"; then
+        mode="binary"
+      elif grep -q "BEGIN PGP" "$temp_key" 2>/dev/null; then
+        mode="dearmor"
+      else
+        # Try to detect by extension
+        [[ "$url" == *.asc || "$url" == *.txt ]] && mode="dearmor" || mode="binary"
+      fi
+    fi
+
+    # Process based on mode
+    if [[ "$mode" == "dearmor" ]]; then
+      if gpg --dearmor --yes -o "$output" <"$temp_key" 2>/dev/null && [[ -s "$output" ]]; then
+        rm -f "$temp_key"
+        debug_log "GPG key installed (dearmored): $output"
+        return 0
+      fi
+    else
+      if mv "$temp_key" "$output" 2>/dev/null; then
+        chmod 644 "$output"
+        debug_log "GPG key installed: $output"
+        return 0
+      fi
+    fi
+
+    debug_log "GPG key processing attempt $attempt failed"
+    sleep "$attempt"
+    ((attempt++))
+  done
+
+  rm -f "$temp_key"
+  debug_log "GPG key download FAILED after $retries attempts: $url"
+  return 7
+}
+
+# ------------------------------------------------------------------------------
+# Edit a key-value pair in a YAML configuration file.
+#
+# Description:
+#   - Finds the first occurrence of the given key in the YAML file and replaces
+#     its value in-place using sed.
+#   - Handles both quoted and unquoted values on the same line.
+#   - The key is matched at the start of a line (optionally preceded by spaces),
+#     followed by a colon and optional whitespace.
+#   - If the key is not found, the function exits with a non-zero status and
+#     prints an error message.
+#
+# Usage:
+#   edit_yaml_config "/opt/myapp/config.yml" "database_host" "localhost"
+#   edit_yaml_config "/opt/myapp/config.yml" "port" "5432"
+#
+# Parameters:
+#   $1 - Path to the YAML file
+#   $2 - Key to find (e.g. "database_host")
+#   $3 - New value to set (e.g. "localhost")
+#
+# Returns: 0 on success, 1 if the file does not exist or the key is not found
+# ------------------------------------------------------------------------------
+edit_yaml_config() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+
+  if [[ ! -f "$file" ]]; then
+    msg_error "edit_yaml_config: file not found: $file"
+    return 1
+  fi
+
+  if ! grep -qE "^[[:space:]]*${key}[[:space:]]*:" "$file"; then
+    msg_error "edit_yaml_config: key '${key}' not found in $file"
+    return 1
+  fi
+
+  # Escape sed metacharacters in value (| and &) to prevent injection
+  local escaped_value="${value//|/\\|}"
+  escaped_value="${escaped_value//&/\\&}"
+  sed -i "s|^\([[:space:]]*${key}[[:space:]]*:\).*|\1 ${escaped_value}|" "$file"
+}
+
+# ------------------------------------------------------------------------------
+# Cache installed version to avoid repeated checks
+# ------------------------------------------------------------------------------
+cache_installed_version() {
+  local app="$1"
+  local version="$2"
+  mkdir -p /var/cache/app-versions
+  echo "$version" >"/var/cache/app-versions/${app}_version.txt"
+}
+
+get_cached_version() {
+  local app="$1"
+  mkdir -p /var/cache/app-versions
+  if [[ -f "/var/cache/app-versions/${app}_version.txt" ]]; then
+    cat "/var/cache/app-versions/${app}_version.txt"
+    return 0
+  fi
+  return 1
+}
+
+# ------------------------------------------------------------------------------
+# Clean up ALL keyring locations for a tool (unified helper)
+# Usage: cleanup_tool_keyrings "mariadb" "mysql" "postgresql"
+# ------------------------------------------------------------------------------
+cleanup_tool_keyrings() {
+  local tool_patterns=("$@")
+
+  for pattern in "${tool_patterns[@]}"; do
+    rm -f /usr/share/keyrings/${pattern}*.gpg \
+      /etc/apt/keyrings/${pattern}*.gpg \
+      /etc/apt/trusted.gpg.d/${pattern}*.gpg 2>/dev/null || true
+  done
+}
+
+# ------------------------------------------------------------------------------
+# Stop and disable all service instances matching a pattern
+# Usage: stop_all_services "php*-fpm" "mysql" "mariadb"
+# ------------------------------------------------------------------------------
+stop_all_services() {
+  local service_patterns=("$@")
+
+  for pattern in "${service_patterns[@]}"; do
+    # Find all matching services (grep || true to handle no matches)
+    local services
+    services=$(systemctl list-units --type=service --all 2>/dev/null |
+      grep -oE "${pattern}[^ ]*\.service" 2>/dev/null | sort -u) || true
+
+    if [[ -n "$services" ]]; then
+      while read -r service; do
+        $STD systemctl stop "$service" 2>/dev/null || true
+        $STD systemctl disable "$service" 2>/dev/null || true
+      done <<<"$services"
+    fi
+  done
+
+}
+
+# ------------------------------------------------------------------------------
+# Verify installed tool version matches expected version
+# Returns: 0 if match, 1 if mismatch (with warning)
+# Usage: verify_tool_version "nodejs" "22" "$(node -v | grep -oP '^v\K[0-9]+')"
+# ------------------------------------------------------------------------------
+verify_tool_version() {
+  local tool_name="$1"
+  local expected_version="$2"
+  local installed_version="$3"
+
+  # Extract major version for comparison
+  local expected_major="${expected_version%%.*}"
+  local installed_major="${installed_version%%.*}"
+
+  if [[ "$installed_major" != "$expected_major" ]]; then
+    msg_warn "$tool_name version mismatch: expected $expected_version, got $installed_version"
+    return 1
+  fi
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# Compare installed semver against a version spec at the spec's precision.
+# Returns: 0 if match (e.g. spec 8.0 matches installed 8.0.40), 1 otherwise
+# Usage: version_matches_spec "8.0.40" "8.0"
+# ------------------------------------------------------------------------------
+version_matches_spec() {
+  local installed="$1"
+  local spec="$2"
+  local spec_depth prefix i
+  local -a spec_parts installed_parts
+
+  [[ -n "$installed" && -n "$spec" ]] || return 1
+
+  IFS='.' read -ra spec_parts <<<"$spec"
+  spec_depth=${#spec_parts[@]}
+  ((spec_depth > 0)) || return 1
+
+  if ((spec_depth == 1)); then
+    [[ "${installed%%.*}" == "$spec" ]] && return 0
+    return 1
+  fi
+
+  IFS='.' read -ra installed_parts <<<"$installed"
+  prefix=""
+  for ((i = 0; i < spec_depth && i < ${#installed_parts[@]}; i++)); do
+    [[ -n "$prefix" ]] && prefix+="."
+    prefix+="${installed_parts[i]}"
+  done
+  [[ "$prefix" == "$spec" ]]
+}
+
+# ------------------------------------------------------------------------------
+# Clean up legacy installation methods (nvm, rbenv, rustup, etc.)
+# Usage: cleanup_legacy_install "nodejs" -> removes nvm
+# ------------------------------------------------------------------------------
+cleanup_legacy_install() {
+  local tool_name="$1"
+
+  case "$tool_name" in
+  nodejs | node)
+    if [[ -d "$HOME/.nvm" ]]; then
+      msg_info "Removing legacy nvm installation"
+      rm -rf "$HOME/.nvm" "$HOME/.npm" "$HOME/.bower" "$HOME/.config/yarn" 2>/dev/null || true
+      sed -i '/NVM_DIR/d' "$HOME/.bashrc" "$HOME/.profile" 2>/dev/null || true
+      msg_ok "Legacy nvm installation removed"
+    fi
+    ;;
+  ruby)
+    if [[ -d "$HOME/.rbenv" ]]; then
+      msg_info "Removing legacy rbenv installation"
+      rm -rf "$HOME/.rbenv" 2>/dev/null || true
+      sed -i '/rbenv/d' "$HOME/.bashrc" "$HOME/.profile" 2>/dev/null || true
+      msg_ok "Legacy rbenv installation removed"
+    fi
+    ;;
+  rust)
+    if [[ -d "$HOME/.cargo" ]] || [[ -d "$HOME/.rustup" ]]; then
+      msg_info "Removing legacy rustup installation"
+      rm -rf "$HOME/.cargo" "$HOME/.rustup" 2>/dev/null || true
+      sed -i '/cargo/d' "$HOME/.bashrc" "$HOME/.profile" 2>/dev/null || true
+      msg_ok "Legacy rustup installation removed"
+    fi
+    ;;
+  go | golang)
+    if [[ -d "$HOME/go" ]]; then
+      msg_info "Removing legacy Go workspace"
+      # Keep user code, just remove GOPATH env
+      sed -i '/GOPATH/d' "$HOME/.bashrc" "$HOME/.profile" 2>/dev/null || true
+      msg_ok "Legacy Go workspace cleaned"
+    fi
+    ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------
+# Unified repository preparation before setup
+# Cleans up old repos, keyrings, and ensures APT is working
+# Usage: prepare_repository_setup "mariadb" "mysql"
+# ------------------------------------------------------------------------------
+prepare_repository_setup() {
+  local repo_names=("$@")
+
+  # Clean up all old repository files
+  for repo in "${repo_names[@]}"; do
+    cleanup_old_repo_files "$repo"
+  done
+
+  # Clean up all keyrings
+  cleanup_tool_keyrings "${repo_names[@]}"
+
+  # Ensure APT is in working state
+  ensure_apt_working || return 100
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# Install packages with retry logic
+# Usage: install_packages_with_retry "mysql-server" "mysql-client"
+# Features:
+#   - Automatic dpkg recovery on failure
+#   - Individual package fallback if batch fails
+#   - Dependency resolution with apt-get -f install
+# ------------------------------------------------------------------------------
+install_packages_with_retry() {
+  local packages=("$@")
+  local max_retries=3
+  local retry=0
+
+  # Pre-check: ensure dpkg is not in a broken state
+  if dpkg --audit 2>&1 | grep -q .; then
+    $STD dpkg --configure -a 2>/dev/null || true
+  fi
+
+  while [[ $retry -le $max_retries ]]; do
+    if DEBIAN_FRONTEND=noninteractive $STD apt install -y \
+      -o Dpkg::Options::="--force-confdef" \
+      -o Dpkg::Options::="--force-confold" \
+      "${packages[@]}" 2>/dev/null; then
+      return 0
+    fi
+
+    retry=$((retry + 1))
+    if [[ $retry -le $max_retries ]]; then
+      msg_warn "Package installation failed, retrying ($retry/$max_retries)..."
+
+      # Progressive recovery steps based on retry count
+      case $retry in
+      1)
+        # First retry: just fix dpkg and update
+        $STD dpkg --configure -a 2>/dev/null || true
+        $STD apt update 2>/dev/null || true
+        ;;
+      2)
+        # Second retry: fix broken dependencies
+        $STD apt --fix-broken install -y 2>/dev/null || true
+        $STD apt update 2>/dev/null || true
+        ;;
+      3)
+        # Third retry: try installing packages one by one
+        local failed=()
+        for pkg in "${packages[@]}"; do
+          if ! $STD apt install -y "$pkg" 2>/dev/null; then
+            # Try with --fix-missing
+            if ! $STD apt install -y --fix-missing "$pkg" 2>/dev/null; then
+              failed+=("$pkg")
+            fi
+          fi
+        done
+        if [[ ${#failed[@]} -lt ${#packages[@]} ]]; then
+          if [[ ${#failed[@]} -gt 0 ]]; then
+            msg_error "Partial install — failed packages: ${failed[*]}"
+            return 100
+          fi
+          return 0
+        fi
+        ;;
+      esac
+
+      sleep $((retry * 2))
+    fi
+  done
+
+  msg_error "Failed to install packages after $((max_retries + 1)) attempts: ${packages[*]}"
+  # Provide a quick diagnostic: check if package exists in any configured repo
+  local _os_codename
+  _os_codename=$(get_os_info codename)
+  local _unavailable=()
+  for _pkg in "${packages[@]}"; do
+    if ! apt-cache show "$_pkg" &>/dev/null; then
+      _unavailable+=("$_pkg")
+    fi
+  done
+  if [[ ${#_unavailable[@]} -gt 0 ]]; then
+    msg_error "Package(s) not found in any configured repository: ${_unavailable[*]}"
+    msg_error "Hint: These packages may not be available for '${_os_codename}'. Check repository configuration or package names."
+  else
+    msg_error "Hint: Package(s) exist in the repo but could not be installed — run 'apt-get install -f' inside the container or check for dependency conflicts."
+  fi
+  return 100
+}
+
+# ------------------------------------------------------------------------------
+# Upgrade specific packages with retry logic
+# Usage: upgrade_packages_with_retry "mariadb-server" "mariadb-client"
+# ------------------------------------------------------------------------------
+upgrade_packages_with_retry() {
+  local packages=("$@")
+  local max_retries=2
+  local retry=0
+
+  while [[ $retry -le $max_retries ]]; do
+    if DEBIAN_FRONTEND=noninteractive $STD apt install --only-upgrade -y \
+      -o Dpkg::Options::="--force-confdef" \
+      -o Dpkg::Options::="--force-confold" \
+      "${packages[@]}" 2>/dev/null; then
+      return 0
+    fi
+
+    retry=$((retry + 1))
+    if [[ $retry -le $max_retries ]]; then
+      msg_warn "Package upgrade failed, retrying ($retry/$max_retries)..."
+      sleep 2
+      # Fix any interrupted dpkg operations before retry
+      $STD dpkg --configure -a 2>/dev/null || true
+      $STD apt update 2>/dev/null || true
+    fi
+  done
+
+  msg_error "Failed to upgrade packages after $((max_retries + 1)) attempts: ${packages[*]}"
+  msg_error "Hint: The package may be held back, have conflicting dependencies, or the repository is unreachable. Check 'apt-cache policy ${packages[*]}' inside the container."
+  return 100
+}
+
+# ------------------------------------------------------------------------------
+# Check if tool is already installed and optionally verify exact version
+# Returns: 0 if installed (with optional version match), 1 if not installed
+# Usage: is_tool_installed "mariadb" "11.4" || echo "Not installed"
+# ------------------------------------------------------------------------------
+is_tool_installed() {
+  local tool_name="$1"
+  local required_version="${2:-}"
+  local installed_version=""
+
+  case "$tool_name" in
+  mariadb)
+    if command -v mariadb >/dev/null 2>&1; then
+      installed_version=$(mariadb --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+    fi
+    ;;
+  mysql)
+    if command -v mysql >/dev/null 2>&1; then
+      installed_version=$(mysql --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+    fi
+    ;;
+  mongodb | mongod)
+    if command -v mongod >/dev/null 2>&1; then
+      installed_version=$(mongod --version 2>/dev/null | awk '/db version/{print $3}' | cut -d. -f1,2)
+    fi
+    ;;
+  node | nodejs)
+    if command -v node >/dev/null 2>&1; then
+      installed_version=$(node -v 2>/dev/null | grep -oP '^v\K[0-9]+' || true)
+    fi
+    ;;
+  php)
+    if command -v php >/dev/null 2>&1; then
+      installed_version=$(php -v 2>/dev/null | awk '/^PHP/{print $2}' | cut -d. -f1,2)
+    fi
+    ;;
+  postgres | postgresql)
+    if command -v psql >/dev/null 2>&1; then
+      installed_version=$(psql --version 2>/dev/null | awk '{print $3}' | cut -d. -f1)
+    fi
+    ;;
+  ruby)
+    if command -v ruby >/dev/null 2>&1; then
+      installed_version=$(ruby --version 2>/dev/null | awk '{print $2}' | cut -d. -f1,2)
+    fi
+    ;;
+  rust | rustc)
+    if command -v rustc >/dev/null 2>&1; then
+      installed_version=$(rustc --version 2>/dev/null | awk '{print $2}')
+    fi
+    ;;
+  go | golang)
+    if command -v go >/dev/null 2>&1; then
+      installed_version=$(go version 2>/dev/null | awk '{print $3}' | sed 's/go//')
+    fi
+    ;;
+  clickhouse)
+    if command -v clickhouse >/dev/null 2>&1; then
+      installed_version=$(clickhouse --version 2>/dev/null | awk '{print $2}')
+    fi
+    ;;
+  esac
+
+  if [[ -z "$installed_version" ]]; then
+    return 1 # Not installed
+  fi
+
+  if [[ -n "$required_version" && "$installed_version" != "$required_version" ]]; then
+    echo "$installed_version"
+    return 1 # Version mismatch
+  fi
+
+  echo "$installed_version"
+  return 0 # Installed and version matches (if specified)
+}
+
+# ------------------------------------------------------------------------------
+# Remove old tool version completely (purge + cleanup repos)
+# Usage: remove_old_tool_version "mariadb" "repository-name"
+# ------------------------------------------------------------------------------
+remove_old_tool_version() {
+  local tool_name="$1"
+  local repo_name="${2:-$tool_name}"
+
+  case "$tool_name" in
+  mariadb)
+    stop_all_services "mariadb"
+    $STD apt purge -y 'mariadb*' >/dev/null 2>&1 || true
+    cleanup_tool_keyrings "mariadb"
+    ;;
+  mysql)
+    stop_all_services "mysql"
+    $STD apt purge -y 'mysql*' >/dev/null 2>&1 || true
+    # Keep data directory for safety (remove manually if needed)
+    # rm -rf /var/lib/mysql 2>/dev/null || true
+    cleanup_tool_keyrings "mysql"
+    ;;
+  mongodb)
+    stop_all_services "mongod"
+    $STD apt purge -y 'mongodb*' >/dev/null 2>&1 || true
+    # Keep data directory for safety (remove manually if needed)
+    # rm -rf /var/lib/mongodb 2>/dev/null || true
+    cleanup_tool_keyrings "mongodb"
+    ;;
+  node | nodejs)
+    $STD apt purge -y nodejs npm >/dev/null 2>&1 || true
+    # Clean up npm global modules
+    if command -v npm >/dev/null 2>&1; then
+      npm list -g 2>/dev/null | grep -oE '^  \S+' | awk '{print $1}' 2>/dev/null | while read -r module; do
+        npm uninstall -g "$module" >/dev/null 2>&1 || true
+      done || true
+    fi
+    cleanup_legacy_install "nodejs"
+    cleanup_tool_keyrings "nodesource"
+    ;;
+  php)
+    stop_all_services "php.*-fpm"
+    $STD apt purge -y 'php*' >/dev/null 2>&1 || true
+    rm -rf /etc/php 2>/dev/null || true
+    cleanup_tool_keyrings "deb.sury.org-php" "php"
+    ;;
+  postgresql)
+    stop_all_services "postgresql"
+    $STD apt purge -y 'postgresql*' >/dev/null 2>&1 || true
+    # Keep data directory for safety (can be removed manually if needed)
+    # rm -rf /var/lib/postgresql 2>/dev/null || true
+    cleanup_tool_keyrings "postgresql" "pgdg"
+    ;;
+  java)
+    $STD apt purge -y 'temurin*' 'adoptium*' 'openjdk*' >/dev/null 2>&1 || true
+    cleanup_tool_keyrings "adoptium"
+    ;;
+  ruby)
+    cleanup_legacy_install "ruby"
+    $STD apt purge -y 'ruby*' >/dev/null 2>&1 || true
+    ;;
+  rust)
+    cleanup_legacy_install "rust"
+    ;;
+  go | golang)
+    rm -rf /usr/local/go 2>/dev/null || true
+    cleanup_legacy_install "golang"
+    ;;
+  clickhouse)
+    stop_all_services "clickhouse-server"
+    $STD apt purge -y 'clickhouse*' >/dev/null 2>&1 || true
+    # Keep data directory for safety (remove manually if needed)
+    # rm -rf /var/lib/clickhouse 2>/dev/null || true
+    cleanup_tool_keyrings "clickhouse"
+    ;;
+  esac
+
+  # Clean up old repository files (both .list and .sources)
+  cleanup_old_repo_files "$repo_name"
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# Determine if tool update/upgrade is needed
+# Returns: 0 (update needed), 1 (already up-to-date)
+# Usage: if should_update_tool "mariadb" "11.4"; then ... fi
+# ------------------------------------------------------------------------------
+should_update_tool() {
+  local tool_name="$1"
+  local target_version="$2"
+  local current_version=""
+
+  # Get currently installed version
+  current_version=$(is_tool_installed "$tool_name" 2>/dev/null) || return 0 # Not installed = needs install
+
+  # If versions match at the requested precision, no update needed
+  if version_matches_spec "$current_version" "$target_version"; then
+    return 1 # No update needed
+  fi
+
+  return 0 # Update needed
+}
+
+# ------------------------------------------------------------------------------
+# Unified repository management for tools
+# Handles adding, updating, and verifying tool repositories
+# Usage: manage_tool_repository "mariadb" "11.4" "https://repo..." "GPG_key_url"
+# Supports: mariadb, mongodb, nodejs, postgresql, php, mysql
+# ------------------------------------------------------------------------------
+manage_tool_repository() {
+  local tool_name="$1"
+  local version="$2"
+  local repo_url="$3"
+  local gpg_key_url="${4:-}"
+  local distro_id repo_component suite
+
+  distro_id=$(get_os_info id)
+
+  case "$tool_name" in
+  mariadb)
+    if [[ -z "$repo_url" || -z "$gpg_key_url" ]]; then
+      msg_error "MariaDB repository requires repo_url and gpg_key_url"
+      return 65
+    fi
+
+    # Clean old repos first
+    cleanup_old_repo_files "mariadb"
+
+    # Get suite for fallback handling
+    local distro_codename
+    distro_codename=$(get_os_info codename)
+    suite=$(get_fallback_suite "$distro_id" "$distro_codename" "$repo_url/$distro_id")
+
+    # Setup new repository using deb822 format
+    setup_deb822_repo \
+      "mariadb" \
+      "$gpg_key_url" \
+      "$repo_url/$distro_id" \
+      "$suite" \
+      "main"
+    return 0
+    ;;
+
+  mongodb)
+    if [[ -z "$repo_url" || -z "$gpg_key_url" ]]; then
+      msg_error "MongoDB repository requires repo_url and gpg_key_url"
+      return 65
+    fi
+
+    # Clean old repos first
+    cleanup_old_repo_files "mongodb"
+
+    # Import GPG key with retry logic
+    if ! download_gpg_key "$gpg_key_url" "/etc/apt/keyrings/mongodb-server-${version}.gpg" "dearmor"; then
+      msg_error "Failed to download MongoDB GPG key"
+      msg_error "Hint: Check connectivity to downloads.mongodb.org or verify MongoDB version ${version} is still available"
+      return 7
+    fi
+    chmod 644 "/etc/apt/keyrings/mongodb-server-${version}.gpg"
+
+    # Setup repository
+    local distro_codename
+    distro_codename=$(get_os_info codename)
+
+    if [[ "$distro_id" == "debian" && "$(dpkg --print-architecture)" == "arm64" ]]; then
+      case "$distro_codename" in
+      trixie | forky) suite="noble" ;;
+      bookworm) suite="jammy" ;;
+      *) suite="noble" ;;
+      esac
+      distro_id="ubuntu"
+      repo_url="https://repo.mongodb.org/apt/ubuntu"
+    elif [[ "$distro_id" == "debian" ]]; then
+      case "$distro_codename" in
+      trixie | forky | sid)
+        # Testing/unstable releases fallback to latest stable suite
+        suite="bookworm"
+        ;;
+      bookworm)
+        suite="bookworm"
+        ;;
+      bullseye)
+        suite="bullseye"
+        ;;
+      *)
+        # Unknown release: fallback to latest stable suite
+        msg_warn "Unknown Debian release '${distro_codename}', using bookworm"
+        suite="bookworm"
+        ;;
+      esac
+    elif [[ "$distro_id" == "ubuntu" ]]; then
+      case "$distro_codename" in
+      oracular | plucky)
+        # Newer releases fallback to latest LTS
+        suite="noble"
+        ;;
+      noble)
+        suite="noble"
+        ;;
+      jammy)
+        suite="jammy"
+        ;;
+      focal)
+        suite="focal"
+        ;;
+      *)
+        # Unknown release: fallback to latest LTS
+        msg_warn "Unknown Ubuntu release '${distro_codename}', using noble"
+        suite="noble"
+        ;;
+      esac
+    else
+      # For other distros, try generic fallback
+      suite=$(get_fallback_suite "$distro_id" "$distro_codename" "$repo_url")
+    fi
+
+    repo_component="main"
+    [[ "$distro_id" == "ubuntu" ]] && repo_component="multiverse"
+
+    cat <<EOF >/etc/apt/sources.list.d/mongodb-org-${version}.sources
+Types: deb
+URIs: ${repo_url}
+Suites: ${suite}/mongodb-org/${version}
+Components: ${repo_component}
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/mongodb-server-${version}.gpg
+EOF
+    return 0
+    ;;
+
+  nodejs)
+    if [[ -z "$repo_url" || -z "$gpg_key_url" ]]; then
+      msg_error "Node.js repository requires repo_url and gpg_key_url"
+      return 65
+    fi
+
+    cleanup_old_repo_files "nodesource"
+
+    # NodeSource uses deb822 format with GPG from repo
+    local distro_codename
+    distro_codename=$(get_os_info codename)
+
+    # Download GPG key from NodeSource with retry logic
+    if ! download_gpg_key "$gpg_key_url" "/etc/apt/keyrings/nodesource.gpg" "dearmor"; then
+      msg_error "Failed to import NodeSource GPG key"
+      return 7
+    fi
+
+    cat <<EOF >/etc/apt/sources.list.d/nodesource.sources
+Types: deb
+URIs: $repo_url
+Suites: nodistro
+Components: main
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/nodesource.gpg
+EOF
+    return 0
+    ;;
+
+  php)
+    if [[ -z "$gpg_key_url" ]]; then
+      msg_error "PHP repository requires gpg_key_url"
+      return 65
+    fi
+
+    cleanup_old_repo_files "php"
+
+    # Download and install keyring with retry logic
+    if ! curl_with_retry "$gpg_key_url" "/tmp/debsuryorg-archive-keyring.deb"; then
+      msg_error "Failed to download PHP keyring"
+      msg_error "Hint: Check connectivity to packages.sury.org (packages.sury.org/php)"
+      return 7
+    fi
+    # Don't use /dev/null redirection for dpkg as it may use background processes
+    dpkg -i /tmp/debsuryorg-archive-keyring.deb >>"$(get_active_logfile)" 2>&1 || {
+      msg_error "Failed to install PHP keyring"
+      rm -f /tmp/debsuryorg-archive-keyring.deb
+      return 100
+    }
+    rm -f /tmp/debsuryorg-archive-keyring.deb
+
+    # Setup repository
+    local distro_codename
+    distro_codename=$(get_os_info codename)
+    cat <<EOF >/etc/apt/sources.list.d/php.sources
+Types: deb
+URIs: https://packages.sury.org/php
+Suites: $distro_codename
+Components: main
+Architectures: $(dpkg --print-architecture)
+Signed-By: /usr/share/keyrings/deb.sury.org-php.gpg
+EOF
+    return 0
+    ;;
+
+  mysql)
+    if [[ -z "$gpg_key_url" ]]; then
+      msg_error "MySQL repository requires gpg_key_url"
+      return 65
+    fi
+
+    cleanup_old_repo_files "mysql"
+
+    if ! download_gpg_key "$gpg_key_url" "/etc/apt/keyrings/mysql.gpg" "dearmor"; then
+      msg_error "Failed to import MySQL GPG key"
+      return 7
+    fi
+
+    local distro_codename suite component
+    distro_codename=$(get_os_info codename)
+
+    if [[ "$distro_id" == "debian" ]]; then
+      case "$distro_codename" in
+      trixie | forky | sid) suite="bookworm" ;;
+      bookworm | bullseye) suite="$distro_codename" ;;
+      *) suite="bookworm" ;;
+      esac
+    else
+      suite=$(get_fallback_suite "$distro_id" "$distro_codename" "$repo_url")
+    fi
+
+    case "$version" in
+    8.4 | 8.4.*) component="mysql-8.4-lts" ;;
+    8.0 | 8.0.*) component="mysql-8.0" ;;
+    *) component="mysql-${version}" ;;
+    esac
+
+    cat <<EOF >/etc/apt/sources.list.d/mysql.sources
+Types: deb
+URIs: ${repo_url}/
+Suites: ${suite}
+Components: ${component}
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/mysql.gpg
+EOF
+    return 0
+    ;;
+
+  postgresql)
+    if [[ -z "$gpg_key_url" ]]; then
+      msg_error "PostgreSQL repository requires gpg_key_url"
+      return 65
+    fi
+
+    cleanup_old_repo_files "postgresql"
+
+    # Import PostgreSQL key with retry logic
+    if ! download_gpg_key "$gpg_key_url" "/etc/apt/keyrings/postgresql.gpg" "dearmor"; then
+      msg_error "Failed to import PostgreSQL GPG key"
+      return 7
+    fi
+
+    # Setup repository
+    local distro_codename
+    distro_codename=$(get_os_info codename)
+    cat <<EOF >/etc/apt/sources.list.d/postgresql.sources
+Types: deb
+URIs: http://apt.postgresql.org/pub/repos/apt
+Suites: $distro_codename-pgdg
+Components: main
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/postgresql.gpg
+EOF
+    return 0
+    ;;
+
+  *)
+    msg_error "Unknown tool repository: $tool_name"
+    return 65
+    ;;
+  esac
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# Unified package upgrade function (with apt update caching)
+# ------------------------------------------------------------------------------
+upgrade_package() {
+  local package="$1"
+
+  # Use same caching logic as ensure_dependencies
+  local apt_cache_file="/var/cache/apt-update-timestamp"
+  local current_time=$(date +%s)
+  local last_update=0
+
+  if [[ -f "$apt_cache_file" ]]; then
+    last_update=$(cat "$apt_cache_file" 2>/dev/null || echo 0)
+  fi
+
+  if ((current_time - last_update > 300)); then
+    $STD apt update || {
+      msg_warn "APT update failed in upgrade_package - continuing with cached packages"
+    }
+    echo "$current_time" >"$apt_cache_file"
+  fi
+
+  $STD apt install --only-upgrade -y "$package" || {
+    msg_warn "Failed to upgrade $package"
+    return 100
+  }
+}
+
+# ------------------------------------------------------------------------------
+# Repository availability check with caching
+# ------------------------------------------------------------------------------
+# Note: Must use -gA (global) because tools.func is sourced inside update_os()
+# function scope. Plain 'declare -A' would create a local variable that gets
+# destroyed when update_os() returns, causing "unbound variable" errors later
+# when setup_postgresql/verify_repo_available tries to access the cache key.
+declare -gA _REPO_CACHE 2>/dev/null || declare -A _REPO_CACHE 2>/dev/null || true
+
+verify_repo_available() {
+  local repo_url="$1"
+  local suite="$2"
+  local cache_key="${repo_url}|${suite}"
+  local cache_ttl=300 # 5 minutes
+
+  # Check cache first (avoid repeated HTTP requests)
+  if [[ -n "${_REPO_CACHE[$cache_key]:-}" ]]; then
+    local cached_time cached_result
+    cached_time=$(echo "${_REPO_CACHE[$cache_key]}" | cut -d'|' -f1)
+    cached_result=$(echo "${_REPO_CACHE[$cache_key]}" | cut -d'|' -f2)
+    if (($(date +%s) - cached_time < cache_ttl)); then
+      [[ "$cached_result" == "1" ]] && return 0 || return 1
+    fi
+  fi
+
+  # Perform actual check with short timeout
+  local result=1
+  if curl -fsSL --max-time 5 --connect-timeout 3 "${repo_url}/dists/${suite}/Release" &>/dev/null; then
+    result=0
+  fi
+
+  # Cache the result
+  _REPO_CACHE[$cache_key]="$(date +%s)|$result"
+
+  return $result
+}
+
+# ------------------------------------------------------------------------------
+# Ensure dependencies are installed (with apt/apk update caching)
+# Supports both Debian (apt/dpkg) and Alpine (apk) systems
+# ------------------------------------------------------------------------------
+ensure_dependencies() {
+  local deps=("$@")
+  local missing=()
+
+  # Detect Alpine Linux
+  if [[ -f /etc/alpine-release ]]; then
+    for dep in "${deps[@]}"; do
+      if command -v "$dep" &>/dev/null; then
+        continue
+      fi
+      if apk info -e "$dep" &>/dev/null; then
+        continue
+      fi
+      missing+=("$dep")
+    done
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+      $STD apk add --no-cache "${missing[@]}" || {
+        local failed=()
+        for pkg in "${missing[@]}"; do
+          if ! $STD apk add --no-cache "$pkg" 2>/dev/null; then
+            failed+=("$pkg")
+          fi
+        done
+        if [[ ${#failed[@]} -gt 0 ]]; then
+          msg_error "Failed to install dependencies: ${failed[*]}"
+          return 1
+        fi
+      }
+    fi
+    return 0
+  fi
+
+  # Debian/Ubuntu: Fast batch check using dpkg-query
+  local installed_pkgs
+  installed_pkgs=$(dpkg-query -W -f='${Package}\n' 2>/dev/null | sort -u)
+
+  for dep in "${deps[@]}"; do
+    # First check if command exists (for binaries like jq, curl)
+    if command -v "$dep" &>/dev/null; then
+      continue
+    fi
+    # Then check if package is installed
+    if echo "$installed_pkgs" | grep -qx "$dep"; then
+      continue
+    fi
+    missing+=("$dep")
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    # Only run apt update if not done recently (within last 5 minutes)
+    local apt_cache_file="/var/cache/apt-update-timestamp"
+    local current_time
+    current_time=$(date +%s)
+    local last_update=0
+
+    if [[ -f "$apt_cache_file" ]]; then
+      last_update=$(cat "$apt_cache_file" 2>/dev/null || echo 0)
+    fi
+
+    if ((current_time - last_update > 300)); then
+      # Ensure orphaned sources are cleaned before updating
+      cleanup_orphaned_sources 2>/dev/null || true
+
+      if ! $STD apt update; then
+        ensure_apt_working || return 100
+      fi
+      echo "$current_time" >"$apt_cache_file"
+    fi
+
+    $STD apt install -y "${missing[@]}" || {
+      # Fallback: try installing one by one to identify problematic package
+      local failed=()
+      for pkg in "${missing[@]}"; do
+        if ! $STD apt install -y "$pkg" 2>/dev/null; then
+          failed+=("$pkg")
+        fi
+      done
+      if [[ ${#failed[@]} -gt 0 ]]; then
+        msg_error "Failed to install dependencies: ${failed[*]}"
+        return 100
+      fi
+    }
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# Smart version comparison
+# ------------------------------------------------------------------------------
+version_gt() {
+  test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1"
+}
+
+# ------------------------------------------------------------------------------
+# Get system architecture (normalized)
+# ------------------------------------------------------------------------------
+get_system_arch() {
+  local arch_type="${1:-dpkg}" # dpkg, uname, or both
+  local arch
+
+  case "$arch_type" in
+  dpkg)
+    arch=$(dpkg --print-architecture 2>/dev/null)
+    ;;
+  uname)
+    arch=$(uname -m)
+    [[ "$arch" == "x86_64" ]] && arch="amd64"
+    [[ "$arch" == "aarch64" ]] && arch="arm64"
+    ;;
+  both | *)
+    arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
+    [[ "$arch" == "x86_64" ]] && arch="amd64"
+    [[ "$arch" == "aarch64" ]] && arch="arm64"
+    ;;
+  esac
+
+  echo "$arch"
+}
+
+# ------------------------------------------------------------------------------
+# Create temporary directory with automatic cleanup
+# Appends to a shared list so existing EXIT traps are preserved.
+# ------------------------------------------------------------------------------
+_tools_temp_dirs=()
+
+_tools_cleanup_temp_dirs() {
+  local d
+  for d in "${_tools_temp_dirs[@]}"; do
+    rm -rf "$d" 2>/dev/null || true
+  done
+}
+
+_tools_register_temp_cleanup() {
+  [[ "${_TOOLS_TEMP_TRAP_SET:-}" == "1" ]] && return 0
+  _TOOLS_TEMP_TRAP_SET=1
+  local existing
+  existing=$(trap -p EXIT 2>/dev/null | sed -n "s/^trap -- '\\(.*\\)' EXIT/\1/p" || true)
+  if [[ -n "$existing" && "$existing" != "_tools_cleanup_temp_dirs" ]]; then
+    trap "_tools_cleanup_temp_dirs; ${existing}" EXIT ERR INT TERM
+  else
+    trap _tools_cleanup_temp_dirs EXIT ERR INT TERM
+  fi
+}
+
+create_temp_dir() {
+  local tmp_dir
+  tmp_dir=$(mktemp -d) || return 1
+  _tools_temp_dirs+=("$tmp_dir")
+  _tools_register_temp_cleanup
+  echo "$tmp_dir"
+}
+
+# ------------------------------------------------------------------------------
+# create_backup <path> [<path> ...] / restore_backup
+#
+# Standardized data backup helpers for update_script(). They replace the
+# hand-rolled "cp/mv to a sibling dir, update, copy back, rm" dance that is
+# duplicated across the ct/*.sh update functions.
+#
+# create_backup <path> [<path> ...]
+#   - Copies each given file/directory into a persistent store at
+#     /opt/<NSAPP>.backup, mirroring its absolute path inside the store, and
+#     records it in a manifest so restore_backup needs no arguments.
+#   - Idempotent: if a store from a previous (failed) run already exists, it is
+#     left untouched and no new backup is taken. This keeps the last-known-good
+#     data instead of overwriting it with now-partially-updated data on retry.
+#   - Missing source paths are skipped with a warning (not fatal).
+#   - Aborts the update on copy failure: if any file/dir cannot be backed up,
+#     the half-written store is removed and the script exits, so the update
+#     never runs against unprotected data (and a retry re-attempts a clean
+#     backup rather than skipping it).
+#
+# restore_backup
+#   - Copies every path recorded in the manifest back to its origin (replacing
+#     whatever the update left there), then deletes the store.
+#   - No-op (with a warning) if no store exists.
+#
+# Override the store location with BACKUP_DIR if the default does not fit.
+# ------------------------------------------------------------------------------
+create_backup() {
+  local store manifest path dest
+  store="${BACKUP_DIR:-/opt/${NSAPP:-app}.backup}"
+  manifest="${store}/.manifest"
+
+  [[ $# -eq 0 ]] && {
+    msg_warn "create_backup called without any paths"
+    return 0
+  }
+
+  if [[ -f "$manifest" ]]; then
+    msg_ok "Existing backup found at ${store}, skipping backup"
+    return 0
+  fi
+
+  msg_info "Backing up data"
+  if ! mkdir -p "$store" || ! : >"$manifest"; then
+    msg_error "Backup failed: could not create store at ${store} - aborting update"
+    rm -rf "$store"
+    exit 1
+  fi
+  for path in "$@"; do
+    path="${path%/}"
+    if [[ ! -e "$path" ]]; then
+      msg_warn "Skipping backup of '${path}' (not found)"
+      continue
+    fi
+    dest="${store}/files${path}"
+    if ! mkdir -p "$(dirname "$dest")" || ! cp -a "$path" "$dest"; then
+      msg_error "Backup of '${path}' failed - aborting update"
+      rm -rf "$store"
+      exit 1
+    fi
+    echo "$path" >>"$manifest"
+  done
+  msg_ok "Backed up data to ${store}"
+}
+
+restore_backup() {
+  local store manifest path src
+  store="${BACKUP_DIR:-/opt/${NSAPP:-app}.backup}"
+  manifest="${store}/.manifest"
+
+  if [[ ! -f "$manifest" ]]; then
+    msg_warn "No backup found to restore"
+    return 0
+  fi
+
+  msg_info "Restoring data"
+  while IFS= read -r path; do
+    [[ -z "$path" ]] && continue
+    src="${store}/files${path}"
+    [[ -e "$src" ]] || continue
+    mkdir -p "$(dirname "$path")"
+    rm -rf "$path"
+    cp -a "$src" "$path"
+  done <"$manifest"
+  rm -rf "$store"
+  msg_ok "Restored data"
+}
+
+# ------------------------------------------------------------------------------
+# Check if package is installed (supports both Debian and Alpine)
+# ------------------------------------------------------------------------------
+is_package_installed() {
+  local package="$1"
+  if [[ -f /etc/alpine-release ]]; then
+    apk info -e "$package" &>/dev/null
+  else
+    dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "^install ok installed$"
+  fi
+}
+
+should_upgrade() {
+  local current="$1"
+  local target="$2"
+
+  [[ -z "$current" ]] && return 0
+  version_gt "$target" "$current" && return 0
+  return 1
+}
+
+# ------------------------------------------------------------------------------
+# Get OS information (cached for performance)
+# ------------------------------------------------------------------------------
+get_os_info() {
+  local field="${1:-all}" # id, codename, version, version_id, all
+
+  # Cache OS info to avoid repeated file reads
+  if [[ -z "${_OS_ID:-}" ]]; then
+    export _OS_ID=$(awk -F= '/^ID=/{gsub(/"/,"",$2); print $2}' /etc/os-release)
+    export _OS_CODENAME=$(awk -F= '/^VERSION_CODENAME=/{gsub(/"/,"",$2); print $2}' /etc/os-release)
+    export _OS_VERSION=$(awk -F= '/^VERSION_ID=/{gsub(/"/,"",$2); print $2}' /etc/os-release)
+    export _OS_VERSION_FULL=$(awk -F= '/^VERSION=/{gsub(/"/,"",$2); print $2}' /etc/os-release)
+  fi
+
+  case "$field" in
+  id) echo "$_OS_ID" ;;
+  codename) echo "$_OS_CODENAME" ;;
+  version) echo "$_OS_VERSION" ;;
+  version_id) echo "$_OS_VERSION" ;;
+  version_full) echo "$_OS_VERSION_FULL" ;;
+  all) echo "ID=$_OS_ID CODENAME=$_OS_CODENAME VERSION=$_OS_VERSION" ;;
+  *) echo "$_OS_ID" ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------
+# Check if running on specific OS
+# ------------------------------------------------------------------------------
+is_debian() {
+  [[ "$(get_os_info id)" == "debian" ]]
+}
+
+is_ubuntu() {
+  [[ "$(get_os_info id)" == "ubuntu" ]]
+}
+
+# ------------------------------------------------------------------------------
+# Get Debian/Ubuntu major version
+# ------------------------------------------------------------------------------
+get_os_version_major() {
+  local version=$(get_os_info version)
+  echo "${version%%.*}"
+}
+
+# ------------------------------------------------------------------------------
+# Download file with retry logic and progress
+# ------------------------------------------------------------------------------
+download_file() {
+  local url="$1"
+  local output="$2"
+  local max_retries="${3:-3}"
+  local show_progress="${4:-false}"
+
+  local curl_opts=(-fsSL)
+  [[ "$show_progress" == "true" ]] && curl_opts=(-fL#)
+
+  for attempt in $(seq 1 $max_retries); do
+    if curl "${curl_opts[@]}" -o "$output" "$url"; then
+      return 0
+    fi
+
+    if [[ $attempt -lt $max_retries ]]; then
+      msg_warn "Download failed, retrying... (attempt $attempt/$max_retries)"
+      sleep 2
+    fi
+  done
+
+  msg_error "Failed to download: $url"
+  msg_error "Hint: Check network connectivity or DNS resolution. The server may be unreachable or the URL may have changed."
+  return 250
+}
+
+# ------------------------------------------------------------------------------
+# Get fallback suite for repository (comprehensive mapping)
+# ------------------------------------------------------------------------------
+get_fallback_suite() {
+  local distro_id="$1"
+  local distro_codename="$2"
+  local repo_base_url="$3"
+
+  # Check if current codename works
+  if verify_repo_available "$repo_base_url" "$distro_codename"; then
+    echo "$distro_codename"
+    return 0
+  fi
+
+  # Build fallback chain based on distro
+  local fallback_chain=()
+  case "$distro_id" in
+  debian)
+    case "$distro_codename" in
+    trixie | forky | sid)
+      fallback_chain=("bookworm" "bullseye")
+      ;;
+    bookworm)
+      fallback_chain=("bookworm" "bullseye")
+      ;;
+    bullseye)
+      fallback_chain=("bullseye" "buster")
+      ;;
+    *)
+      fallback_chain=("bookworm" "bullseye")
+      ;;
+    esac
+    ;;
+  ubuntu)
+    case "$distro_codename" in
+    oracular | plucky)
+      fallback_chain=("noble" "jammy" "focal")
+      ;;
+    noble)
+      fallback_chain=("noble" "jammy")
+      ;;
+    mantic | lunar)
+      fallback_chain=("jammy" "focal")
+      ;;
+    jammy)
+      fallback_chain=("jammy" "focal")
+      ;;
+    focal)
+      fallback_chain=("focal" "bionic")
+      ;;
+    *)
+      fallback_chain=("jammy" "focal")
+      ;;
+    esac
+    ;;
+  *)
+    echo "$distro_codename"
+    return 0
+    ;;
+  esac
+
+  # Try each fallback suite with actual HTTP check
+  for suite in "${fallback_chain[@]}"; do
+    if verify_repo_available "$repo_base_url" "$suite"; then
+      debug_log "Fallback suite found: $suite for $distro_codename"
+      echo "$suite"
+      return 0
+    fi
+  done
+
+  # Last resort: return first fallback without verification
+  echo "${fallback_chain[0]:-$distro_codename}"
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# Verify package source and version
+# ------------------------------------------------------------------------------
+verify_package_source() {
+  local package="$1"
+  local expected_version="$2"
+
+  if apt-cache policy "$package" 2>/dev/null | grep -q "$expected_version"; then
+    return 0
+  fi
+  return 1
+}
+
+# ------------------------------------------------------------------------------
+# Check if running on LTS version
+# ------------------------------------------------------------------------------
+is_lts_version() {
+  local os_id=$(get_os_info id)
+  local codename=$(get_os_info codename)
+
+  if [[ "$os_id" == "ubuntu" ]]; then
+    case "$codename" in
+    focal | jammy | noble) return 0 ;; # 20.04, 22.04, 24.04
+    *) return 1 ;;
+    esac
+  elif [[ "$os_id" == "debian" ]]; then
+    # Debian releases are all "stable"
+    case "$codename" in
+    bullseye | bookworm | trixie) return 0 ;;
+    *) return 1 ;;
+    esac
+  fi
+
+  return 1
+}
+
+# ------------------------------------------------------------------------------
+# Get optimal number of parallel jobs (cached)
+# Features:
+#   - CPU count detection
+#   - Memory-based limiting (1.5GB per job for safety)
+#   - Current load awareness
+#   - Container/VM detection for conservative limits
+# ------------------------------------------------------------------------------
+get_parallel_jobs() {
+  if [[ -z "${_PARALLEL_JOBS:-}" ]]; then
+    local cpu_count
+    cpu_count=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)
+
+    local mem_mb
+    mem_mb=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo 1024)
+
+    # Assume 1.5GB per compilation job for safety margin
+    local max_by_mem=$((mem_mb / 1536))
+    ((max_by_mem < 1)) && max_by_mem=1
+
+    # Check current system load - reduce jobs if already loaded
+    local load_1m
+    load_1m=$(awk '{print int($1)}' /proc/loadavg 2>/dev/null || echo 0)
+    local available_cpus=$((cpu_count - load_1m))
+    ((available_cpus < 1)) && available_cpus=1
+
+    # Take minimum of: available CPUs, memory-limited, and total CPUs
+    local max_jobs=$cpu_count
+    ((max_by_mem < max_jobs)) && max_jobs=$max_by_mem
+    ((available_cpus < max_jobs)) && max_jobs=$available_cpus
+
+    # Container detection - be more conservative in containers
+    if [[ -f /.dockerenv ]] || grep -q 'lxc\|docker\|container' /proc/1/cgroup 2>/dev/null; then
+      # Reduce by 25% in containers to leave headroom
+      max_jobs=$((max_jobs * 3 / 4))
+      ((max_jobs < 1)) && max_jobs=1
+    fi
+
+    # Final bounds check
+    ((max_jobs < 1)) && max_jobs=1
+    ((max_jobs > cpu_count)) && max_jobs=$cpu_count
+
+    export _PARALLEL_JOBS=$max_jobs
+    debug_log "Parallel jobs: $_PARALLEL_JOBS (CPUs: $cpu_count, mem-limit: $max_by_mem, load: $load_1m)"
+  fi
+  echo "$_PARALLEL_JOBS"
+}
+
+# ------------------------------------------------------------------------------
+# Get default PHP version for OS
+# Updated for latest distro releases
+# ------------------------------------------------------------------------------
+get_default_php_version() {
+  local os_id
+  os_id=$(get_os_info id)
+  local os_version
+  os_version=$(get_os_version_major)
+
+  case "$os_id" in
+  debian)
+    case "$os_version" in
+    14) echo "8.4" ;; # Debian 14 (Forky) - future
+    13) echo "8.3" ;; # Debian 13 (Trixie)
+    12) echo "8.2" ;; # Debian 12 (Bookworm)
+    11) echo "7.4" ;; # Debian 11 (Bullseye)
+    *) echo "8.3" ;;  # Default to latest stable
+    esac
+    ;;
+  ubuntu)
+    case "$os_version" in
+    26) echo "8.4" ;; # Ubuntu 26.04 - future
+    24) echo "8.3" ;; # Ubuntu 24.04 LTS (Noble)
+    22) echo "8.1" ;; # Ubuntu 22.04 LTS (Jammy)
+    20) echo "7.4" ;; # Ubuntu 20.04 LTS (Focal)
+    *) echo "8.3" ;;  # Default to latest stable
+    esac
+    ;;
+  *)
+    echo "8.3"
+    ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------
+# Get default Python version for OS
+# Updated for latest distro releases
+# ------------------------------------------------------------------------------
+get_default_python_version() {
+  local os_id
+  os_id=$(get_os_info id)
+  local os_version
+  os_version=$(get_os_version_major)
+
+  case "$os_id" in
+  debian)
+    case "$os_version" in
+    14) echo "3.13" ;; # Debian 14 (Forky) - future
+    13) echo "3.12" ;; # Debian 13 (Trixie)
+    12) echo "3.11" ;; # Debian 12 (Bookworm)
+    11) echo "3.9" ;;  # Debian 11 (Bullseye)
+    *) echo "3.12" ;;  # Default to latest stable
+    esac
+    ;;
+  ubuntu)
+    case "$os_version" in
+    26) echo "3.13" ;; # Ubuntu 26.04 - future
+    24) echo "3.12" ;; # Ubuntu 24.04 LTS
+    22) echo "3.10" ;; # Ubuntu 22.04 LTS
+    20) echo "3.8" ;;  # Ubuntu 20.04 LTS
+    *) echo "3.12" ;;  # Default to latest stable
+    esac
+    ;;
+  *)
+    echo "3.12"
+    ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------
+# Get default Node.js LTS version
+# ------------------------------------------------------------------------------
+get_default_nodejs_version() {
+  # Current LTS as of January 2026 (Node.js 24 LTS)
+  echo "24"
+}
+
+# ------------------------------------------------------------------------------
+# Check if package manager is locked
+# ------------------------------------------------------------------------------
+is_apt_locked() {
+  if fuser /var/lib/dpkg/lock-frontend &>/dev/null ||
+    fuser /var/lib/apt/lists/lock &>/dev/null ||
+    fuser /var/cache/apt/archives/lock &>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+# ------------------------------------------------------------------------------
+# Wait for apt to be available
+# ------------------------------------------------------------------------------
+wait_for_apt() {
+  local max_wait="${1:-300}" # 5 minutes default
+  local waited=0
+
+  while is_apt_locked; do
+    if [[ $waited -ge $max_wait ]]; then
+      msg_error "Timeout waiting for apt to be available"
+      msg_error "Hint: Another process (apt, dpkg, unattended-upgrades) may hold a lock. Check: ps aux | grep -E 'apt|dpkg'"
+      return 100
+    fi
+
+    sleep 5
+    waited=$((waited + 5))
+  done
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# Cleanup old repository files (migration helper)
+# ------------------------------------------------------------------------------
+cleanup_old_repo_files() {
+  local app="$1"
+
+  # Remove old-style .list files (including backups)
+  rm -f /etc/apt/sources.list.d/"${app}"*.list
+  rm -f /etc/apt/sources.list.d/"${app}"*.list.save
+  rm -f /etc/apt/sources.list.d/"${app}"*.list.distUpgrade
+  rm -f /etc/apt/sources.list.d/"${app}"*.list.dpkg-*
+
+  # Remove old GPG keys from trusted.gpg.d
+  rm -f /etc/apt/trusted.gpg.d/"${app}"*.gpg
+
+  # Remove keyrings from /etc/apt/keyrings
+  rm -f /etc/apt/keyrings/"${app}"*.gpg
+
+  # Remove ALL .sources files for this app (including the main one)
+  # This ensures no orphaned .sources files reference deleted keyrings
+  rm -f /etc/apt/sources.list.d/"${app}"*.sources
+}
+
+# ------------------------------------------------------------------------------
+# Cleanup orphaned .sources files that reference missing keyrings
+# This prevents APT signature verification errors
+# Call this at the start of any setup function to ensure APT is in a clean state
+# ------------------------------------------------------------------------------
+cleanup_orphaned_sources() {
+  local sources_dir="/etc/apt/sources.list.d"
+  local keyrings_dir="/etc/apt/keyrings"
+
+  [[ ! -d "$sources_dir" ]] && return 0
+
+  while IFS= read -r -d '' sources_file; do
+    local basename_file
+    basename_file=$(basename "$sources_file")
+
+    # NEVER remove debian.sources - this is the standard Debian repository
+    if [[ "$basename_file" == "debian.sources" ]]; then
+      continue
+    fi
+
+    # Extract Signed-By path from .sources file
+    local keyring_path
+    keyring_path=$(grep -E '^Signed-By:' "$sources_file" 2>/dev/null | awk '{print $2}' 2>/dev/null || true)
+
+    # If keyring doesn't exist, remove the .sources file
+    if [[ -n "$keyring_path" ]] && [[ ! -f "$keyring_path" ]]; then
+      rm -f "$sources_file"
+    fi
+  done < <(find "$sources_dir" -name "*.sources" -print0 2>/dev/null)
+
+  # Also check for broken symlinks in keyrings directory
+  if [[ -d "$keyrings_dir" ]]; then
+    find "$keyrings_dir" -type l ! -exec test -e {} \; -delete 2>/dev/null || true
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# Ensure APT is in a working state before installing packages
+# This should be called at the start of any setup function
+# Features:
+#   - Fixes interrupted dpkg operations
+#   - Removes orphaned sources
+#   - Handles lock file contention
+#   - Progressive recovery with fallbacks
+# ------------------------------------------------------------------------------
+ensure_apt_working() {
+  local max_wait=60 # Maximum seconds to wait for apt lock
+
+  # Wait for any existing apt/dpkg processes to finish
+  local waited=0
+  while fuser /var/lib/dpkg/lock-frontend &>/dev/null ||
+    fuser /var/lib/apt/lists/lock &>/dev/null ||
+    fuser /var/cache/apt/archives/lock &>/dev/null; do
+    if ((waited >= max_wait)); then
+      msg_warn "APT lock held for ${max_wait}s, attempting to continue anyway"
+      break
+    fi
+    debug_log "Waiting for APT lock (${waited}s)..."
+    sleep 2
+    ((waited += 2))
+  done
+
+  # Fix interrupted dpkg operations first
+  # This can happen if a previous installation was interrupted (e.g., by script error)
+  if dpkg --audit 2>&1 | grep -q .; then
+    debug_log "Fixing interrupted dpkg operations"
+    $STD dpkg --configure -a 2>/dev/null || true
+  fi
+
+  # Clean up orphaned sources first
+  cleanup_orphaned_sources
+
+  # Try to update package lists
+  if ! $STD apt update 2>/dev/null; then
+    debug_log "First apt update failed, trying recovery steps"
+
+    # Step 1: Clear apt lists cache
+    rm -rf /var/lib/apt/lists/* 2>/dev/null || true
+    mkdir -p /var/lib/apt/lists/partial
+
+    # Step 2: Clean up potentially broken sources
+    cleanup_orphaned_sources
+
+    # Step 3: Try again
+    if ! $STD apt update 2>/dev/null; then
+      # Step 4: More aggressive - remove all third-party sources
+      msg_warn "APT update still failing, removing third-party sources"
+      find /etc/apt/sources.list.d/ -type f \( -name "*.sources" -o -name "*.list" \) \
+        ! -name "debian.sources" -delete 2>/dev/null || true
+
+      # Final attempt
+      if ! $STD apt update; then
+        msg_error "Cannot update package lists - APT is critically broken"
+        return 100
+      fi
+    fi
+  fi
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# Standardized deb822 repository setup (with optional Architectures)
+# Always runs apt update after repo creation to ensure package availability
+# ------------------------------------------------------------------------------
+setup_deb822_repo() {
+  local name="$1"
+  local gpg_url="$2"
+  local repo_url="$3"
+  local suite="$4"
+  local component="${5:-main}"
+  local architectures="${6-}" # optional
+  local enabled="${7-}"       # optional: "true" or "false"
+
+  # Validate required parameters
+  if [[ -z "$name" || -z "$gpg_url" || -z "$repo_url" || -z "$suite" ]]; then
+    msg_error "setup_deb822_repo: missing required parameters (name=$name repo=$repo_url suite=$suite)"
+    return 65
+  fi
+
+  # Cleanup
+  cleanup_old_repo_files "$name"
+  cleanup_orphaned_sources
+
+  mkdir -p /etc/apt/keyrings || {
+    msg_error "Failed to create /etc/apt/keyrings"
+    return 252
+  }
+
+  # Import GPG key (auto-detect binary vs ASCII-armored format)
+  local tmp_gpg
+  tmp_gpg=$(mktemp) || return 252
+  curl -fsSL "$gpg_url" -o "$tmp_gpg" || {
+    msg_error "Failed to download GPG key for ${name} from: ${gpg_url}"
+    msg_error "Hint: Check network connectivity. If behind a proxy or firewall, ensure HTTPS access to $(echo "$gpg_url" | grep -oE 'https?://[^/]+') is allowed."
+    rm -f "$tmp_gpg"
+    return 7
+  }
+
+  if grep -q "BEGIN PGP" "$tmp_gpg" 2>/dev/null; then
+    # ASCII-armored — dearmor to binary
+    gpg --dearmor --yes -o "/etc/apt/keyrings/${name}.gpg" <"$tmp_gpg" || {
+      msg_error "Failed to install GPG key for ${name}"
+      rm -f "$tmp_gpg"
+      return 251
+    }
+  else
+    # Already binary — copy directly
+    cp -f "$tmp_gpg" "/etc/apt/keyrings/${name}.gpg" || {
+      msg_error "Failed to install GPG key for ${name}"
+      rm -f "$tmp_gpg"
+      return 252
+    }
+  fi
+  rm -f "$tmp_gpg"
+  chmod 644 "/etc/apt/keyrings/${name}.gpg"
+
+  # Write deb822
+  {
+    echo "Types: deb"
+    echo "URIs: $repo_url"
+    echo "Suites: $suite"
+    # Flat repositories (suite ending with "/" or "./") must not have Components
+    if [[ "$suite" != *"/" && -n "$component" ]]; then
+      echo "Components: $component"
+    fi
+    [[ -n "$architectures" ]] && echo "Architectures: $architectures"
+    echo "Signed-By: /etc/apt/keyrings/${name}.gpg"
+    [[ -n "$enabled" ]] && echo "Enabled: $enabled"
+  } >/etc/apt/sources.list.d/${name}.sources
+
+  if ! $STD apt update; then
+    msg_error "apt update failed after adding repository: ${name}"
+    msg_error "Hint: Verify suite '${suite}' and URI '${repo_url}' are valid for this distribution."
+    return 100
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# Package version hold/unhold helpers
+# ------------------------------------------------------------------------------
+hold_package_version() {
+  local package="$1"
+  $STD apt-mark hold "$package" || {
+    msg_warn "Failed to hold package version: ${package}"
+  }
+}
+
+unhold_package_version() {
+  local package="$1"
+  $STD apt-mark unhold "$package" || {
+    msg_warn "Failed to unhold package version: ${package}"
+  }
+}
+
+# ------------------------------------------------------------------------------
+# Safe service restart with verification
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Safe service restart with retry logic and wait-for-ready
+# Usage: safe_service_restart "nginx" [timeout_seconds]
+# ------------------------------------------------------------------------------
+safe_service_restart() {
+  local service="$1"
+  local timeout="${2:-30}" # Default 30 second timeout
+  local max_retries=2
+  local retry=0
+
+  while [[ $retry -le $max_retries ]]; do
+    if systemctl is-active --quiet "$service"; then
+      $STD systemctl restart "$service"
+    else
+      $STD systemctl start "$service"
+    fi
+
+    # Wait for service to become active with timeout
+    local waited=0
+    while [[ $waited -lt $timeout ]]; do
+      if systemctl is-active --quiet "$service"; then
+        return 0
+      fi
+      sleep 1
+      ((waited++))
+    done
+
+    retry=$((retry + 1))
+    if [[ $retry -le $max_retries ]]; then
+      debug_log "Service $service failed to start, retrying ($retry/$max_retries)..."
+      # Try to stop completely before retry
+      systemctl stop "$service" 2>/dev/null || true
+      sleep 2
+    fi
+  done
+
+  msg_error "Failed to start $service after $max_retries retries"
+  systemctl status "$service" --no-pager -l 2>/dev/null | head -20 || true
+  return 150
+}
+
+# ------------------------------------------------------------------------------
+# Enable and start service (with error handling)
+# ------------------------------------------------------------------------------
+enable_and_start_service() {
+  local service="$1"
+
+  if ! systemctl enable "$service" &>/dev/null; then
+    msg_error "Failed to enable service: $service"
+    return 150
+  fi
+
+  if ! systemctl start "$service" &>/dev/null; then
+    msg_error "Failed to start $service"
+    systemctl status "$service" --no-pager
+    return 150
+  fi
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# Check if service is enabled
+# ------------------------------------------------------------------------------
+is_service_enabled() {
+  local service="$1"
+  systemctl is-enabled --quiet "$service" 2>/dev/null
+}
+
+# ------------------------------------------------------------------------------
+# Check if service is running
+# ------------------------------------------------------------------------------
+is_service_running() {
+  local service="$1"
+  systemctl is-active --quiet "$service" 2>/dev/null
+}
+
+
+# ------------------------------------------------------------------------------
+# Performance timing helper
+# ------------------------------------------------------------------------------
+start_timer() {
+  echo $(date +%s)
+}
+
+end_timer() {
+  local start_time="$1"
+  local label="${2:-Operation}"
+  local end_time
+  end_time=$(date +%s)
+  local duration=$((end_time - start_time))
+  echo "${label} took ${duration}s"
+}
+
+# ------------------------------------------------------------------------------
+# GPG key fingerprint verification
+# ------------------------------------------------------------------------------
+verify_gpg_fingerprint() {
+  local key_file="$1"
+  local expected_fingerprint="$2"
+
+  local actual_fingerprint
+  actual_fingerprint=$(gpg --show-keys --with-fingerprint --with-colons "$key_file" 2>&1 | grep -m1 '^fpr:' | cut -d: -f10)
+
+  if [[ "$actual_fingerprint" == "$expected_fingerprint" ]]; then
+    return 0
+  fi
+
+  msg_error "GPG fingerprint mismatch! Expected: $expected_fingerprint, Got: $actual_fingerprint"
+  return 65
+}
+
+# ------------------------------------------------------------------------------
+# Creates and installs self-signed certificates.
+#
+# Description:
+#   - Create a self-signed certificate with option to override application name
+#
+# Variables:
+#   APP   - Application name (default: $APPLICATION variable)
+# ------------------------------------------------------------------------------
+create_self_signed_cert() {
+  local APP_NAME="${1:-${APPLICATION}}"
+  local EXTRA_SAN="${2:-}"
+  local HOSTNAME="$(hostname -f)"
+  local IP="$(hostname -I | awk '{print $1}')"
+  local APP_NAME_LC=$(echo "${APP_NAME,,}" | tr -d ' ')
+  local CERT_DIR="/etc/ssl/${APP_NAME_LC}"
+  local CERT_KEY="${CERT_DIR}/${APP_NAME_LC}.key"
+  local CERT_CRT="${CERT_DIR}/${APP_NAME_LC}.crt"
+
+  if [[ -f "$CERT_CRT" && -f "$CERT_KEY" ]]; then
+    return 0
+  fi
+
+  # Use ensure_dependencies for cleaner handling
+  ensure_dependencies openssl || {
+    msg_error "Failed to install OpenSSL"
+    return 100
+  }
+
+  local san="DNS:${HOSTNAME},DNS:localhost,IP:${IP},IP:127.0.0.1"
+  [[ -n "$EXTRA_SAN" ]] && san="${san},${EXTRA_SAN}"
+
+  mkdir -p "$CERT_DIR"
+  $STD openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 \
+    -subj "/CN=${HOSTNAME}" \
+    -addext "subjectAltName=${san}" \
+    -keyout "$CERT_KEY" \
+    -out "$CERT_CRT" || {
+    msg_error "Failed to create self-signed certificate"
+    return 150
+  }
+
+  chmod 600 "$CERT_KEY"
+  chmod 644 "$CERT_CRT"
+}
+
+# ------------------------------------------------------------------------------
+# Downloads file with optional progress indicator using pv.
+#
+# Arguments:
+#   $1 - URL
+#   $2 - Destination path
+# ------------------------------------------------------------------------------
+
+download_with_progress() {
+  local url="$1"
+  local output="$2"
+  if [ -n "$SPINNER_PID" ] && ps -p "$SPINNER_PID" >/dev/null; then kill "$SPINNER_PID" >/dev/null; fi
+
+  ensure_dependencies pv
+  set -o pipefail
+
+  # Content-Length aus HTTP-Header holen
+  local content_length
+  content_length=$(curl -fsSLI "$url" | awk '/Content-Length/ {print $2}' | tr -d '\r' || true)
+
+  if [[ -z "$content_length" ]]; then
+    if ! curl -fL# -o "$output" "$url"; then
+      msg_error "Download failed: $url"
+      return 7
+    fi
+  else
+    if ! curl -fsSL "$url" | pv -s "$content_length" >"$output"; then
+      msg_error "Download failed: $url"
+      return 7
+    fi
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# Ensures /usr/local/bin is permanently in system PATH.
+#
+# Description:
+#   - Adds to /etc/profile.d for login shells (SSH, noVNC)
+#   - Adds to /root/.bashrc for non-login shells (pct enter)
+# ------------------------------------------------------------------------------
+
+ensure_usr_local_bin_persist() {
+  # Skip on Proxmox host
+  command -v pveversion &>/dev/null && return
+
+  # Login shells: /etc/profile.d/
+  local PROFILE_FILE="/etc/profile.d/custom_path.sh"
+  if [[ ! -f "$PROFILE_FILE" ]]; then
+    echo 'export PATH="/usr/local/bin:$PATH"' >"$PROFILE_FILE"
+    chmod +x "$PROFILE_FILE"
+  fi
+
+  # Non-login shells (pct enter): /root/.bashrc
+  local BASHRC="/root/.bashrc"
+  if [[ -f "$BASHRC" ]] && ! grep -q '/usr/local/bin' "$BASHRC"; then
+    echo 'export PATH="/usr/local/bin:$PATH"' >>"$BASHRC"
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# curl_download - Downloads a file with stall detection and retry.
+#
+# Usage: curl_download <output_file> <url>
+#
+# Uses --speed-limit / --speed-time instead of a hard --max-time cap so that
+# slow but progressing downloads (e.g. large .deb files from slow mirrors) are
+# never aborted mid-transfer.  Only aborts when throughput drops below 1 KB/s
+# for 60 consecutive seconds (i.e. a genuine stall or dead connection).
+# Retries up to 3 times on failure.
+# Returns 0 on success, 7 if all attempts fail.
+# ------------------------------------------------------------------------------
+curl_download() {
+  local output="$1"
+  local url="$2"
+  local retries=3
+  local attempt=1
+
+  while ((attempt <= retries)); do
+    if curl --connect-timeout 15 \
+      --speed-limit 1024 \
+      --speed-time 60 \
+      -fsSL -o "$output" "$url"; then
+      return 0
+    fi
+    if ((attempt < retries)); then
+      msg_warn "Download failed or stalled (attempt ${attempt}/${retries}), retrying..."
+    fi
+    ((attempt++))
+  done
+  return 7
+}
+
+# ------------------------------------------------------------------------------
+# Downloads and deploys latest Codeberg release (source, binary, tarball, asset).
+#
+# Description:
+#   - Fetches latest release metadata from Codeberg API
+#   - Supports the following modes:
+#       - tarball: Source code tarball (default if omitted)
+#       - source: Alias for tarball (same behavior)
+#       - binary: .deb package install (arch-dependent)
+#       - prebuild: Prebuilt .tar.gz archive (e.g. Go binaries)
+#       - singlefile: Standalone binary (no archive, direct chmod +x install)
+#       - tag: Direct tag download (bypasses Release API)
+#   - Handles download, extraction/installation and version tracking in ~/.<app>
+#
+# Parameters:
+#   $1   APP               - Application name (used for install path and version file)
+#   $2   REPO              - Codeberg repository in form user/repo
+#   $3   MODE              - Release type:
+#                              tarball   → source tarball (.tar.gz)
+#                              binary    → .deb file (auto-arch matched)
+#                              prebuild  → prebuilt archive (e.g. tar.gz)
+#                              singlefile→ standalone binary (chmod +x)
+#                              tag       → direct tag (bypasses Release API)
+#   $4   VERSION           - Optional release tag (default: latest)
+#   $5   TARGET_DIR        - Optional install path (default: /opt/<app>)
+#   $6   ASSET_FILENAME    - Required for:
+#                              - prebuild  → archive filename or pattern
+#                              - singlefile→ binary filename or pattern
+#
+# Examples:
+#   # 1. Minimal: Fetch and deploy source tarball
+#   fetch_and_deploy_codeberg_release "autocaliweb" "gelbphoenix/autocaliweb"
+#
+#   # 2. Binary install via .deb asset (architecture auto-detected)
+#   fetch_and_deploy_codeberg_release "myapp" "myuser/myapp" "binary"
+#
+#   # 3. Prebuilt archive (.tar.gz) with asset filename match
+#   fetch_and_deploy_codeberg_release "myapp" "myuser/myapp" "prebuild" "latest" "/opt/myapp" "myapp_Linux_x86_64.tar.gz"
+#
+#   # 4. Single binary (chmod +x)
+#   fetch_and_deploy_codeberg_release "myapp" "myuser/myapp" "singlefile" "v1.0.0" "/opt/myapp" "myapp-linux-amd64"
+#
+#   # 5. Explicit tag version
+#   fetch_and_deploy_codeberg_release "autocaliweb" "gelbphoenix/autocaliweb" "tag" "v0.11.3" "/opt/autocaliweb"
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# _diagnose_deb_failure()
+#
+# - Called when both apt and dpkg fail to install a .deb package
+# - Extracts package metadata and detects common failure patterns
+# - Outputs enhanced error messages with actionable hints:
+#     * PostgreSQL version conflicts (e.g., postgresql-16-foo with pg17 active)
+#     * Missing declared dependencies
+#     * Generic fallback hint pointing to the log
+#
+# Usage: _diagnose_deb_failure "/path/to/file.deb"
+# Returns: always 0 (diagnostic only — caller must return the error code)
+# ------------------------------------------------------------------------------
+_diagnose_deb_failure() {
+  local deb_path="$1"
+  local filename="${deb_path##*/}"
+  local pkg_name pkg_deps pkg_version
+
+  pkg_name=$(dpkg-deb -f "$deb_path" Package 2>/dev/null || echo "${filename%%_*}")
+  pkg_version=$(dpkg-deb -f "$deb_path" Version 2>/dev/null || true)
+  pkg_deps=$(dpkg-deb -f "$deb_path" Depends 2>/dev/null || true)
+
+  msg_error "Failed to install '${pkg_name}${pkg_version:+ (${pkg_version})}' — both apt and dpkg reported errors"
+
+  # Detect PostgreSQL version conflict (e.g., postgresql-16-vchord while pg17 is active)
+  local pg_ver_needed pg_ver_installed
+  pg_ver_needed=$(echo "$filename" | grep -oP '(?<=postgresql-)[0-9]+(?=-)' | head -1 || true)
+  if [[ -n "$pg_ver_needed" ]]; then
+    pg_ver_installed=$(psql -V 2>/dev/null | awk '{print $3}' | cut -d. -f1 || true)
+    if [[ -n "$pg_ver_installed" && "$pg_ver_needed" != "$pg_ver_installed" ]]; then
+      msg_error "Version conflict: '${pkg_name}' is built for PostgreSQL ${pg_ver_needed}, but PostgreSQL ${pg_ver_installed} is installed on this system."
+      msg_error "Hint: Your distribution installed a different PostgreSQL version than expected. The script may need updating to use postgresql-${pg_ver_installed}-* packages."
+      return 0
+    fi
+  fi
+
+  # Show which declared dependencies are not satisfied
+  if [[ -n "$pkg_deps" ]]; then
+    local missing_deps=()
+    while IFS=',' read -ra dep_list; do
+      for dep_entry in "${dep_list[@]}"; do
+        local dep_pkg
+        dep_pkg=$(echo "$dep_entry" | awk '{print $1}' | tr -d ' ')
+        [[ -z "$dep_pkg" || "$dep_pkg" == "("* ]] && continue
+        if ! dpkg-query -W -f='${Status}' "$dep_pkg" 2>/dev/null | grep -q "install ok installed"; then
+          missing_deps+=("$dep_pkg")
+        fi
+      done
+    done <<<"$pkg_deps"
+    if [[ ${#missing_deps[@]} -gt 0 ]]; then
+      msg_error "Unmet dependencies: ${missing_deps[*]}"
+      msg_error "Hint: Run 'apt-get install -f' inside the container to attempt automatic dependency resolution."
+    else
+      msg_error "Hint: Declared dependencies appear present but installation still failed. Check the log above for the exact error."
+    fi
+  else
+    msg_error "Hint: Check the installation log above for the exact dependency or configuration error."
+  fi
+}
+
+
+setup_local_ip_helper() {
+  local BASE_DIR="/usr/local/community-scripts/ip-management"
+  local SCRIPT_PATH="$BASE_DIR/update_local_ip.sh"
+  local IP_FILE="/run/local-ip.env"
+  local DISPATCHER_SCRIPT="/etc/networkd-dispatcher/routable.d/10-update-local-ip.sh"
+
+  # Check if already set up
+  if [[ -f "$SCRIPT_PATH" && -f "$DISPATCHER_SCRIPT" ]]; then
+    msg_info "Update Local IP Helper"
+    cache_installed_version "local-ip-helper" "1.0"
+    msg_ok "Update Local IP Helper"
+  else
+    msg_info "Setup Local IP Helper"
+  fi
+
+  mkdir -p "$BASE_DIR"
+
+  # Install networkd-dispatcher if not present
+  if ! dpkg -s networkd-dispatcher >/dev/null 2>&1; then
+    ensure_dependencies networkd-dispatcher || {
+      msg_error "Failed to install networkd-dispatcher"
+      return 100
+    }
+  fi
+
+  # Write update_local_ip.sh
+  cat <<'EOF' >"$SCRIPT_PATH"
+#!/bin/bash
+set -euo pipefail
+
+IP_FILE="/run/local-ip.env"
+mkdir -p "$(dirname "$IP_FILE")"
+
+get_current_ip() {
+    local ip
+
+    # Try IPv4 targets first
+    local ipv4_targets=("8.8.8.8" "1.1.1.1" "192.168.1.1" "10.0.0.1" "172.16.0.1" "default")
+    for target in "${ipv4_targets[@]}"; do
+        if [[ "$target" == "default" ]]; then
+            ip=$(ip route get 1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src") print $(i+1)}')
+        else
+            ip=$(ip route get "$target" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src") print $(i+1)}')
+        fi
+        if [[ -n "$ip" ]]; then
+            echo "$ip"
+            return 0
+        fi
+    done
+
+    # IPv6 fallback: Try direct interface lookup for eth0
+    ip=$(ip -6 addr show eth0 scope global 2>/dev/null | awk '/inet6 / {print $2}' | cut -d/ -f1 | head -n1)
+    if [[ -n "$ip" && "$ip" =~ : ]]; then
+        echo "$ip"
+        return 0
+    fi
+
+    # IPv6 fallback: Use routing table with IPv6 targets (Google DNS, Cloudflare DNS)
+    local ipv6_targets=("2001:4860:4860::8888" "2606:4700:4700::1111")
+    for target in "${ipv6_targets[@]}"; do
+        ip=$(ip -6 route get "$target" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src") print $(i+1)}')
+        if [[ -n "$ip" && "$ip" =~ : ]]; then
+            echo "$ip"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+current_ip="$(get_current_ip)"
+
+if [[ -z "$current_ip" ]]; then
+    echo "[ERROR] Could not detect local IP" >&2
+    exit 123
+fi
+
+if [[ -f "$IP_FILE" ]]; then
+    source "$IP_FILE"
+    [[ "$LOCAL_IP" == "$current_ip" ]] && exit 0
+fi
+
+echo "LOCAL_IP=$current_ip" > "$IP_FILE"
+echo "[INFO] LOCAL_IP updated to $current_ip"
+EOF
+
+  chmod +x "$SCRIPT_PATH"
+
+  # Install dispatcher hook
+  mkdir -p "$(dirname "$DISPATCHER_SCRIPT")"
+  cat <<EOF >"$DISPATCHER_SCRIPT"
+#!/bin/bash
+$SCRIPT_PATH
+EOF
+
+  chmod +x "$DISPATCHER_SCRIPT"
+  systemctl enable -q --now networkd-dispatcher.service || {
+    msg_warn "Failed to enable networkd-dispatcher service"
+  }
+
+  cache_installed_version "local-ip-helper" "1.0"
+  msg_ok "Setup Local IP Helper"
+}
+
+# ------------------------------------------------------------------------------
+# Installs or updates MariaDB.
+#
+# Description:
+#   - Uses Debian/Ubuntu distribution packages by default (most reliable)
+#   - Only uses official MariaDB repository when a specific version is requested
+#   - Detects current MariaDB version and replaces it if necessary
+#   - Preserves existing database data
+#
+# Variables:
+#   MARIADB_VERSION - MariaDB version to install (optional)
+#                     - Not set or "latest": Uses distribution packages (recommended)
+#                     - Specific version (e.g. "11.4", "12.2"): Uses MariaDB official repo
+# ------------------------------------------------------------------------------
+setup_nonfree() {
+  local sources_file="/etc/apt/sources.list.d/debian-nonfree.sources"
+
+  if [ ! -f "$sources_file" ]; then
+    cat <<EOF >$sources_file
+Types: deb
+URIs: http://deb.debian.org/debian
+Suites: trixie trixie-updates
+Components: main contrib non-free non-free-firmware
+
+Types: deb
+URIs: http://security.debian.org/debian-security
+Suites: trixie-security
+Components: main contrib non-free non-free-firmware
+EOF
+  fi
+  $STD apt update
+  return 0
+}

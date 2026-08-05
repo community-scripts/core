@@ -71,7 +71,12 @@ shared/     platform-agnostic engine
   build.func           entry point, origin resolution, platform dispatch
   build-ui.func        whiptail wizard, validators, advanced settings
   core.func            colors, spinners, messaging, silent()
-  tools.func           helper library used by install scripts
+  tools.func           helper library used by install scripts (loader)
+  tools/system.func      packages, repositories, OS probes, services
+  tools/forge.func       GitHub, GitLab and Codeberg releases
+  tools/runtime.func     language runtimes and application installers
+  tools/db.func          databases and search engines
+  tools/hwaccel.func     GPU detection and hardware acceleration
   install.func         in-container bootstrap (multi-distro)
   alpine-install.func  in-container bootstrap for Alpine
   alpine-tools.func    helper library for Alpine
@@ -233,6 +238,9 @@ Before opening a PR:
   on Proxmox VE belongs in `pve/`.
 - Never hardcode a raw URL. Use `_cs_source_func "shared/<name>.func"` (or
   `pve/…`, `incus/…`) so both roots keep resolving and forks keep working.
+- `shared/tools.func` is the published helper API. Source that, not the parts
+  under `shared/tools/`. If you add or rename a function there, regenerate
+  `shared/tools/API.txt` in the same PR — CI compares against it.
 - New files go in the folder that matches their root. Nothing resolves by
   basename, so `incus/tools.func` and `shared/tools.func` are both fine.
 - `shellcheck` and `shfmt` the files you touched.

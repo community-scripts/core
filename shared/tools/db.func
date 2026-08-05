@@ -1,0 +1,1501 @@
+#!/usr/bin/env bash
+# Copyright (c) 2021-2026 community-scripts ORG
+# License: MIT | https://raw.githubusercontent.com/community-scripts/core/main/LICENSE
+
+# ==============================================================================
+# TOOLS/DB.FUNC - DATABASE AND SEARCH ENGINE SETUP
+# ==============================================================================
+# Part of the shared helper library. Load shared/tools.func -- it sources every
+# part -- rather than this file directly; the split is for maintenance only and
+# no function name or behaviour changed with it.
+# ==============================================================================
+
+[[ -n "${_TOOLS_DB_LOADED:-}" ]] && return 0
+_TOOLS_DB_LOADED=1
+
+setup_clickhouse() {
+  local CLICKHOUSE_VERSION="${CLICKHOUSE_VERSION:-latest}"
+  local DISTRO_ID DISTRO_CODENAME
+  DISTRO_ID=$(get_os_info id)
+  DISTRO_CODENAME=$(get_os_info codename)
+
+  # Ensure non-interactive mode for all apt operations
+  export DEBIAN_FRONTEND=noninteractive
+  export NEEDRESTART_MODE=a
+  export NEEDRESTART_SUSPEND=1
+
+  # Resolve "latest" version
+  if [[ "$CLICKHOUSE_VERSION" == "latest" ]]; then
+    CLICKHOUSE_VERSION=$(curl -fsSL --max-time 15 https://packages.clickhouse.com/tgz/stable/ 2>/dev/null |
+      grep -oP 'clickhouse-common-static-\K[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' |
+      sort -V | tail -n1 || echo "")
+
+    # Fallback to GitHub API if package server failed
+    if [[ -z "$CLICKHOUSE_VERSION" ]]; then
+      CLICKHOUSE_VERSION=$(get_latest_github_release "ClickHouse/ClickHouse") || true
+    fi
+
+    [[ -z "$CLICKHOUSE_VERSION" ]] && {
+      msg_error "Could not determine latest ClickHouse version from any source"
+      return 250
+    }
+  fi
+
+  # Get currently installed version
+  local CURRENT_VERSION=""
+  if command -v clickhouse-server >/dev/null 2>&1; then
+    CURRENT_VERSION=$(clickhouse-server --version 2>/dev/null | grep -oP 'version \K[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
+  fi
+
+  # Scenario 1: Already at target version - just update packages
+  if [[ -n "$CURRENT_VERSION" && "$CURRENT_VERSION" == "$CLICKHOUSE_VERSION" ]]; then
+    msg_info "Update ClickHouse $CLICKHOUSE_VERSION"
+    ensure_apt_working || return 100
+
+    # Perform upgrade with retry logic (non-fatal if fails)
+    upgrade_packages_with_retry "clickhouse-server" "clickhouse-client" || {
+      msg_warn "ClickHouse package upgrade had issues, continuing with current version"
+    }
+    cache_installed_version "clickhouse" "$CLICKHOUSE_VERSION"
+    msg_ok "Update ClickHouse $CLICKHOUSE_VERSION"
+    return 0
+  fi
+
+  # Scenario 2: Different version - clean upgrade
+  if [[ -n "$CURRENT_VERSION" && "$CURRENT_VERSION" != "$CLICKHOUSE_VERSION" ]]; then
+    msg_info "Upgrade ClickHouse from $CURRENT_VERSION to $CLICKHOUSE_VERSION"
+    stop_all_services "clickhouse-server"
+    remove_old_tool_version "clickhouse"
+  else
+    msg_info "Setup ClickHouse $CLICKHOUSE_VERSION"
+  fi
+
+  ensure_dependencies apt-transport-https ca-certificates dirmngr gnupg
+
+  # Prepare repository (cleanup + validation)
+  prepare_repository_setup "clickhouse" || {
+    msg_error "Failed to prepare ClickHouse repository"
+    return 100
+  }
+
+  # Setup repository (ClickHouse uses 'stable' suite)
+  setup_deb822_repo \
+    "clickhouse" \
+    "https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key" \
+    "https://packages.clickhouse.com/deb" \
+    "stable" \
+    "main"
+
+  # Install packages with retry logic
+  $STD apt update || {
+    msg_error "APT update failed for ClickHouse repository"
+    return 100
+  }
+
+  install_packages_with_retry "clickhouse-server" "clickhouse-client" || {
+    msg_error "Failed to install ClickHouse packages"
+    return 100
+  }
+
+  # Verify installation
+  if ! command -v clickhouse-server >/dev/null 2>&1; then
+    msg_error "ClickHouse installation completed but clickhouse-server command not found"
+    return 127
+  fi
+
+  # Setup data directory
+  mkdir -p /var/lib/clickhouse
+  if id clickhouse >/dev/null 2>&1; then
+    chown -R clickhouse:clickhouse /var/lib/clickhouse
+  fi
+
+  # Enable and start service
+  $STD systemctl enable clickhouse-server || {
+    msg_warn "Failed to enable clickhouse-server service"
+  }
+  safe_service_restart clickhouse-server || true
+
+  cache_installed_version "clickhouse" "$CLICKHOUSE_VERSION"
+  msg_ok "Setup ClickHouse $CLICKHOUSE_VERSION"
+}
+
+# ------------------------------------------------------------------------------
+# Installs or updates Composer globally (robust, idempotent).
+#
+# - Installs to /usr/local/bin/composer
+# - Removes old binaries/symlinks in /usr/bin, /bin, /root/.composer, etc.
+# - Ensures /usr/local/bin is in PATH (permanent)
+# - Auto-updates to latest version
+# ------------------------------------------------------------------------------
+
+setup_mariadb() {
+  local MARIADB_VERSION="${MARIADB_VERSION:-latest}"
+  local USE_DISTRO_PACKAGES=false
+
+  # Ensure non-interactive mode for all apt operations
+  export DEBIAN_FRONTEND=noninteractive
+  export NEEDRESTART_MODE=a
+  export NEEDRESTART_SUSPEND=1
+
+  # Determine installation method:
+  # - "latest" or empty: Use distribution packages (avoids mirror issues)
+  # - Specific version: Use MariaDB official repository
+  if [[ "$MARIADB_VERSION" == "latest" || -z "$MARIADB_VERSION" ]]; then
+    USE_DISTRO_PACKAGES=true
+    msg_info "Setup MariaDB (distribution packages)"
+  else
+    msg_info "Setup MariaDB $MARIADB_VERSION (official repository)"
+  fi
+
+  # Get currently installed version
+  local CURRENT_VERSION=""
+  CURRENT_VERSION=$(is_tool_installed "mariadb" 2>/dev/null) || true
+
+  # Pre-configure debconf to prevent any interactive prompts during install/upgrade
+  debconf-set-selections <<EOF
+mariadb-server mariadb-server/feedback boolean false
+mariadb-server mariadb-server/root_password password
+mariadb-server mariadb-server/root_password_again password
+EOF
+
+  # If specific version requested, also configure version-specific debconf
+  if [[ "$USE_DISTRO_PACKAGES" == "false" ]]; then
+    local MARIADB_MAJOR_MINOR
+    MARIADB_MAJOR_MINOR=$(echo "$MARIADB_VERSION" | awk -F. '{print $1"."$2}')
+    if [[ -n "$MARIADB_MAJOR_MINOR" ]]; then
+      debconf-set-selections <<EOF
+mariadb-server-$MARIADB_MAJOR_MINOR mariadb-server/feedback boolean false
+mariadb-server-$MARIADB_MAJOR_MINOR mariadb-server/root_password password
+mariadb-server-$MARIADB_MAJOR_MINOR mariadb-server/root_password_again password
+EOF
+    fi
+  fi
+
+  # ============================================================================
+  # DISTRIBUTION PACKAGES PATH (default, most reliable)
+  # ============================================================================
+  if [[ "$USE_DISTRO_PACKAGES" == "true" ]]; then
+    # Check if MariaDB was previously installed from official repo
+    local HAD_MARIADB_REPO=false
+    if [[ -f /etc/apt/sources.list.d/mariadb.sources ]] || [[ -f /etc/apt/sources.list.d/mariadb.list ]]; then
+      HAD_MARIADB_REPO=true
+      msg_info "Removing MariaDB official repository (switching to distribution packages)"
+    fi
+
+    # Clean up any existing MariaDB repository files to avoid conflicts
+    cleanup_old_repo_files "mariadb"
+
+    # If we had a repo, we need to refresh APT cache
+    if [[ "$HAD_MARIADB_REPO" == "true" ]]; then
+      $STD apt update || msg_warn "APT update had issues, continuing..."
+    fi
+
+    # Ensure APT is working
+    ensure_apt_working || return 100
+
+    # Check if installed version is from official repo and higher than distro version
+    # In this case, we keep the existing installation to avoid data issues
+    if [[ -n "$CURRENT_VERSION" ]]; then
+      # Get available distro version
+      local DISTRO_VERSION=""
+      DISTRO_VERSION=$(apt-cache policy mariadb-server 2>/dev/null | grep -E "Candidate:" | awk '{print $2}' | grep -oP '^\d+:\K\d+\.\d+\.\d+' || echo "")
+
+      if [[ -n "$DISTRO_VERSION" ]]; then
+        # Compare versions - if current is higher, keep it
+        local CURRENT_MAJOR DISTRO_MAJOR
+        CURRENT_MAJOR=$(echo "$CURRENT_VERSION" | awk -F. '{print $1}')
+        DISTRO_MAJOR=$(echo "$DISTRO_VERSION" | awk -F. '{print $1}')
+
+        if [[ "$CURRENT_MAJOR" -gt "$DISTRO_MAJOR" ]]; then
+          msg_warn "MariaDB $CURRENT_VERSION is already installed (higher than distro $DISTRO_VERSION)"
+          msg_warn "Keeping existing installation to preserve data integrity"
+          msg_warn "To use distribution packages, manually remove MariaDB first"
+          _setup_mariadb_runtime_dir
+          cache_installed_version "mariadb" "$CURRENT_VERSION"
+          msg_ok "Setup MariaDB $CURRENT_VERSION (existing installation kept)"
+          return 0
+        fi
+      fi
+    fi
+
+    # Install or upgrade MariaDB from distribution packages
+    if ! install_packages_with_retry "mariadb-server" "mariadb-client"; then
+      msg_error "Failed to install MariaDB packages from distribution"
+      return 100
+    fi
+
+    # Get installed version for caching
+    local INSTALLED_VERSION=""
+    INSTALLED_VERSION=$(mariadb --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -n1 || echo "distro")
+
+    # Configure runtime directory and finish
+    _setup_mariadb_runtime_dir
+    cache_installed_version "mariadb" "$INSTALLED_VERSION"
+    msg_ok "Setup MariaDB $INSTALLED_VERSION (distribution packages)"
+    return 0
+  fi
+
+  # ============================================================================
+  # OFFICIAL REPOSITORY PATH (only when specific version requested)
+  # ============================================================================
+
+  # First, check if there's an old/broken repository that needs cleanup
+  if [[ -f /etc/apt/sources.list.d/mariadb.sources ]] || [[ -f /etc/apt/sources.list.d/mariadb.list ]]; then
+    local OLD_REPO_VERSION=""
+    OLD_REPO_VERSION=$(grep -oP 'repo/\K[0-9]+\.[0-9]+(\.[0-9]+)?' /etc/apt/sources.list.d/mariadb.sources 2>/dev/null ||
+      grep -oP 'repo/\K[0-9]+\.[0-9]+(\.[0-9]+)?' /etc/apt/sources.list.d/mariadb.list 2>/dev/null || echo "")
+
+    # Check if old repo points to a different version
+    if [[ -n "$OLD_REPO_VERSION" ]] && [[ "${OLD_REPO_VERSION%.*}" != "${MARIADB_VERSION%.*}" ]]; then
+      msg_info "Cleaning up old MariaDB repository (was: $OLD_REPO_VERSION, requested: $MARIADB_VERSION)"
+      cleanup_old_repo_files "mariadb"
+      $STD apt update || msg_warn "APT update had issues, continuing..."
+    fi
+  fi
+
+  # Scenario 1: Already installed at target version - just update packages
+  if [[ -n "$CURRENT_VERSION" ]] && version_matches_spec "$CURRENT_VERSION" "$MARIADB_VERSION"; then
+    msg_info "Update MariaDB $MARIADB_VERSION"
+
+    # Ensure APT is working
+    ensure_apt_working || return 100
+
+    # Check if repository needs to be refreshed
+    if [[ -f /etc/apt/sources.list.d/mariadb.sources ]]; then
+      local REPO_VERSION=""
+      REPO_VERSION=$(grep -oP 'repo/\K[0-9]+\.[0-9]+' /etc/apt/sources.list.d/mariadb.sources 2>/dev/null || echo "")
+      if [[ -n "$REPO_VERSION" && "$REPO_VERSION" != "${MARIADB_VERSION%.*}" ]]; then
+        msg_warn "Repository version mismatch, updating..."
+        manage_tool_repository "mariadb" "$MARIADB_VERSION" "http://mirror.mariadb.org/repo/$MARIADB_VERSION" \
+          "https://mariadb.org/mariadb_release_signing_key.asc" || {
+          msg_error "Failed to update MariaDB repository"
+          return 100
+        }
+      fi
+    fi
+
+    # Perform upgrade with retry logic
+    ensure_apt_working || return 100
+    upgrade_packages_with_retry "mariadb-server" "mariadb-client" || {
+      msg_error "Failed to upgrade MariaDB packages"
+      return 100
+    }
+    cache_installed_version "mariadb" "$MARIADB_VERSION"
+    msg_ok "Update MariaDB $MARIADB_VERSION"
+    return 0
+  fi
+
+  # Scenario 2b: Different version installed - clean upgrade
+  if [[ -n "$CURRENT_VERSION" ]] && ! version_matches_spec "$CURRENT_VERSION" "$MARIADB_VERSION"; then
+    msg_info "Upgrade MariaDB from $CURRENT_VERSION to $MARIADB_VERSION"
+    remove_old_tool_version "mariadb"
+  fi
+
+  # Scenario 3: Fresh install or version change with specific version
+  # Prepare repository (cleanup + validation)
+  prepare_repository_setup "mariadb" || {
+    msg_error "Failed to prepare MariaDB repository"
+    return 100
+  }
+
+  # Install required dependencies first
+  local mariadb_deps=()
+  for dep in gawk rsync socat libdbi-perl pv; do
+    if apt-cache search "^${dep}$" 2>/dev/null | grep -q .; then
+      mariadb_deps+=("$dep")
+    fi
+  done
+
+  if [[ ${#mariadb_deps[@]} -gt 0 ]]; then
+    $STD apt install -y "${mariadb_deps[@]}" 2>/dev/null || true
+  fi
+
+  # Setup repository
+  manage_tool_repository "mariadb" "$MARIADB_VERSION" "http://mirror.mariadb.org/repo/$MARIADB_VERSION" \
+    "https://mariadb.org/mariadb_release_signing_key.asc" || {
+    msg_error "Failed to setup MariaDB repository"
+    return 100
+  }
+
+  # Install packages with retry logic
+  if ! install_packages_with_retry "mariadb-server" "mariadb-client"; then
+    # Fallback: try distribution packages
+    msg_warn "Failed to install MariaDB $MARIADB_VERSION from official repo, falling back to distribution packages..."
+    cleanup_old_repo_files "mariadb"
+    $STD apt update || {
+      msg_warn "APT update also failed, continuing with cache"
+    }
+    if install_packages_with_retry "mariadb-server" "mariadb-client"; then
+      local FALLBACK_VERSION=""
+      FALLBACK_VERSION=$(mariadb --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -n1 || echo "distro")
+      msg_warn "Installed MariaDB $FALLBACK_VERSION from distribution instead of requested $MARIADB_VERSION"
+      _setup_mariadb_runtime_dir
+      cache_installed_version "mariadb" "$FALLBACK_VERSION"
+      msg_ok "Setup MariaDB $FALLBACK_VERSION (fallback to distribution packages)"
+      return 0
+    else
+      msg_error "Failed to install MariaDB packages (both official repo and distribution)"
+      return 100
+    fi
+  fi
+
+  _setup_mariadb_runtime_dir
+  cache_installed_version "mariadb" "$MARIADB_VERSION"
+  msg_ok "Setup MariaDB $MARIADB_VERSION"
+}
+
+# ------------------------------------------------------------------------------
+# Helper function: Configure MariaDB runtime directory persistence
+# ------------------------------------------------------------------------------
+_setup_mariadb_runtime_dir() {
+  # Configure tmpfiles.d to ensure /run/mysqld directory is created on boot
+  # This fixes the issue where MariaDB fails to start after container reboot
+
+  # Create tmpfiles.d configuration with error handling
+  if ! printf '# Ensure /run/mysqld directory exists with correct permissions for MariaDB\nd /run/mysqld 0755 mysql mysql -\n' >/etc/tmpfiles.d/mariadb.conf; then
+    msg_warn "Failed to create /etc/tmpfiles.d/mariadb.conf - runtime directory may not persist on reboot"
+  fi
+
+  # Create the directory now if it doesn't exist
+  # Verify mysql user exists before attempting ownership change
+  if [[ ! -d /run/mysqld ]]; then
+    mkdir -p /run/mysqld
+    # Set permissions first (works regardless of user existence)
+    chmod 755 /run/mysqld
+    # Set ownership only if mysql user exists
+    if getent passwd mysql >/dev/null 2>&1; then
+      chown mysql:mysql /run/mysqld
+    else
+      msg_warn "mysql user not found - directory created with correct permissions but ownership not set"
+    fi
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# Creates MariaDB database with user, charset and optional extra grants/modes
+#
+# Description:
+#   - Generates password if empty
+#   - Creates database with utf8mb4_unicode_ci
+#   - Creates local user with password
+#   - Grants full access to this DB
+#   - Optional: apply extra GRANT statements (comma-separated)
+#   - Optional: apply custom GLOBAL sql_mode
+#   - Saves credentials to file
+#   - Exports variables for use in calling script
+#
+# Usage:
+#   MARIADB_DB_NAME="myapp_db" MARIADB_DB_USER="myapp_user" setup_mariadb_db
+#   MARIADB_DB_NAME="domain_monitor" MARIADB_DB_USER="domainmonitor" setup_mariadb_db
+#   MARIADB_DB_NAME="myapp" MARIADB_DB_USER="myapp" MARIADB_DB_EXTRA_GRANTS="GRANT SELECT ON \`mysql\`.\`time_zone_name\`" setup_mariadb_db
+#   MARIADB_DB_NAME="ghostfolio" MARIADB_DB_USER="ghostfolio" MARIADB_DB_SQL_MODE="" setup_mariadb_db
+#
+# Variables:
+#   MARIADB_DB_NAME         - Database name (required)
+#   MARIADB_DB_USER         - Database user (required)
+#   MARIADB_DB_PASS         - User password (optional, auto-generated if empty)
+#   MARIADB_DB_EXTRA_GRANTS - Comma-separated GRANT statements (optional)
+#                             Example: "GRANT SELECT ON \`mysql\`.\`time_zone_name\`"
+#   MARIADB_DB_SQL_MODE     - Optional global sql_mode override (e.g. "", "STRICT_TRANS_TABLES")
+#   MARIADB_DB_CREDS_FILE   - Credentials file path (optional, default: ~/${APPLICATION}.creds)
+#
+# Exports:
+#   MARIADB_DB_NAME, MARIADB_DB_USER, MARIADB_DB_PASS
+# ------------------------------------------------------------------------------
+
+setup_mariadb_db() {
+  if [[ -z "${MARIADB_DB_NAME:-}" || -z "${MARIADB_DB_USER:-}" ]]; then
+    msg_error "MARIADB_DB_NAME and MARIADB_DB_USER must be set before calling setup_mariadb_db"
+    return 65
+  fi
+
+  if [[ -z "${MARIADB_DB_PASS:-}" ]]; then
+    MARIADB_DB_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)
+  fi
+
+  msg_info "Setting up MariaDB Database"
+
+  # Use --defaults-extra-file to pass credentials safely and escape identifiers
+  # to prevent SQL injection via DB name / user / password
+  $STD mariadb -u root -e "CREATE DATABASE \`${MARIADB_DB_NAME//\`/\`\`}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+  $STD mariadb -u root -e "CREATE USER '${MARIADB_DB_USER//\'/\'\'}'@'localhost' IDENTIFIED BY '${MARIADB_DB_PASS//\'/\'\'}';"
+  $STD mariadb -u root -e "GRANT ALL ON \`${MARIADB_DB_NAME//\`/\`\`}\`.* TO '${MARIADB_DB_USER//\'/\'\'}'@'localhost';"
+
+  # Optional extra grants
+  if [[ -n "${MARIADB_DB_EXTRA_GRANTS:-}" ]]; then
+    IFS=',' read -ra G_LIST <<<"${MARIADB_DB_EXTRA_GRANTS:-}"
+    for g in "${G_LIST[@]}"; do
+      g=$(echo "$g" | xargs)
+      $STD mariadb -u root -e "$g TO '$MARIADB_DB_USER'@'localhost';"
+    done
+  fi
+
+  # Optional sql_mode override
+  if [[ -n "${MARIADB_DB_SQL_MODE:-}" ]]; then
+    $STD mariadb -u root -e "SET GLOBAL sql_mode='${MARIADB_DB_SQL_MODE:-}';"
+  fi
+
+  $STD mariadb -u root -e "FLUSH PRIVILEGES;"
+
+  local app_name="${APPLICATION,,}"
+  local CREDS_FILE="${MARIADB_DB_CREDS_FILE:-${HOME}/${app_name}.creds}"
+  {
+    echo "MariaDB Credentials"
+    echo "Database: $MARIADB_DB_NAME"
+    echo "User: $MARIADB_DB_USER"
+    echo "Password: $MARIADB_DB_PASS"
+  } >>"$CREDS_FILE"
+
+  msg_ok "Set up MariaDB Database"
+
+  export MARIADB_DB_NAME
+  export MARIADB_DB_USER
+  export MARIADB_DB_PASS
+}
+
+# ------------------------------------------------------------------------------
+# Creates a MySQL database and user (for apps that require MySQL, not MariaDB).
+#
+# Description:
+#   - Creates database, user and grants using the mysql root socket login
+#   - The user is created with host '%' because MySQL treats 'localhost'
+#     (socket) and '127.0.0.1' (TCP) as distinct hosts; apps connecting over
+#     TCP to 127.0.0.1 would not match a 'localhost' account. mysql-server
+#     binds to 127.0.0.1 by default, so '%' stays local-only.
+#
+# Variables:
+#   MYSQL_DB_NAME   - Database name (required)
+#   MYSQL_DB_USER   - Database user (required)
+#   MYSQL_DB_PASS   - Password (optional, generated if unset)
+#
+# Exports:
+#   MYSQL_DB_NAME, MYSQL_DB_USER, MYSQL_DB_PASS
+#
+# Example:
+#   MYSQL_DB_NAME="fleet" MYSQL_DB_USER="fleet" setup_mysql_db
+# ------------------------------------------------------------------------------
+setup_mysql_db() {
+  if [[ -z "${MYSQL_DB_NAME:-}" || -z "${MYSQL_DB_USER:-}" ]]; then
+    msg_error "MYSQL_DB_NAME and MYSQL_DB_USER must be set before calling setup_mysql_db"
+    return 65
+  fi
+
+  if [[ -z "${MYSQL_DB_PASS:-}" ]]; then
+    MYSQL_DB_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)
+  fi
+
+  msg_info "Setting up MySQL Database"
+
+  $STD mysql -u root -e "CREATE DATABASE \`${MYSQL_DB_NAME//\`/\`\`}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+  $STD mysql -u root -e "CREATE USER '${MYSQL_DB_USER//\'/\'\'}'@'%' IDENTIFIED BY '${MYSQL_DB_PASS//\'/\'\'}';"
+  $STD mysql -u root -e "GRANT ALL ON \`${MYSQL_DB_NAME//\`/\`\`}\`.* TO '${MYSQL_DB_USER//\'/\'\'}'@'%';"
+  $STD mysql -u root -e "FLUSH PRIVILEGES;"
+
+  local app_name="${APPLICATION,,}"
+  local CREDS_FILE="${MYSQL_DB_CREDS_FILE:-${HOME}/${app_name}.creds}"
+  {
+    echo "MySQL Credentials"
+    echo "Database: $MYSQL_DB_NAME"
+    echo "User: $MYSQL_DB_USER"
+    echo "Password: $MYSQL_DB_PASS"
+  } >>"$CREDS_FILE"
+
+  msg_ok "Set up MySQL Database"
+
+  export MYSQL_DB_NAME
+  export MYSQL_DB_USER
+  export MYSQL_DB_PASS
+}
+
+# ------------------------------------------------------------------------------
+# Installs or updates MeiliSearch search engine.
+#
+# Description:
+#   - Fresh install: Downloads binary, creates config/service, starts
+#   - Update: Checks for new release, updates binary if available
+#   - Waits for service to be ready before returning
+#   - Exports API keys for use by caller
+#
+# Variables:
+#   MEILISEARCH_BIND     - Bind address (default: 127.0.0.1:7700)
+#   MEILISEARCH_ENV      - Environment: production/development (default: production)
+#   MEILISEARCH_DB_PATH  - Database path (default: /var/lib/meilisearch/data)
+#
+# Exports:
+#   MEILISEARCH_MASTER_KEY  - The master key for admin access
+#   MEILISEARCH_API_KEY     - The default search API key
+#   MEILISEARCH_API_KEY_UID - The UID of the default API key
+#
+# Example (install script):
+#   setup_meilisearch
+#
+# Example (CT update_script):
+#   setup_meilisearch
+# ------------------------------------------------------------------------------
+
+setup_meilisearch() {
+  local MEILISEARCH_BIND="${MEILISEARCH_BIND:-127.0.0.1:7700}"
+  local MEILISEARCH_ENV="${MEILISEARCH_ENV:-production}"
+  local MEILISEARCH_DB_PATH="${MEILISEARCH_DB_PATH:-/var/lib/meilisearch/data}"
+  local MEILISEARCH_DUMP_DIR="${MEILISEARCH_DUMP_DIR:-/var/lib/meilisearch/dumps}"
+  local MEILISEARCH_SNAPSHOT_DIR="${MEILISEARCH_SNAPSHOT_DIR:-/var/lib/meilisearch/snapshots}"
+
+  # Get bind address for health checks
+  local MEILISEARCH_HOST="${MEILISEARCH_BIND%%:*}"
+  local MEILISEARCH_PORT="${MEILISEARCH_BIND##*:}"
+  [[ "$MEILISEARCH_HOST" == "0.0.0.0" ]] && MEILISEARCH_HOST="127.0.0.1"
+
+  # Update mode: MeiliSearch already installed
+  if [[ -f /usr/bin/meilisearch ]]; then
+    if check_for_gh_release "meilisearch" "meilisearch/meilisearch"; then
+      msg_info "Updating MeiliSearch"
+
+      # Get current and new version for compatibility check
+      local CURRENT_VERSION NEW_VERSION
+      CURRENT_VERSION=$(/usr/bin/meilisearch --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) || CURRENT_VERSION="0.0.0"
+      NEW_VERSION="${CHECK_UPDATE_RELEASE#v}"
+
+      # Extract major.minor for comparison (Meilisearch changes its on-disk DB format between minor versions)
+      local CURRENT_MAJOR_MINOR NEW_MAJOR_MINOR
+      CURRENT_MAJOR_MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f1,2)
+      NEW_MAJOR_MINOR=$(echo "$NEW_VERSION" | cut -d. -f1,2)
+
+      # Determine if migration is needed (different major.minor = incompatible DB format)
+      local NEEDS_MIGRATION=false
+      if [[ "$CURRENT_MAJOR_MINOR" != "$NEW_MAJOR_MINOR" ]]; then
+        NEEDS_MIGRATION=true
+        msg_info "MeiliSearch version change detected (${CURRENT_VERSION} → ${NEW_VERSION}), preparing data migration"
+      fi
+
+      # Read connection + storage paths for the in-place (dumpless) upgrade
+      local MEILI_HOST MEILI_PORT MEILI_DB_PATH
+      MEILI_HOST="${MEILISEARCH_HOST:-127.0.0.1}"
+      MEILI_PORT="${MEILISEARCH_PORT:-7700}"
+      MEILI_DB_PATH=$(grep -E "^db_path\s*=" /etc/meilisearch.toml 2>/dev/null | sed 's/.*=\s*"\(.*\)"/\1/' | tr -d ' ' || true)
+      MEILI_DB_PATH="${MEILI_DB_PATH:-/var/lib/meilisearch/data}"
+
+      systemctl stop meilisearch
+
+      # Safety backup of the data dir before any in-place migration.
+      # Dumpless upgrade mutates the DB in place and cannot be rolled back on
+      # failure, so keep a tarball to restore from. (No master_key/API needed.)
+      local MEILI_BACKUP=""
+      if [[ "$NEEDS_MIGRATION" == "true" ]]; then
+        MEILI_BACKUP="/var/lib/meilisearch/pre-upgrade-${CURRENT_VERSION}.tar.gz"
+        msg_info "Backing up data dir before upgrade → ${MEILI_BACKUP}"
+        if ! tar -czf "$MEILI_BACKUP" -C "$MEILI_DB_PATH" . 2>/dev/null; then
+          msg_error "MeiliSearch data backup failed — aborting upgrade to avoid data loss"
+          systemctl start meilisearch
+          return 100
+        fi
+        msg_ok "Backup created: ${MEILI_BACKUP}"
+      fi
+
+      # Replace the binary
+      if [[ "$(arch_resolve)" == "arm64" ]]; then
+        fetch_and_deploy_gh_release "meilisearch" "meilisearch/meilisearch" "singlefile" "latest" "/usr/bin" "meilisearch-linux-aarch64"
+      else
+        fetch_and_deploy_gh_release "meilisearch" "meilisearch/meilisearch" "binary"
+      fi
+
+      if [[ "$NEEDS_MIGRATION" == "true" ]]; then
+        # One-time in-place migration via --experimental-dumpless-upgrade.
+        # Meilisearch migrates the on-disk DB during this startup; subsequent
+        # normal (systemd) starts run without the flag.
+        msg_info "Migrating data in place (dumpless upgrade ${CURRENT_VERSION} → ${NEW_VERSION})"
+        /usr/bin/meilisearch --config-file-path /etc/meilisearch.toml --experimental-dumpless-upgrade >/dev/null 2>&1 &
+        local MEILI_PID=$!
+
+        local MAX_WAIT=300
+        local WAITED=0
+        local MIGRATED=false
+        while [[ $WAITED -lt $MAX_WAIT ]]; do
+          if curl -sf "http://${MEILI_HOST}:${MEILI_PORT}/health" &>/dev/null; then
+            MIGRATED=true
+            break
+          fi
+          # Bail early if the migration process died
+          if ! kill -0 $MEILI_PID 2>/dev/null; then
+            msg_warn "MeiliSearch process exited during migration"
+            break
+          fi
+          sleep 3
+          WAITED=$((WAITED + 3))
+        done
+
+        # Stop the one-shot migration process and hand over to systemd
+        kill $MEILI_PID 2>/dev/null || true
+        wait $MEILI_PID 2>/dev/null || true
+        sleep 2
+        systemctl start meilisearch
+
+        if [[ "$MIGRATED" == "true" ]] && systemctl is-active --quiet meilisearch; then
+          msg_ok "MeiliSearch migrated successfully (backup kept at ${MEILI_BACKUP})"
+        else
+          msg_error "MeiliSearch migration failed. Restore with: systemctl stop meilisearch; rm -rf ${MEILI_DB_PATH:?}/*; tar -xzf ${MEILI_BACKUP} -C ${MEILI_DB_PATH}; then reinstall the previous version"
+        fi
+      else
+        systemctl start meilisearch
+      fi
+
+      msg_ok "Updated MeiliSearch"
+    fi
+    return 0
+  fi
+
+  # Fresh install
+  msg_info "Setup MeiliSearch"
+
+  # Install binary (meilisearch publishes only an amd64 .deb; arm64 uses the raw linux-aarch64 binary)
+  if [[ "$(arch_resolve)" == "arm64" ]]; then
+    fetch_and_deploy_gh_release "meilisearch" "meilisearch/meilisearch" "singlefile" "latest" "/usr/bin" "meilisearch-linux-aarch64" || {
+      msg_error "Failed to install MeiliSearch binary"
+      return 250
+    }
+  else
+    fetch_and_deploy_gh_release "meilisearch" "meilisearch/meilisearch" "binary" || {
+      msg_error "Failed to install MeiliSearch binary"
+      return 250
+    }
+  fi
+
+  # Download default config
+  curl -fsSL https://raw.githubusercontent.com/meilisearch/meilisearch/latest/config.toml -o /etc/meilisearch.toml || {
+    msg_error "Failed to download MeiliSearch config"
+    msg_error "Hint: Check connectivity to raw.githubusercontent.com/meilisearch/meilisearch"
+    return 7
+  }
+
+  # Generate master key
+  MEILISEARCH_MASTER_KEY=$(openssl rand -base64 12)
+  export MEILISEARCH_MASTER_KEY
+
+  # Configure
+  sed -i \
+    -e "s|^env =.*|env = \"${MEILISEARCH_ENV}\"|" \
+    -e "s|^# master_key =.*|master_key = \"${MEILISEARCH_MASTER_KEY}\"|" \
+    -e "s|^db_path =.*|db_path = \"${MEILISEARCH_DB_PATH}\"|" \
+    -e "s|^dump_dir =.*|dump_dir = \"${MEILISEARCH_DUMP_DIR}\"|" \
+    -e "s|^snapshot_dir =.*|snapshot_dir = \"${MEILISEARCH_SNAPSHOT_DIR}\"|" \
+    -e 's|^# no_analytics = true|no_analytics = true|' \
+    -e "s|^http_addr =.*|http_addr = \"${MEILISEARCH_BIND}\"|" \
+    /etc/meilisearch.toml
+
+  # Create data directories
+  mkdir -p "${MEILISEARCH_DB_PATH}" "${MEILISEARCH_DUMP_DIR}" "${MEILISEARCH_SNAPSHOT_DIR}"
+
+  # Create systemd service
+  cat <<EOF >/etc/systemd/system/meilisearch.service
+[Unit]
+Description=Meilisearch
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/meilisearch --config-file-path /etc/meilisearch.toml
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  # Enable and start service
+  systemctl daemon-reload
+  systemctl enable -q --now meilisearch
+
+  # Wait for MeiliSearch to be ready (up to 30 seconds)
+  for i in {1..30}; do
+    if curl -s -o /dev/null -w "%{http_code}" "http://${MEILISEARCH_HOST}:${MEILISEARCH_PORT}/health" 2>/dev/null | grep -q "200"; then
+      break
+    fi
+    sleep 1
+  done
+
+  # Verify service is running
+  if ! systemctl is-active --quiet meilisearch; then
+    msg_error "MeiliSearch service failed to start"
+    return 150
+  fi
+
+  # Get API keys with retry logic
+  MEILISEARCH_API_KEY=""
+  for i in {1..10}; do
+    MEILISEARCH_API_KEY=$(curl -s -X GET "http://${MEILISEARCH_HOST}:${MEILISEARCH_PORT}/keys" \
+      -H "Authorization: Bearer ${MEILISEARCH_MASTER_KEY}" 2>/dev/null |
+      grep -o '"key":"[^"]*"' | head -n 1 | sed 's/"key":"//;s/"//') || true
+    [[ -n "$MEILISEARCH_API_KEY" ]] && break
+    sleep 2
+  done
+
+  MEILISEARCH_API_KEY_UID=$(curl -s -X GET "http://${MEILISEARCH_HOST}:${MEILISEARCH_PORT}/keys" \
+    -H "Authorization: Bearer ${MEILISEARCH_MASTER_KEY}" 2>/dev/null |
+    grep -o '"uid":"[^"]*"' | head -n 1 | sed 's/"uid":"//;s/"//') || true
+
+  export MEILISEARCH_API_KEY
+  export MEILISEARCH_API_KEY_UID
+
+  # Cache version
+  local MEILISEARCH_VERSION
+  MEILISEARCH_VERSION=$(/usr/bin/meilisearch --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) || true
+  cache_installed_version "meilisearch" "${MEILISEARCH_VERSION:-unknown}"
+
+  msg_ok "Setup MeiliSearch ${MEILISEARCH_VERSION:-}"
+}
+
+# ------------------------------------------------------------------------------
+# Installs or updates MongoDB to specified version.
+#
+# Description:
+#   - Preserves data across installations
+#   - Adds official MongoDB repo
+#
+# Variables:
+#   MONGO_VERSION  - MongoDB version to install (e.g. 7.0, 8.2)
+# ------------------------------------------------------------------------------
+
+setup_mongodb() {
+  local MONGO_VERSION="${MONGO_VERSION:-8.0}"
+  local DISTRO_ID DISTRO_CODENAME
+  DISTRO_ID=$(get_os_info id)
+  DISTRO_CODENAME=$(get_os_info codename)
+
+  # Ensure non-interactive mode for all apt operations
+  export DEBIAN_FRONTEND=noninteractive
+  export NEEDRESTART_MODE=a
+  export NEEDRESTART_SUSPEND=1
+
+  # Check CPU requirements: AVX on x86_64, NEON/ASIMD on arm64
+  case "$(uname -m)" in
+  aarch64)
+    if ! grep -qm1 'asimd' /proc/cpuinfo; then
+      msg_error "MongoDB ${MONGO_VERSION} requires ARMv8.2-A support, which is not available on this system."
+      return 236
+    fi
+    ;;
+  *)
+    if ! grep -qm1 'avx[^ ]*' /proc/cpuinfo; then
+      local major="${MONGO_VERSION%%.*}"
+      if ((major > 5)); then
+        msg_error "MongoDB ${MONGO_VERSION} requires AVX support, which is not available on this system."
+        return 236
+      fi
+    fi
+    ;;
+  esac
+
+  case "$DISTRO_ID" in
+  ubuntu)
+    MONGO_BASE_URL="https://repo.mongodb.org/apt/ubuntu"
+    ;;
+  debian)
+    MONGO_BASE_URL="https://repo.mongodb.org/apt/debian"
+    ;;
+  *)
+    msg_error "Unsupported distribution: $DISTRO_ID"
+    return 238
+    ;;
+  esac
+
+  # Get currently installed version
+  local INSTALLED_VERSION=""
+  INSTALLED_VERSION=$(is_tool_installed "mongodb" 2>/dev/null) || true
+
+  # Scenario 1: Already at target version - just update packages
+  if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" == "$MONGO_VERSION" ]]; then
+    msg_info "Update MongoDB $MONGO_VERSION"
+
+    ensure_apt_working || return 100
+
+    # Perform upgrade with retry logic
+    upgrade_packages_with_retry "mongodb-org" || {
+      msg_error "Failed to upgrade MongoDB"
+      return 100
+    }
+    cache_installed_version "mongodb" "$MONGO_VERSION"
+    msg_ok "Update MongoDB $MONGO_VERSION"
+    return 0
+  fi
+
+  # Scenario 2: Different version installed - clean upgrade
+  if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" != "$MONGO_VERSION" ]]; then
+    msg_info "Upgrade MongoDB from $INSTALLED_VERSION to $MONGO_VERSION"
+    remove_old_tool_version "mongodb"
+  else
+    msg_info "Setup MongoDB $MONGO_VERSION"
+  fi
+
+  cleanup_orphaned_sources
+
+  # Prepare repository (cleanup + validation)
+  prepare_repository_setup "mongodb" || {
+    msg_error "Failed to prepare MongoDB repository"
+    return 100
+  }
+
+  # Setup repository
+  # MongoDB 8.x versions beyond 8.0 reuse the server-8.0.asc PGP key
+  local MONGO_KEY_VERSION="${MONGO_VERSION}"
+  [[ "${MONGO_VERSION}" == 8.[1-9]* ]] && MONGO_KEY_VERSION="8.0"
+  manage_tool_repository "mongodb" "$MONGO_VERSION" "$MONGO_BASE_URL" \
+    "https://www.mongodb.org/static/pgp/server-${MONGO_KEY_VERSION}.asc" || {
+    msg_error "Failed to setup MongoDB repository"
+    return 100
+  }
+
+  # Wait for repo to settle
+  $STD apt update || {
+    msg_error "APT update failed — invalid MongoDB repo for ${DISTRO_ID}-${DISTRO_CODENAME}?"
+    return 100
+  }
+
+  # Install MongoDB with retry logic
+  install_packages_with_retry "mongodb-org" || {
+    msg_error "Failed to install MongoDB packages"
+    return 100
+  }
+
+  if ! command -v mongod >/dev/null 2>&1; then
+    msg_error "MongoDB binary not found after installation"
+    return 127
+  fi
+
+  mkdir -p /var/lib/mongodb
+  chown -R mongodb:mongodb /var/lib/mongodb
+
+  local KERNEL_VERSION MONGO_MAJOR
+  KERNEL_VERSION=$(uname -r | cut -d- -f1)
+  MONGO_MAJOR="${MONGO_VERSION%%.*}"
+  if ((MONGO_MAJOR >= 8)) && [[ "$(printf '%s\n' "6.19" "$KERNEL_VERSION" | sort -V | head -n1)" == "6.19" ]]; then
+    mkdir -p /etc/systemd/system/mongod.service.d
+    cat <<EOF >/etc/systemd/system/mongod.service.d/rseq.conf
+[Service]
+Environment=GLIBC_TUNABLES=glibc.pthread.rseq=1
+EOF
+    systemctl daemon-reload
+  fi
+
+  $STD systemctl enable mongod || {
+    msg_warn "Failed to enable mongod service"
+  }
+  safe_service_restart mongod
+
+  # Verify MongoDB version
+  local INSTALLED_VERSION
+  INSTALLED_VERSION=$(mongod --version 2>/dev/null | grep -oP 'db version v\K[0-9]+\.[0-9]+' | head -n1 || echo "0.0")
+  verify_tool_version "MongoDB" "$MONGO_VERSION" "$INSTALLED_VERSION" || true
+
+  cache_installed_version "mongodb" "$MONGO_VERSION"
+  msg_ok "Setup MongoDB $MONGO_VERSION"
+}
+
+# ------------------------------------------------------------------------------
+# Installs or upgrades MySQL.
+#
+# Description:
+#   - By default uses distro repository (Debian/Ubuntu apt) for stability
+#   - Optionally uses official MySQL repository for specific versions
+#   - Detects existing MySQL installation
+#   - Purges conflicting packages before installation
+#   - Supports clean upgrade
+#   - Handles Debian Trixie libaio1t64 transition
+#
+# Variables:
+#   USE_MYSQL_REPO - Use official MySQL repository (default: true)
+#                    Set to "false" to use distro packages instead
+#   MYSQL_VERSION  - MySQL version to install when using official repo
+#                    (e.g. 8.0, 8.4) (default: 8.0)
+#
+# Examples:
+#   setup_mysql                              # Uses official MySQL repo, 8.0
+#   MYSQL_VERSION="8.4" setup_mysql          # Specific version from MySQL repo
+#   USE_MYSQL_REPO=false setup_mysql         # Uses distro package instead
+# ------------------------------------------------------------------------------
+
+setup_mysql() {
+  local MYSQL_VERSION="${MYSQL_VERSION:-8.0}"
+  local USE_MYSQL_REPO="${USE_MYSQL_REPO:-true}"
+  local DISTRO_ID DISTRO_CODENAME
+  DISTRO_ID=$(get_os_info id)
+  DISTRO_CODENAME=$(get_os_info codename)
+
+  # Ensure non-interactive mode for all apt operations
+  export DEBIAN_FRONTEND=noninteractive
+  export NEEDRESTART_MODE=a
+  export NEEDRESTART_SUSPEND=1
+
+  # Get currently installed version
+  local CURRENT_VERSION=""
+  CURRENT_VERSION=$(is_tool_installed "mysql" 2>/dev/null) || true
+
+  # Scenario 1: Use distro repository (default, most stable)
+  if [[ "$USE_MYSQL_REPO" != "true" && "$USE_MYSQL_REPO" != "TRUE" && "$USE_MYSQL_REPO" != "1" ]]; then
+    msg_info "Setup MySQL (distro package)"
+
+    # If already installed, just update
+    if [[ -n "$CURRENT_VERSION" ]]; then
+      msg_info "Update MySQL $CURRENT_VERSION"
+      ensure_apt_working || return 100
+      upgrade_packages_with_retry "default-mysql-server" "default-mysql-client" ||
+        upgrade_packages_with_retry "mysql-server" "mysql-client" ||
+        upgrade_packages_with_retry "mariadb-server" "mariadb-client" || {
+        msg_error "Failed to upgrade MySQL/MariaDB packages"
+        return 100
+      }
+      cache_installed_version "mysql" "$CURRENT_VERSION"
+      msg_ok "Update MySQL $CURRENT_VERSION"
+      return 0
+    fi
+
+    # Fresh install from distro repo
+    ensure_apt_working || return 100
+
+    export DEBIAN_FRONTEND=noninteractive
+    # Try default-mysql-server first, fallback to mysql-server, then mariadb
+    if apt-cache search "^default-mysql-server$" 2>/dev/null | grep -q .; then
+      install_packages_with_retry "default-mysql-server" "default-mysql-client" || {
+        msg_warn "default-mysql-server failed, trying mysql-server"
+        install_packages_with_retry "mysql-server" "mysql-client" || {
+          msg_warn "mysql-server failed, trying mariadb as fallback"
+          install_packages_with_retry "mariadb-server" "mariadb-client" || {
+            msg_error "Failed to install any MySQL/MariaDB from distro repository"
+            return 100
+          }
+        }
+      }
+    elif apt-cache search "^mysql-server$" 2>/dev/null | grep -q .; then
+      install_packages_with_retry "mysql-server" "mysql-client" || {
+        msg_warn "mysql-server failed, trying mariadb as fallback"
+        install_packages_with_retry "mariadb-server" "mariadb-client" || {
+          msg_error "Failed to install any MySQL/MariaDB from distro repository"
+          return 100
+        }
+      }
+    else
+      # Distro doesn't have MySQL, use MariaDB
+      install_packages_with_retry "mariadb-server" "mariadb-client" || {
+        msg_error "Failed to install MariaDB from distro repository"
+        return 100
+      }
+    fi
+
+    # Get installed version
+    local INSTALLED_VERSION=""
+    INSTALLED_VERSION=$(is_tool_installed "mysql" 2>/dev/null) || true
+    if [[ -z "$INSTALLED_VERSION" ]]; then
+      INSTALLED_VERSION=$(is_tool_installed "mariadb" 2>/dev/null) || true
+    fi
+    cache_installed_version "mysql" "${INSTALLED_VERSION:-distro}"
+    msg_ok "Setup MySQL/MariaDB ${INSTALLED_VERSION:-from distro}"
+    return 0
+  fi
+
+  # Scenario 2: Use official MySQL repository (USE_MYSQL_REPO=true)
+  # Scenario 2a: Already at target version - just update packages
+  if [[ -n "$CURRENT_VERSION" ]] && version_matches_spec "$CURRENT_VERSION" "$MYSQL_VERSION"; then
+    msg_info "Update MySQL $MYSQL_VERSION"
+
+    ensure_apt_working || return 100
+
+    # Perform upgrade with retry logic (non-fatal if fails)
+    upgrade_packages_with_retry "mysql-server" "mysql-client" || {
+      msg_warn "MySQL package upgrade had issues, continuing with current version"
+    }
+
+    cache_installed_version "mysql" "$MYSQL_VERSION"
+    msg_ok "Update MySQL $MYSQL_VERSION"
+    return 0
+  fi
+
+  # Scenario 2: Different version installed - clean upgrade
+  if [[ -n "$CURRENT_VERSION" ]] && ! version_matches_spec "$CURRENT_VERSION" "$MYSQL_VERSION"; then
+    msg_info "Upgrade MySQL from $CURRENT_VERSION to $MYSQL_VERSION"
+    remove_old_tool_version "mysql"
+  else
+    msg_info "Setup MySQL $MYSQL_VERSION"
+  fi
+
+  # Prepare repository (cleanup + validation)
+  prepare_repository_setup "mysql" || {
+    msg_error "Failed to prepare MySQL repository"
+    return 100
+  }
+
+  # Debian 13+ Fix: MySQL 8.0 incompatible with libaio1t64, use 8.4 LTS
+  if [[ "$DISTRO_ID" == "debian" && "$DISTRO_CODENAME" =~ ^(trixie|forky|sid)$ ]]; then
+    msg_info "Debian ${DISTRO_CODENAME} detected → using MySQL 8.4 LTS (libaio1t64 compatible)"
+
+    if ! download_gpg_key "https://repo.mysql.com/RPM-GPG-KEY-mysql-2023" "/etc/apt/keyrings/mysql.gpg" "dearmor"; then
+      msg_error "Failed to import MySQL GPG key"
+      return 7
+    fi
+
+    cat >/etc/apt/sources.list.d/mysql.sources <<EOF
+Types: deb
+URIs: https://repo.mysql.com/apt/debian/
+Suites: bookworm
+Components: mysql-8.4-lts
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/mysql.gpg
+EOF
+
+    $STD apt update || {
+      msg_error "Failed to update APT for MySQL 8.4 LTS"
+      return 100
+    }
+
+    # Install with retry logic
+    if ! install_packages_with_retry "mysql-community-server" "mysql-community-client"; then
+      msg_warn "MySQL 8.4 LTS installation failed – falling back to MariaDB"
+      cleanup_old_repo_files "mysql"
+      $STD apt update
+      install_packages_with_retry "mariadb-server" "mariadb-client" || {
+        msg_error "Failed to install database engine (MySQL/MariaDB fallback)"
+        return 100
+      }
+      msg_ok "Setup Database Engine (MariaDB fallback on Debian ${DISTRO_CODENAME})"
+      return 0
+    fi
+
+    cache_installed_version "mysql" "8.4"
+    msg_ok "Setup MySQL 8.4 LTS (Debian ${DISTRO_CODENAME})"
+    return 0
+  fi
+
+  # Standard setup for other distributions
+  local SUITE
+  if [[ "$DISTRO_ID" == "debian" ]]; then
+    case "$DISTRO_CODENAME" in
+    bookworm | bullseye) SUITE="$DISTRO_CODENAME" ;;
+    *) SUITE="bookworm" ;;
+    esac
+  else
+    SUITE=$(get_fallback_suite "$DISTRO_ID" "$DISTRO_CODENAME" "https://repo.mysql.com/apt/${DISTRO_ID}")
+  fi
+
+  # Setup repository
+  manage_tool_repository "mysql" "$MYSQL_VERSION" "https://repo.mysql.com/apt/${DISTRO_ID}" \
+    "https://repo.mysql.com/RPM-GPG-KEY-mysql-2023" || {
+    msg_error "Failed to setup MySQL repository"
+    return 100
+  }
+
+  ensure_apt_working || return 100
+
+  # Try multiple package names with retry logic
+  local mysql_install_success=false
+
+  if apt-cache search "^mysql-server$" 2>/dev/null | grep -q . &&
+    install_packages_with_retry "mysql-server" "mysql-client"; then
+    mysql_install_success=true
+  elif apt-cache search "^mysql-community-server$" 2>/dev/null | grep -q . &&
+    install_packages_with_retry "mysql-community-server" "mysql-community-client"; then
+    mysql_install_success=true
+  elif apt-cache search "^mysql$" 2>/dev/null | grep -q . &&
+    install_packages_with_retry "mysql"; then
+    mysql_install_success=true
+  fi
+
+  if [[ "$mysql_install_success" == false ]]; then
+    msg_error "MySQL ${MYSQL_VERSION} package not available for suite ${SUITE}"
+    return 100
+  fi
+
+  # Verify mysql command is accessible
+  if ! command -v mysql >/dev/null 2>&1; then
+    hash -r
+    if ! command -v mysql >/dev/null 2>&1; then
+      msg_error "MySQL installed but mysql command still not found"
+      return 127
+    fi
+  fi
+
+  cache_installed_version "mysql" "$MYSQL_VERSION"
+  msg_ok "Setup MySQL $MYSQL_VERSION"
+}
+
+# ------------------------------------------------------------------------------
+# Installs Node.js and optional global modules.
+#
+# Description:
+#   - Installs specified Node.js version using NodeSource APT repo
+#   - Optionally installs or updates global npm modules
+#
+# Variables:
+#   NODE_VERSION          - Node.js version to install (default: 24 LTS)
+#   NODE_MODULE           - Comma-separated global modules (e.g. "yarn,corepack,pnpm@10")
+#   NODE_COREPACK_ENABLE  - Run corepack enable after install (default: 1 when corepack is used)
+# ------------------------------------------------------------------------------
+
+# Internal helper: Configure shared_preload_libraries for pg_cron
+_configure_pg_cron_preload() {
+  local modules="${1:-}"
+  [[ -z "$modules" ]] && return 0
+  if [[ ",$modules," == *",cron,"* ]]; then
+    local current_libs
+    current_libs=$(sudo -u postgres psql -tAc "SHOW shared_preload_libraries;" 2>/dev/null || echo "")
+    if [[ "$current_libs" != *"pg_cron"* ]]; then
+      local new_libs="${current_libs:+${current_libs},}pg_cron"
+      $STD sudo -u postgres psql -c "ALTER SYSTEM SET shared_preload_libraries = '${new_libs}';"
+      $STD systemctl restart postgresql
+    fi
+  fi
+}
+
+setup_postgresql() {
+  local PG_VERSION="${PG_VERSION:-16}"
+  local PG_MODULES="${PG_MODULES:-}"
+  local USE_PGDG_REPO="${USE_PGDG_REPO:-true}"
+  local DISTRO_ID DISTRO_CODENAME
+  DISTRO_ID=$(get_os_info id)
+  DISTRO_CODENAME=$(get_os_info codename)
+
+  # Ensure non-interactive mode for all apt operations
+  export DEBIAN_FRONTEND=noninteractive
+  export NEEDRESTART_MODE=a
+  export NEEDRESTART_SUSPEND=1
+
+  # Get currently installed version
+  local CURRENT_PG_VERSION=""
+  if command -v psql >/dev/null; then
+    CURRENT_PG_VERSION="$(psql -V 2>/dev/null | awk '{print $3}' | cut -d. -f1)"
+  fi
+
+  # Scenario 1: Use distro repository (default, most stable)
+  if [[ "$USE_PGDG_REPO" != "true" && "$USE_PGDG_REPO" != "TRUE" && "$USE_PGDG_REPO" != "1" ]]; then
+    msg_info "Setup PostgreSQL (distro package)"
+
+    # If already installed, just update
+    if [[ -n "$CURRENT_PG_VERSION" ]]; then
+      msg_info "Update PostgreSQL $CURRENT_PG_VERSION"
+      ensure_apt_working || return 100
+      upgrade_packages_with_retry "postgresql" "postgresql-client" || true
+      cache_installed_version "postgresql" "$CURRENT_PG_VERSION"
+      msg_ok "Update PostgreSQL $CURRENT_PG_VERSION"
+
+      # Still install modules if specified
+      if [[ -n "$PG_MODULES" ]]; then
+        IFS=',' read -ra MODULES <<<"$PG_MODULES"
+        for module in "${MODULES[@]}"; do
+          $STD apt install -y "postgresql-${CURRENT_PG_VERSION}-${module}" 2>/dev/null ||
+            msg_warn "Optional PostgreSQL module '${module}' not available for PG ${CURRENT_PG_VERSION} on $(get_os_info codename) — skipping"
+        done
+      fi
+      _configure_pg_cron_preload "$PG_MODULES"
+      return 0
+    fi
+
+    # Fresh install from distro repo
+    ensure_apt_working || return 100
+
+    export DEBIAN_FRONTEND=noninteractive
+    install_packages_with_retry "postgresql" "postgresql-client" || {
+      msg_error "Failed to install PostgreSQL from distro repository"
+      return 100
+    }
+
+    # Get installed version
+    local INSTALLED_VERSION=""
+    if command -v psql >/dev/null; then
+      INSTALLED_VERSION="$(psql -V 2>/dev/null | awk '{print $3}' | cut -d. -f1)"
+    fi
+
+    $STD systemctl enable --now postgresql 2>/dev/null || true
+
+    # Add PostgreSQL binaries to PATH
+    if [[ -n "$INSTALLED_VERSION" ]] && ! grep -q '/usr/lib/postgresql' /etc/environment 2>/dev/null; then
+      echo 'PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/postgresql/'"${INSTALLED_VERSION}"'/bin"' >/etc/environment
+    fi
+
+    cache_installed_version "postgresql" "${INSTALLED_VERSION:-distro}"
+    msg_ok "Setup PostgreSQL ${INSTALLED_VERSION:-from distro}"
+
+    # Install optional modules
+    if [[ -n "$PG_MODULES" && -n "$INSTALLED_VERSION" ]]; then
+      IFS=',' read -ra MODULES <<<"$PG_MODULES"
+      for module in "${MODULES[@]}"; do
+        $STD apt install -y "postgresql-${INSTALLED_VERSION}-${module}" 2>/dev/null ||
+          msg_warn "Optional PostgreSQL module '${module}' not available for PG ${INSTALLED_VERSION} on $(get_os_info codename) — skipping"
+      done
+    fi
+    _configure_pg_cron_preload "$PG_MODULES"
+    return 0
+  fi
+
+  # Scenario 2: Use official PGDG repository (USE_PGDG_REPO=true)
+  # Scenario 2a: Already at correct version
+  if [[ "$CURRENT_PG_VERSION" == "$PG_VERSION" ]]; then
+    msg_info "Update PostgreSQL $PG_VERSION"
+    ensure_apt_working || return 100
+
+    # Perform upgrade with retry logic (non-fatal if fails)
+    upgrade_packages_with_retry "postgresql-${PG_VERSION}" "postgresql-client-${PG_VERSION}" 2>/dev/null || true
+    cache_installed_version "postgresql" "$PG_VERSION"
+    msg_ok "Update PostgreSQL $PG_VERSION"
+
+    # Still install modules if specified
+    if [[ -n "$PG_MODULES" ]]; then
+      IFS=',' read -ra MODULES <<<"$PG_MODULES"
+      for module in "${MODULES[@]}"; do
+        $STD apt install -y "postgresql-${PG_VERSION}-${module}" 2>/dev/null ||
+          msg_warn "Optional PostgreSQL module '${module}' not available for PG ${PG_VERSION} on $(get_os_info codename) — skipping"
+      done
+    fi
+    _configure_pg_cron_preload "$PG_MODULES"
+    return 0
+  fi
+
+  # Scenario 2: Different version - backup, remove old, install new
+  if [[ -n "$CURRENT_PG_VERSION" ]]; then
+    msg_info "Upgrade PostgreSQL from $CURRENT_PG_VERSION to $PG_VERSION"
+    msg_info "Creating backup of PostgreSQL $CURRENT_PG_VERSION databases..."
+    local PG_BACKUP_FILE="/var/lib/postgresql/backup_$(date +%F)_v${CURRENT_PG_VERSION}.sql"
+    $STD runuser -u postgres -- pg_dumpall >"$PG_BACKUP_FILE" || {
+      msg_error "Failed to backup PostgreSQL databases"
+      return 150
+    }
+    $STD systemctl stop postgresql || true
+    $STD apt purge -y "postgresql-${CURRENT_PG_VERSION}" "postgresql-client-${CURRENT_PG_VERSION}" 2>/dev/null || true
+  else
+    msg_info "Setup PostgreSQL $PG_VERSION"
+  fi
+
+  # Scenario 3: Fresh install or after removal - setup repo and install
+  prepare_repository_setup "pgdg" "postgresql" || {
+    msg_error "Failed to prepare PostgreSQL repository"
+    return 100
+  }
+
+  local SUITE
+  case "$DISTRO_CODENAME" in
+  trixie | forky | sid)
+
+    if verify_repo_available "https://apt.postgresql.org/pub/repos/apt" "trixie-pgdg"; then
+      SUITE="trixie-pgdg"
+
+    else
+      local _distro_pg_ver
+      _distro_pg_ver=$(apt-cache show postgresql 2>/dev/null | awk '/^Version:/{print $2; exit}' | grep -oE '^[0-9]+' || true)
+      msg_warn "PGDG repository not available for ${DISTRO_CODENAME} — falling back to distro-provided PostgreSQL packages"
+      if [[ -n "$_distro_pg_ver" ]]; then
+        msg_warn "Distro will install PostgreSQL ${_distro_pg_ver} (not the requested ${PG_VERSION})."
+        msg_warn "Any PostgreSQL extension packages (e.g. vchord, pgvector) must be built for PostgreSQL ${_distro_pg_ver} on ${DISTRO_CODENAME}."
+      fi
+      USE_PGDG_REPO=false setup_postgresql
+      return $?
+    fi
+
+    ;;
+  *)
+    SUITE=$(get_fallback_suite "$DISTRO_ID" "$DISTRO_CODENAME" "https://apt.postgresql.org/pub/repos/apt")
+    SUITE="${SUITE}-pgdg"
+    ;;
+  esac
+
+  setup_deb822_repo \
+    "pgdg" \
+    "https://www.postgresql.org/media/keys/ACCC4CF8.asc" \
+    "https://apt.postgresql.org/pub/repos/apt" \
+    "$SUITE" \
+    "main"
+
+  if ! $STD apt update; then
+    msg_error "APT update failed for PostgreSQL repository"
+    return 100
+  fi
+
+  # Install ssl-cert dependency if available
+  if apt-cache search "^ssl-cert$" 2>/dev/null | grep -q .; then
+    $STD apt install -y ssl-cert 2>/dev/null ||
+      msg_warn "Optional ssl-cert package could not be installed — continuing without it"
+  fi
+
+  # Try multiple PostgreSQL package patterns with retry logic
+  local pg_install_success=false
+
+  if apt-cache search "^postgresql-${PG_VERSION}$" 2>/dev/null | grep -q . &&
+    install_packages_with_retry "postgresql-${PG_VERSION}" "postgresql-client-${PG_VERSION}"; then
+    pg_install_success=true
+  fi
+
+  if [[ "$pg_install_success" == false ]] &&
+    apt-cache search "^postgresql-server-${PG_VERSION}$" 2>/dev/null | grep -q . &&
+    $STD apt install -y "postgresql-server-${PG_VERSION}" "postgresql-client-${PG_VERSION}" 2>/dev/null; then
+    pg_install_success=true
+  fi
+
+  if [[ "$pg_install_success" == false ]] &&
+    apt-cache search "^postgresql$" 2>/dev/null | grep -q . &&
+    $STD apt install -y postgresql postgresql-client 2>/dev/null; then
+    pg_install_success=true
+  fi
+
+  if [[ "$pg_install_success" == false ]]; then
+    msg_error "PostgreSQL package not available for suite ${SUITE}"
+    return 100
+  fi
+
+  if ! command -v psql >/dev/null 2>&1; then
+    msg_error "PostgreSQL installed but psql command not found"
+    return 127
+  fi
+
+  # Restore database backup if we upgraded from previous version
+  if [[ -n "$CURRENT_PG_VERSION" && -n "${PG_BACKUP_FILE:-}" && -f "${PG_BACKUP_FILE}" ]]; then
+    msg_info "Restoring PostgreSQL databases from backup..."
+    $STD runuser -u postgres -- psql <"$PG_BACKUP_FILE" 2>/dev/null || {
+      msg_warn "Failed to restore database backup - this may be expected for major version upgrades"
+    }
+  fi
+
+  $STD systemctl enable --now postgresql 2>/dev/null || {
+    msg_warn "Failed to enable/start PostgreSQL service"
+  }
+
+  # Add PostgreSQL binaries to PATH
+  if ! grep -q '/usr/lib/postgresql' /etc/environment 2>/dev/null; then
+    echo 'PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/postgresql/'"${PG_VERSION}"'/bin"' >/etc/environment
+  fi
+
+  cache_installed_version "postgresql" "$PG_VERSION"
+  msg_ok "Setup PostgreSQL $PG_VERSION"
+
+  # Install optional modules
+  if [[ -n "$PG_MODULES" ]]; then
+    IFS=',' read -ra MODULES <<<"$PG_MODULES"
+    for module in "${MODULES[@]}"; do
+      $STD apt install -y "postgresql-${PG_VERSION}-${module}" 2>/dev/null || {
+        msg_warn "Failed to install PostgreSQL module: ${module}"
+      }
+    done
+  fi
+  _configure_pg_cron_preload "$PG_MODULES"
+}
+
+# ------------------------------------------------------------------------------
+# Creates PostgreSQL database with user and optional extensions
+#
+# Description:
+#   - Creates PostgreSQL role with login and password
+#   - Creates database with UTF8 encoding and template0
+#   - Installs optional extensions (postgis, pgvector, etc.)
+#   - Configures ALTER ROLE settings for Django/Rails compatibility
+#   - Saves credentials to file
+#   - Exports variables for use in calling script
+#
+# Usage:
+#   PG_DB_NAME="myapp_db" PG_DB_USER="myapp_user" setup_postgresql_db
+#   PG_DB_NAME="immich" PG_DB_USER="immich" PG_DB_EXTENSIONS="pgvector" setup_postgresql_db
+#   PG_DB_NAME="ghostfolio" PG_DB_USER="ghostfolio" PG_DB_GRANT_SUPERUSER="true" setup_postgresql_db
+#   PG_DB_NAME="adventurelog" PG_DB_USER="adventurelog" PG_DB_EXTENSIONS="postgis" setup_postgresql_db
+#   PG_DB_NAME="splitpro" PG_DB_USER="splitpro" PG_DB_EXTENSIONS="pg_cron" setup_postgresql_db
+#
+# Variables:
+#   PG_DB_NAME             - Database name (required)
+#   PG_DB_USER             - Database user (required)
+#   PG_DB_PASS             - Database password (optional, auto-generated if empty)
+#   PG_DB_EXTENSIONS       - Comma-separated list of extensions (optional, e.g. "postgis,pgvector")
+#   PG_DB_GRANT_SUPERUSER  - Grant SUPERUSER privilege (optional, "true" to enable, security risk!)
+#   PG_DB_SCHEMA_PERMS     - Grant schema-level permissions (optional, "true" to enable)
+#   PG_DB_SKIP_ALTER_ROLE  - Skip ALTER ROLE settings (optional, "true" to skip)
+#   PG_DB_CREDS_FILE       - Credentials file path (optional, default: ~/${APPLICATION}.creds)
+#
+# Exports:
+#   PG_DB_NAME, PG_DB_USER, PG_DB_PASS - For use in calling script
+# ------------------------------------------------------------------------------
+
+setup_postgresql_db() {
+  # Validation
+  if [[ -z "${PG_DB_NAME:-}" || -z "${PG_DB_USER:-}" ]]; then
+    msg_error "PG_DB_NAME and PG_DB_USER must be set before calling setup_postgresql_db"
+    return 65
+  fi
+
+  # Generate password if not provided
+  if [[ -z "${PG_DB_PASS:-}" ]]; then
+    PG_DB_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)
+  fi
+
+  msg_info "Setting up PostgreSQL Database"
+  # Escape single quotes in identifiers to prevent SQL injection
+  local _pg_user_escaped _pg_pass_escaped _pg_db_escaped
+  _pg_user_escaped="${PG_DB_USER//\'/\'\'}"
+  _pg_pass_escaped="${PG_DB_PASS//\'/\'\'}"
+  _pg_db_escaped="${PG_DB_NAME//\'/\'\'}"
+
+  $STD sudo -u postgres psql -c "CREATE ROLE $_pg_user_escaped WITH LOGIN PASSWORD '$_pg_pass_escaped';"
+  $STD sudo -u postgres psql -c "CREATE DATABASE $_pg_db_escaped WITH OWNER $_pg_user_escaped ENCODING 'UTF8' TEMPLATE template0;"
+
+  # Configure pg_cron database BEFORE creating the extension (must be set before pg_cron loads)
+  if [[ -n "${PG_DB_EXTENSIONS:-}" ]] && [[ ",${PG_DB_EXTENSIONS//[[:space:]]/}," == *",pg_cron,"* ]]; then
+    $STD sudo -u postgres psql -c "ALTER SYSTEM SET cron.database_name = '${PG_DB_NAME}';"
+    $STD sudo -u postgres psql -c "ALTER SYSTEM SET cron.timezone = 'UTC';"
+    $STD systemctl restart postgresql
+  fi
+
+  # Install extensions (comma-separated)
+  if [[ -n "${PG_DB_EXTENSIONS:-}" ]]; then
+    IFS=',' read -ra EXT_LIST <<<"${PG_DB_EXTENSIONS:-}"
+    for ext in "${EXT_LIST[@]}"; do
+      ext=$(echo "$ext" | xargs) # Trim whitespace
+      $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS \"$ext\";"
+    done
+  fi
+
+  # Grant pg_cron schema permissions to DB user
+  if [[ -n "${PG_DB_EXTENSIONS:-}" ]] && [[ ",${PG_DB_EXTENSIONS//[[:space:]]/}," == *",pg_cron,"* ]]; then
+    $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "GRANT USAGE ON SCHEMA cron TO ${PG_DB_USER};"
+    $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "GRANT ALL ON ALL TABLES IN SCHEMA cron TO ${PG_DB_USER};"
+  fi
+
+  # ALTER ROLE settings for Django/Rails compatibility (unless skipped)
+  if [[ "${PG_DB_SKIP_ALTER_ROLE:-}" != "true" ]]; then
+    $STD sudo -u postgres psql -c "ALTER ROLE $PG_DB_USER SET client_encoding TO 'utf8';"
+    $STD sudo -u postgres psql -c "ALTER ROLE $PG_DB_USER SET default_transaction_isolation TO 'read committed';"
+    $STD sudo -u postgres psql -c "ALTER ROLE $PG_DB_USER SET timezone TO 'UTC';"
+  fi
+
+  # Schema permissions (if requested)
+  if [[ "${PG_DB_SCHEMA_PERMS:-}" == "true" ]]; then
+    $STD sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $PG_DB_NAME TO $PG_DB_USER;"
+    $STD sudo -u postgres psql -c "ALTER USER $PG_DB_USER CREATEDB;"
+    $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "GRANT ALL ON SCHEMA public TO $PG_DB_USER;"
+    $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "GRANT CREATE ON SCHEMA public TO $PG_DB_USER;"
+    $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO $PG_DB_USER;"
+    $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO $PG_DB_USER;"
+  fi
+
+  # Superuser grant (if requested - WARNING!)
+  if [[ "${PG_DB_GRANT_SUPERUSER:-}" == "true" ]]; then
+    $STD sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $PG_DB_NAME to $PG_DB_USER;"
+    $STD sudo -u postgres psql -c "ALTER USER $PG_DB_USER WITH SUPERUSER;"
+  fi
+
+  # Save credentials
+  local app_name="${APPLICATION,,}"
+  local CREDS_FILE="${PG_DB_CREDS_FILE:-${HOME}/${app_name}.creds}"
+  {
+    echo "PostgreSQL Credentials"
+    echo "Database: $PG_DB_NAME"
+    echo "User: $PG_DB_USER"
+    echo "Password: $PG_DB_PASS"
+  } >>"$CREDS_FILE"
+
+  msg_ok "Set up PostgreSQL Database"
+
+  # Export for use in calling script
+  export PG_DB_NAME
+  export PG_DB_USER
+  export PG_DB_PASS
+}
+
+# ------------------------------------------------------------------------------
+# Installs rbenv and ruby-build, installs Ruby and optionally Rails.
+#
+# Description:
+#   - Downloads rbenv and ruby-build from GitHub
+#   - Compiles and installs target Ruby version
+#   - Optionally installs Rails via gem
+#
+# Variables:
+#   RUBY_VERSION         - Ruby version to install (default: 3.4.4)
+#   RUBY_INSTALL_RAILS   - true/false to install Rails (default: true)
+# ------------------------------------------------------------------------------

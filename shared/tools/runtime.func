@@ -1,0 +1,2460 @@
+#!/usr/bin/env bash
+# Copyright (c) 2021-2026 community-scripts ORG
+# License: MIT | https://raw.githubusercontent.com/community-scripts/core/main/LICENSE
+
+# ==============================================================================
+# TOOLS/RUNTIME.FUNC - LANGUAGE RUNTIMES AND APPLICATION INSTALLERS
+# ==============================================================================
+# Part of the shared helper library. Load shared/tools.func -- it sources every
+# part -- rather than this file directly; the split is for maintenance only and
+# no function name or behaviour changed with it.
+# ==============================================================================
+
+[[ -n "${_TOOLS_RUNTIME_LOADED:-}" ]] && return 0
+_TOOLS_RUNTIME_LOADED=1
+
+setup_adminer() {
+  if grep -qi alpine /etc/os-release; then
+    msg_info "Setup Adminer (Alpine)"
+    mkdir -p /var/www/localhost/htdocs/adminer
+    if ! curl_with_retry "https://github.com/vrana/adminer/releases/latest/download/adminer.php" "/var/www/localhost/htdocs/adminer/index.php"; then
+      msg_error "Failed to download Adminer"
+      msg_error "Hint: Check connectivity to github.com/vrana/adminer (GitHub Releases)"
+      return 250
+    fi
+    cache_installed_version "adminer" "latest-alpine"
+    msg_ok "Setup Adminer (Alpine)"
+  else
+    msg_info "Setup Adminer (Debian/Ubuntu)"
+    ensure_dependencies adminer
+    $STD a2enconf adminer || {
+      msg_error "Failed to enable Adminer Apache config"
+      return 150
+    }
+    $STD systemctl reload apache2 || {
+      msg_error "Failed to reload Apache"
+      return 150
+    }
+    local VERSION
+    VERSION=$(dpkg -s adminer 2>/dev/null | grep '^Version:' | awk '{print $2}' 2>/dev/null || echo 'unknown')
+    cache_installed_version "adminer" "${VERSION:-unknown}"
+    msg_ok "Setup Adminer (Debian/Ubuntu)"
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# Installs or upgrades ClickHouse database server.
+#
+# Description:
+#   - Adds ClickHouse official repository
+#   - Installs specified version
+#   - Configures systemd service
+#   - Supports Debian/Ubuntu with fallback mechanism
+#
+# Variables:
+#   CLICKHOUSE_VERSION  - ClickHouse version to install (default: latest)
+# ------------------------------------------------------------------------------
+
+setup_composer() {
+  local COMPOSER_BIN="/usr/local/bin/composer"
+  export COMPOSER_ALLOW_SUPERUSER=1
+
+  # Get currently installed version
+  local INSTALLED_VERSION=""
+  if [[ -x "$COMPOSER_BIN" ]]; then
+    INSTALLED_VERSION=$("$COMPOSER_BIN" --version 2>/dev/null | awk '{print $3}')
+  fi
+
+  # Scenario 1: Already installed - just self-update
+  if [[ -n "$INSTALLED_VERSION" ]]; then
+    msg_info "Update Composer $INSTALLED_VERSION"
+    $STD "$COMPOSER_BIN" self-update --no-interaction || {
+      msg_warn "Composer self-update failed, continuing with current version"
+    }
+    local UPDATED_VERSION
+    UPDATED_VERSION=$("$COMPOSER_BIN" --version 2>/dev/null | awk '{print $3}')
+    cache_installed_version "composer" "$UPDATED_VERSION"
+    msg_ok "Update Composer $UPDATED_VERSION"
+    return 0
+  fi
+
+  # Scenario 2: Fresh install
+  msg_info "Setup Composer"
+
+  for old in /usr/bin/composer /bin/composer /root/.composer/vendor/bin/composer; do
+    [[ -e "$old" && "$old" != "$COMPOSER_BIN" ]] && rm -f "$old"
+  done
+
+  ensure_usr_local_bin_persist
+  export PATH="/usr/local/bin:$PATH"
+
+  if ! curl_with_retry "https://getcomposer.org/installer" "/tmp/composer-setup.php"; then
+    msg_error "Failed to download Composer installer"
+    msg_error "Hint: Check connectivity to getcomposer.org"
+    return 250
+  fi
+
+  $STD php /tmp/composer-setup.php --install-dir=/usr/local/bin --filename=composer || {
+    msg_error "Failed to install Composer"
+    rm -f /tmp/composer-setup.php
+    return 150
+  }
+  rm -f /tmp/composer-setup.php
+
+  if [[ ! -x "$COMPOSER_BIN" ]]; then
+    msg_error "Composer installation failed"
+    return 127
+  fi
+
+  chmod +x "$COMPOSER_BIN"
+  $STD "$COMPOSER_BIN" self-update --no-interaction || {
+    msg_warn "Composer self-update failed after fresh install"
+  }
+
+  local FINAL_VERSION
+  FINAL_VERSION=$("$COMPOSER_BIN" --version 2>/dev/null | awk '{print $3}')
+  cache_installed_version "composer" "$FINAL_VERSION"
+  msg_ok "Setup Composer"
+}
+
+# ------------------------------------------------------------------------------
+# Docker Engine Installation and Management (All-In-One)
+#
+# Description:
+#   - By default uses distro repository (docker.io) for stability
+#   - Optionally uses official Docker repository for latest features
+#   - Detects and migrates old Docker installations
+#   - Optional: Installs/Updates Portainer CE
+#   - Updates running containers interactively
+#   - Cleans up legacy repository files
+#
+# Usage:
+#   setup_docker                              # Uses official Docker repo (recommended)
+#   USE_DOCKER_REPO=false setup_docker        # Uses distro docker.io package
+#   DOCKER_PORTAINER="true" setup_docker
+#   DOCKER_LOG_DRIVER="json-file" setup_docker
+#
+# Variables:
+#   USE_DOCKER_REPO        - Set to "false" to use distro docker.io package
+#                            (default: true, uses official Docker repository)
+#   DOCKER_PORTAINER       - Install Portainer CE (optional, "true" to enable)
+#   DOCKER_LOG_DRIVER      - Log driver (optional, default: "journald")
+#   DOCKER_SKIP_UPDATES    - Skip container update check (optional, "true" to skip)
+#
+# Features:
+#   - Uses official Docker repository by default
+#   - Migrates from get.docker.com to repository-based installation
+#   - Updates Docker Engine if newer version available
+#   - Interactive per-container update prompt (Y/N, 60 s auto-no)
+#   - Compose-managed containers: full restart via docker compose
+#   - Standalone containers: image pull only, no destructive stop/rm
+#   - Portainer installation and update support
+#   - Set DOCKER_NONINTERACTIVE=1 to skip interactive prompts (CI/unattended)
+# ------------------------------------------------------------------------------
+_docker_is_noninteractive() {
+  [[ "${DOCKER_NONINTERACTIVE:-}" == "1" || "${DOCKER_NONINTERACTIVE:-}" == "true" || "${DOCKER_NONINTERACTIVE:-}" == "TRUE" ]] || [[ ! -t 0 ]]
+}
+
+setup_docker() {
+  local docker_installed=false
+  local portainer_installed=false
+  local USE_DOCKER_REPO="${USE_DOCKER_REPO:-true}"
+
+  # Check if Docker is already installed
+  if command -v docker &>/dev/null; then
+    docker_installed=true
+    DOCKER_CURRENT_VERSION=$(docker --version | grep -oP '\d+\.\d+\.\d+' | head -1)
+    msg_info "Docker $DOCKER_CURRENT_VERSION detected"
+  fi
+
+  # Check if Portainer is running
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^portainer$'; then
+    portainer_installed=true
+    msg_info "Portainer container detected"
+  fi
+
+  # Scenario 1: Use distro repository (opt-out via USE_DOCKER_REPO=false)
+  if [[ "$USE_DOCKER_REPO" != "true" && "$USE_DOCKER_REPO" != "TRUE" && "$USE_DOCKER_REPO" != "1" ]]; then
+
+    # Install or upgrade Docker from distro repo
+    if [ "$docker_installed" = true ]; then
+      msg_info "Checking for Docker updates (distro package)"
+      ensure_apt_working || return 100
+      upgrade_packages_with_retry "docker.io" "docker-compose" || true
+      DOCKER_CURRENT_VERSION=$(docker --version | grep -oP '\d+\.\d+\.\d+' | head -1)
+      msg_ok "Docker is up-to-date ($DOCKER_CURRENT_VERSION)"
+    else
+      msg_info "Installing Docker (distro package)"
+      ensure_apt_working || return 100
+
+      # Install docker.io and docker-compose from distro
+      if ! install_packages_with_retry "docker.io"; then
+        msg_error "Failed to install docker.io from distro repository"
+        return 100
+      fi
+      # docker-compose is optional
+      $STD apt install -y docker-compose 2>/dev/null ||
+        msg_warn "Optional docker-compose not available from distro repository — use 'docker compose' plugin instead if needed"
+
+      DOCKER_CURRENT_VERSION=$(docker --version | grep -oP '\d+\.\d+\.\d+' | head -1)
+      msg_ok "Installed Docker $DOCKER_CURRENT_VERSION (distro package)"
+    fi
+
+    # Configure daemon.json
+    local log_driver="${DOCKER_LOG_DRIVER:-journald}"
+    mkdir -p /etc/docker
+    if [ ! -f /etc/docker/daemon.json ]; then
+      cat <<EOF >/etc/docker/daemon.json
+{
+  "log-driver": "$log_driver"
+}
+EOF
+    fi
+
+    # Enable and start Docker
+    systemctl enable -q --now docker
+
+    # Continue to Portainer section below
+  else
+    # Scenario 2: Use official Docker repository (USE_DOCKER_REPO=true)
+
+    # Cleanup old repository configurations
+    if [ -f /etc/apt/sources.list.d/docker.list ]; then
+      msg_info "Migrating from old Docker repository format"
+      rm -f /etc/apt/sources.list.d/docker.list
+      rm -f /etc/apt/keyrings/docker.asc
+    fi
+
+    # Setup/Update Docker repository
+    msg_info "Setting up Docker Repository"
+    setup_deb822_repo \
+      "docker" \
+      "https://download.docker.com/linux/$(get_os_info id)/gpg" \
+      "https://download.docker.com/linux/$(get_os_info id)" \
+      "$(get_os_info codename)" \
+      "stable" \
+      "$(dpkg --print-architecture)"
+
+    # Install or upgrade Docker
+    if [ "$docker_installed" = true ]; then
+      msg_info "Checking for Docker updates"
+      DOCKER_LATEST_VERSION=$(apt-cache policy docker-ce | grep Candidate | awk '{print $2}' 2>/dev/null | cut -d':' -f2 | cut -d'-' -f1 || echo '')
+
+      if [ "$DOCKER_CURRENT_VERSION" != "$DOCKER_LATEST_VERSION" ]; then
+        msg_info "Updating Docker $DOCKER_CURRENT_VERSION → $DOCKER_LATEST_VERSION"
+        $STD apt install -y --only-upgrade \
+          docker-ce \
+          docker-ce-cli \
+          containerd.io \
+          docker-buildx-plugin \
+          docker-compose-plugin || {
+          msg_error "Failed to update Docker packages"
+          return 100
+        }
+        msg_ok "Updated Docker to $DOCKER_LATEST_VERSION"
+      else
+        msg_ok "Docker is up-to-date ($DOCKER_CURRENT_VERSION)"
+      fi
+    else
+      msg_info "Installing Docker"
+      $STD apt install -y \
+        docker-ce \
+        docker-ce-cli \
+        containerd.io \
+        docker-buildx-plugin \
+        docker-compose-plugin || {
+        msg_error "Failed to install Docker packages"
+        return 100
+      }
+
+      DOCKER_CURRENT_VERSION=$(docker --version | grep -oP '\d+\.\d+\.\d+' | head -1)
+      msg_ok "Installed Docker $DOCKER_CURRENT_VERSION"
+    fi
+
+    # Configure daemon.json
+    local log_driver="${DOCKER_LOG_DRIVER:-journald}"
+    mkdir -p /etc/docker
+    if [ ! -f /etc/docker/daemon.json ]; then
+      cat <<EOF >/etc/docker/daemon.json
+{
+  "log-driver": "$log_driver"
+}
+EOF
+    fi
+
+    # Enable and start Docker
+    systemctl enable -q --now docker
+  fi
+
+  # Portainer Management (common for both modes)
+  if [[ "${DOCKER_PORTAINER:-}" == "true" ]]; then
+    if [ "$portainer_installed" = true ]; then
+      msg_info "Checking for Portainer updates"
+      PORTAINER_CURRENT=$(docker inspect portainer --format='{{.Config.Image}}' 2>/dev/null | cut -d':' -f2)
+      PORTAINER_LATEST=$(curl -fsSL https://registry.hub.docker.com/v2/repositories/portainer/portainer-ce/tags?page_size=100 | grep -oP '"name":"\K[0-9]+\.[0-9]+\.[0-9]+"' | head -1 | tr -d '"')
+
+      if [ "$PORTAINER_CURRENT" != "$PORTAINER_LATEST" ]; then
+        if _docker_is_noninteractive; then
+          msg_info "Skipping Portainer update prompt (non-interactive)"
+        else
+          read -r -p "${TAB3}Update Portainer $PORTAINER_CURRENT → $PORTAINER_LATEST? <y/N> " prompt </dev/tty
+          if [[ ${prompt,,} =~ ^(y|yes)$ ]]; then
+            msg_info "Updating Portainer"
+            docker stop portainer
+            docker rm portainer
+            docker pull portainer/portainer-ce:latest
+            docker run -d \
+              -p 9000:9000 \
+              -p 9443:9443 \
+              --name=portainer \
+              --restart=always \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v portainer_data:/data \
+              portainer/portainer-ce:latest
+            msg_ok "Updated Portainer to $PORTAINER_LATEST"
+          fi
+        fi
+      else
+        msg_ok "Portainer is up-to-date ($PORTAINER_CURRENT)"
+      fi
+    else
+      msg_info "Installing Portainer"
+      docker volume create portainer_data
+      docker run -d \
+        -p 9000:9000 \
+        -p 9443:9443 \
+        --name=portainer \
+        --restart=always \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -v portainer_data:/data \
+        portainer/portainer-ce:latest
+
+      LOCAL_IP=$(hostname -I | awk '{print $1}')
+      msg_ok "Installed Portainer (http://${LOCAL_IP}:9000)"
+    fi
+  fi
+
+  # Container Update Check
+  # - Skipped entirely when running unattended / non-interactive
+  # - Compose-managed containers: offered via Y/N → docker compose pull + up -d
+  # - Standalone containers: offered via Y/N → image pull only (no stop/rm)
+  if [ "$docker_installed" = true ] && ! _docker_is_noninteractive; then
+    msg_info "Checking for container updates"
+
+    local name image compose_workdir compose_service current_digest latest_digest
+    local compose_updates=()
+    local standalone_updates=()
+
+    while IFS= read -r line; do
+      name=$(echo "$line" | awk '{print $1}')
+      image=$(echo "$line" | awk '{print $2}')
+
+      # Portainer containers are handled by the dedicated block above
+      [[ "$name" == "portainer" || "$name" == "portainer_agent" ]] && continue
+
+      current_digest=$(docker inspect "$name" --format='{{.Image}}' 2>/dev/null | cut -d':' -f2 | cut -c1-12)
+      docker pull "$image" >/dev/null 2>&1 || continue
+      latest_digest=$(docker inspect "$image" --format='{{.Id}}' 2>/dev/null | cut -d':' -f2 | cut -c1-12)
+      [[ -z "$latest_digest" || "$current_digest" == "$latest_digest" ]] && continue
+
+      compose_workdir=$(docker inspect "$name" \
+        --format='{{index .Config.Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null || true)
+      compose_service=$(docker inspect "$name" \
+        --format='{{index .Config.Labels "com.docker.compose.service"}}' 2>/dev/null || true)
+
+      if [[ -n "$compose_workdir" && -n "$compose_service" && -d "$compose_workdir" ]]; then
+        compose_updates+=("${name}|${image}|${compose_workdir}|${compose_service}")
+      else
+        standalone_updates+=("${name}|${image}")
+      fi
+    done < <(docker ps --format '{{.Names}} {{.Image}}')
+
+    # Stop spinner before any interactive prompt
+    stop_spinner
+
+    if [[ ${#compose_updates[@]} -eq 0 && ${#standalone_updates[@]} -eq 0 ]]; then
+      msg_ok "All containers are up-to-date"
+    else
+      local reply
+      for entry in "${compose_updates[@]}"; do
+        IFS='|' read -r name image compose_workdir compose_service <<<"$entry"
+        reply=""
+        if read -r -t 60 -p "${TAB3}Update ${name} (${image}) via Compose? <y/N> (auto-no in 60s): " reply </dev/tty; then
+          echo ""
+        else
+          echo ""
+        fi
+        if [[ "${reply,,}" =~ ^(y|yes)$ ]]; then
+          msg_info "Updating $name"
+          if (cd "$compose_workdir" && $STD docker compose pull "$compose_service" && $STD docker compose up -d "$compose_service"); then
+            msg_ok "Updated $name"
+          else
+            msg_warn "Could not update $name — try manually in $compose_workdir"
+          fi
+        fi
+      done
+
+      for entry in "${standalone_updates[@]}"; do
+        IFS='|' read -r name image <<<"$entry"
+        reply=""
+        if read -r -t 60 -p "${TAB3}Pull new image for ${name} (${image})? <y/N> (auto-no in 60s): " reply </dev/tty; then
+          echo ""
+        else
+          echo ""
+        fi
+        if [[ "${reply,,}" =~ ^(y|yes)$ ]]; then
+          msg_info "Pulling new image for $name"
+          if $STD docker pull "$image"; then
+            msg_ok "New image available for $name — recreate the container to apply the update"
+          else
+            msg_warn "Failed to pull image for $name"
+          fi
+        fi
+      done
+    fi
+  fi
+
+  msg_ok "Docker setup completed"
+}
+
+# ------------------------------------------------------------------------------
+# Installs a .NET SDK or runtime.
+#
+# Description:
+#   - Debian and Ubuntu 22.04 install from packages.microsoft.com.
+#   - Ubuntu 24.04 and newer ship .NET in the distribution archive and Microsoft
+#     publishes no dotnet packages for them, so no extra repository is added.
+#   - .NET installs side by side, so an existing major version is left alone.
+#
+# Variables:
+#   DOTNET_VERSION - major version: 8, 9, 10 (default: 10). "8.0" also works.
+#   DOTNET_TYPE    - sdk (default) | runtime | aspnetcore
+#
+# Notes:
+#   - Debian 13 carries 8, 9 and 10; Debian 12 and Ubuntu 22.04 additionally
+#     carry 6 and 7. Ubuntu 22.04 has no 10.
+#   - aspnetcore is the ASP.NET Core runtime that framework-dependent web apps
+#     need at runtime. Use sdk only when something has to be compiled.
+# ------------------------------------------------------------------------------
+
+setup_dotnet() {
+  local DOTNET_VERSION="${DOTNET_VERSION:-10}"
+  local DOTNET_TYPE="${DOTNET_TYPE:-sdk}"
+  local DISTRO_ID DISTRO_CODENAME DISTRO_VERSION PACKAGE_PREFIX
+
+  DOTNET_VERSION="${DOTNET_VERSION%%.*}.0"
+
+  case "$DOTNET_TYPE" in
+  sdk) PACKAGE_PREFIX="dotnet-sdk" ;;
+  runtime) PACKAGE_PREFIX="dotnet-runtime" ;;
+  aspnetcore) PACKAGE_PREFIX="aspnetcore-runtime" ;;
+  *)
+    msg_error "setup_dotnet: invalid DOTNET_TYPE '$DOTNET_TYPE' (expected sdk, runtime or aspnetcore)"
+    return 65
+    ;;
+  esac
+
+  local DESIRED_PACKAGE="${PACKAGE_PREFIX}-${DOTNET_VERSION}"
+  DISTRO_ID=$(get_os_info id)
+  DISTRO_CODENAME=$(get_os_info codename)
+  DISTRO_VERSION=$(get_os_info version_id)
+
+  local USE_MS_REPO=1
+  if [[ "$DISTRO_ID" == "ubuntu" ]] && ((${DISTRO_VERSION%%.*} >= 24)); then
+    USE_MS_REPO=0
+  fi
+
+  if ((USE_MS_REPO)); then
+    local REPO_URL="https://packages.microsoft.com/${DISTRO_ID}/${DISTRO_VERSION}/prod"
+
+    prepare_repository_setup "microsoft-prod" || {
+      msg_error "Failed to prepare Microsoft repository"
+      return 100
+    }
+
+    if ! verify_repo_available "$REPO_URL" "$DISTRO_CODENAME"; then
+      msg_error "Microsoft does not publish a .NET feed for ${DISTRO_ID} ${DISTRO_VERSION} (${DISTRO_CODENAME})"
+      return 100
+    fi
+
+    setup_deb822_repo \
+      "microsoft-prod" \
+      "https://packages.microsoft.com/keys/microsoft-2025.asc" \
+      "$REPO_URL" \
+      "$DISTRO_CODENAME" \
+      "main" || return 100
+  fi
+
+  ensure_apt_working || return 100
+
+  if ! apt-cache show "$DESIRED_PACKAGE" &>/dev/null; then
+    msg_error "Package ${DESIRED_PACKAGE} is not available on ${DISTRO_ID} ${DISTRO_VERSION} (${DISTRO_CODENAME})"
+    return 100
+  fi
+
+  if dpkg-query -W -f '${Status}' "$DESIRED_PACKAGE" 2>/dev/null | grep -q "install ok installed"; then
+    msg_info "Update .NET ${DOTNET_TYPE} ${DOTNET_VERSION}"
+    upgrade_packages_with_retry "$DESIRED_PACKAGE" || {
+      msg_error "Failed to update ${DESIRED_PACKAGE}"
+      return 100
+    }
+  else
+    msg_info "Setup .NET ${DOTNET_TYPE} ${DOTNET_VERSION}"
+    install_packages_with_retry "$DESIRED_PACKAGE" || {
+      msg_error "Failed to install ${DESIRED_PACKAGE}"
+      return 100
+    }
+  fi
+
+  cache_installed_version "dotnet-${DOTNET_TYPE}" "$DOTNET_VERSION"
+  msg_ok "Setup .NET ${DOTNET_TYPE} ${DOTNET_VERSION}"
+}
+
+# ------------------------------------------------------------------------------
+# Installs FFmpeg from the distribution repository, a prebuilt build, or source.
+#
+# Description:
+#   - Three acquisition strategies, selected via FFMPEG_TYPE:
+#       repo    : distribution package (default) - fast, no build, LGPL
+#       github  : prebuilt static build from BtbN/FFmpeg-Builds (daily, amd64+arm64)
+#       minimal : compile from source - x264, vpx, mp3 only
+#       medium  : compile from source - adds subtitles, fonts, opus, vorbis
+#       full    : compile from source - adds x265, dav1d, zlib, vaapi
+#   - "binary" is accepted as a deprecated alias for "github"
+#
+# Variables:
+#   FFMPEG_TYPE    - repo (default) | github | minimal | medium | full
+#   FFMPEG_VERSION - source builds: git tag (default: latest stable)
+#                    github builds: "latest" (master) or a release line, e.g. "n7.1"
+#   FFMPEG_LICENSE - github builds: gpl (default) | lgpl
+#
+# Notes:
+#   - Prefer "repo" unless the app needs a codec or version Debian does not ship.
+#     A source build takes 20+ minutes on a small container.
+#   - Source builds use --enable-gpl --enable-nonfree. Those binaries are NOT
+#     redistributable; they are only fine because they are built on the target
+#     host for its own use. Apps that require an LGPL FFmpeg must use "repo"
+#     or FFMPEG_LICENSE=lgpl.
+#   - repo installs to /usr/bin, github and source builds to /usr/local/bin.
+# ------------------------------------------------------------------------------
+
+setup_ffmpeg() {
+  local TMP_DIR
+  TMP_DIR=$(mktemp -d)
+  local GITHUB_REPO="FFmpeg/FFmpeg"
+  local VERSION="${FFMPEG_VERSION:-latest}"
+  local TYPE="${FFMPEG_TYPE:-repo}"
+  local LICENSE="${FFMPEG_LICENSE:-gpl}"
+  local BIN_PATH="/usr/local/bin/ffmpeg"
+
+  [[ "$TYPE" == "binary" ]] && TYPE="github"
+
+  # Get currently installed version
+  local INSTALLED_VERSION=""
+  if command -v ffmpeg &>/dev/null; then
+    INSTALLED_VERSION=$(ffmpeg -version 2>/dev/null | head -n1 | awk '{print $3}')
+  fi
+
+  msg_info "Setup FFmpeg ($TYPE)"
+
+  # Distribution package
+  if [[ "$TYPE" == "repo" ]]; then
+    if ! $STD apt install -y ffmpeg; then
+      msg_error "Failed to install FFmpeg from the distribution repository"
+      rm -rf "$TMP_DIR"
+      return 100
+    fi
+    local FINAL_VERSION
+    FINAL_VERSION=$(ffmpeg -version 2>/dev/null | head -n1 | awk '{print $3}')
+    rm -rf "$TMP_DIR"
+    cache_installed_version "ffmpeg" "$FINAL_VERSION"
+    [[ -n "$INSTALLED_VERSION" ]] && msg_ok "Upgrade FFmpeg $INSTALLED_VERSION → $FINAL_VERSION" || msg_ok "Setup FFmpeg $FINAL_VERSION"
+    return 0
+  fi
+
+  # Prebuilt static build from BtbN/FFmpeg-Builds
+  if [[ "$TYPE" == "github" ]]; then
+    local ffmpeg_arch line
+    ffmpeg_arch=$(arch_resolve linux64 linuxarm64) || {
+      rm -rf "$TMP_DIR"
+      return 106
+    }
+    [[ "$VERSION" == "latest" || -z "$VERSION" ]] && line="master-latest" || line="${VERSION}-latest"
+
+    if ! CURL_TIMEOUT=300 curl_with_retry \
+      "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-${line}-${ffmpeg_arch}-${LICENSE}.tar.xz" \
+      "$TMP_DIR/ffmpeg.tar.xz"; then
+      msg_error "Failed to download FFmpeg build ffmpeg-${line}-${ffmpeg_arch}-${LICENSE}"
+      msg_error "Hint: check FFMPEG_VERSION/FFMPEG_LICENSE against the assets of https://github.com/BtbN/FFmpeg-Builds/releases/tag/latest"
+      rm -rf "$TMP_DIR"
+      return 250
+    fi
+
+    tar -xJf "$TMP_DIR/ffmpeg.tar.xz" -C "$TMP_DIR" || {
+      msg_error "Failed to extract FFmpeg archive"
+      rm -rf "$TMP_DIR"
+      return 251
+    }
+
+    if ! cp "$TMP_DIR/ffmpeg-"*/bin/ffmpeg "$TMP_DIR/ffmpeg-"*/bin/ffprobe /usr/local/bin/ 2>/dev/null; then
+      msg_error "Failed to install FFmpeg binaries"
+      rm -rf "$TMP_DIR"
+      return 150
+    fi
+    chmod +x "$BIN_PATH" /usr/local/bin/ffprobe
+
+    local FINAL_VERSION
+    FINAL_VERSION=$("$BIN_PATH" -version 2>/dev/null | head -n1 | awk '{print $3}')
+    rm -rf "$TMP_DIR"
+    cache_installed_version "ffmpeg" "$FINAL_VERSION"
+    ensure_usr_local_bin_persist
+    [[ -n "$INSTALLED_VERSION" ]] && msg_ok "Upgrade FFmpeg $INSTALLED_VERSION → $FINAL_VERSION" || msg_ok "Setup FFmpeg $FINAL_VERSION"
+    return 0
+  fi
+
+  ensure_dependencies jq
+
+  # Auto-detect latest stable version if none specified
+  if [[ "$VERSION" == "latest" || -z "$VERSION" ]]; then
+    local ffmpeg_tags
+    ffmpeg_tags=$(curl -fsSL --max-time 15 "https://api.github.com/repos/${GITHUB_REPO}/tags" 2>/dev/null || echo "")
+
+    if [[ -z "$ffmpeg_tags" ]]; then
+      msg_error "Could not fetch FFmpeg versions from GitHub"
+      msg_error "Hint: use FFMPEG_TYPE=repo or FFMPEG_TYPE=github instead of a source build"
+      rm -rf "$TMP_DIR"
+      return 250
+    fi
+
+    VERSION=$(echo "$ffmpeg_tags" | jq -r '.[].name' 2>/dev/null |
+      grep -E '^n[0-9]+\.[0-9]+\.[0-9]+$' |
+      sort -V | tail -n1 || echo "")
+  fi
+
+  if [[ -z "$VERSION" ]]; then
+    msg_error "Could not determine an FFmpeg source version"
+    rm -rf "$TMP_DIR"
+    return 250
+  fi
+
+  # Dependency selection
+  local DEPS=(build-essential yasm nasm pkg-config)
+  case "$TYPE" in
+  minimal)
+    DEPS+=(libx264-dev libvpx-dev libmp3lame-dev)
+    ;;
+  medium)
+    DEPS+=(libx264-dev libvpx-dev libmp3lame-dev libfreetype6-dev libass-dev libopus-dev libvorbis-dev)
+    ;;
+  full)
+    DEPS+=(
+      libx264-dev libx265-dev libvpx-dev libmp3lame-dev
+      libfreetype6-dev libass-dev libopus-dev libvorbis-dev
+      libdav1d-dev zlib1g-dev libnuma-dev
+      libva-dev libdrm-dev
+    )
+    if apt-cache show libsvtav1enc-dev &>/dev/null; then
+      DEPS+=(libsvtav1enc-dev)
+    elif apt-cache show libsvtav1-dev &>/dev/null; then
+      DEPS+=(libsvtav1-dev)
+    fi
+    ;;
+  *)
+    msg_error "Unknown FFMPEG_TYPE: $TYPE (expected repo, github, minimal, medium or full)"
+    rm -rf "$TMP_DIR"
+    return 65
+    ;;
+  esac
+
+  ensure_dependencies "${DEPS[@]}"
+
+  if ! CURL_TIMEOUT=300 curl_with_retry "https://github.com/${GITHUB_REPO}/archive/refs/tags/${VERSION}.tar.gz" "$TMP_DIR/ffmpeg.tar.gz"; then
+    msg_error "Failed to download FFmpeg source ${VERSION}"
+    rm -rf "$TMP_DIR"
+    return 250
+  fi
+
+  tar -xzf "$TMP_DIR/ffmpeg.tar.gz" -C "$TMP_DIR" || {
+    msg_error "Failed to extract FFmpeg source"
+    rm -rf "$TMP_DIR"
+    return 251
+  }
+
+  local PREV_DIR="$PWD"
+  cd "$TMP_DIR/FFmpeg-"* || {
+    msg_error "Source extraction failed"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 251
+  }
+
+  local args=(
+    --enable-gpl
+    --enable-shared
+    --enable-nonfree
+    --disable-static
+    --enable-libx264
+    --enable-libvpx
+    --enable-libmp3lame
+  )
+
+  if [[ "$TYPE" != "minimal" ]]; then
+    args+=(--enable-libfreetype --enable-libass --enable-libopus --enable-libvorbis)
+  fi
+
+  if [[ "$TYPE" == "full" ]]; then
+    args+=(--enable-libx265 --enable-libdav1d --enable-zlib)
+    args+=(--enable-vaapi --enable-libdrm)
+  fi
+
+  if [[ ${#args[@]} -eq 0 ]]; then
+    msg_error "FFmpeg configure args array is empty"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 65
+  fi
+
+  $STD ./configure "${args[@]}" || {
+    msg_error "FFmpeg configure failed"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 150
+  }
+  $STD make -j"$(nproc)" || {
+    msg_error "FFmpeg compilation failed"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 150
+  }
+  $STD make install || {
+    msg_error "FFmpeg installation failed"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 150
+  }
+  echo "/usr/local/lib" >/etc/ld.so.conf.d/ffmpeg.conf
+  $STD ldconfig
+
+  ldconfig -p 2>/dev/null | grep libavdevice >/dev/null || {
+    msg_error "libavdevice not registered with dynamic linker"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 150
+  }
+
+  if ! command -v ffmpeg &>/dev/null; then
+    msg_error "FFmpeg installation failed"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 150
+  fi
+
+  local FINAL_VERSION
+  FINAL_VERSION=$(ffmpeg -version 2>/dev/null | head -n1 | awk '{print $3}')
+  cd "$PREV_DIR" 2>/dev/null || cd /
+  rm -rf "$TMP_DIR"
+  cache_installed_version "ffmpeg" "$FINAL_VERSION"
+  ensure_usr_local_bin_persist
+  [[ -n "$INSTALLED_VERSION" ]] && msg_ok "Upgrade FFmpeg $INSTALLED_VERSION → $FINAL_VERSION" || msg_ok "Setup FFmpeg $FINAL_VERSION"
+}
+
+# ------------------------------------------------------------------------------
+# Installs Go (Golang) from official tarball.
+#
+# Description:
+#   - Determines system architecture
+#   - Downloads latest version if GO_VERSION not set
+#
+# Variables:
+#   GO_VERSION     - Version to install (e.g. 1.22.2 or latest)
+# ------------------------------------------------------------------------------
+
+setup_go() {
+  local ARCH
+  case "$(uname -m)" in
+  x86_64) ARCH="amd64" ;;
+  aarch64) ARCH="arm64" ;;
+  *)
+    msg_error "Unsupported architecture: $(uname -m)"
+    return 236
+    ;;
+  esac
+
+  # Resolve "latest" version
+  local GO_VERSION="${GO_VERSION:-latest}"
+  if [[ "$GO_VERSION" == "latest" ]]; then
+    local go_version_tmp
+    go_version_tmp=$(curl_with_retry "https://go.dev/VERSION?m=text" "-" 2>/dev/null | head -n1 | sed 's/^go//') || true
+    if [[ -z "$go_version_tmp" ]]; then
+      msg_error "Could not determine latest Go version"
+      return 250
+    fi
+    GO_VERSION="$go_version_tmp"
+  fi
+
+  local GO_BIN="/usr/local/bin/go"
+  local GO_INSTALL_DIR="/usr/local/go"
+
+  # Get currently installed version
+  local CURRENT_VERSION=""
+  if [[ -x "$GO_BIN" ]]; then
+    CURRENT_VERSION=$("$GO_BIN" version 2>/dev/null | awk '{print $3}' | sed 's/go//')
+  fi
+
+  # Scenario 1: Already at target version
+  if [[ -n "$CURRENT_VERSION" && "$CURRENT_VERSION" == "$GO_VERSION" ]]; then
+    cache_installed_version "go" "$GO_VERSION"
+    return 0
+  fi
+
+  # Scenario 2: Different version or not installed
+  if [[ -n "$CURRENT_VERSION" && "$CURRENT_VERSION" != "$GO_VERSION" ]]; then
+    msg_info "Upgrade Go from $CURRENT_VERSION to $GO_VERSION"
+    remove_old_tool_version "go"
+  else
+    msg_info "Setup Go $GO_VERSION"
+  fi
+
+  local TARBALL="go${GO_VERSION}.linux-${ARCH}.tar.gz"
+  local URL="https://go.dev/dl/${TARBALL}"
+  local TMP_TAR=$(mktemp)
+
+  if ! CURL_TIMEOUT=300 curl_with_retry "$URL" "$TMP_TAR"; then
+    msg_error "Failed to download Go $GO_VERSION"
+    msg_error "Hint: Check connectivity to go.dev/dl — URL: $URL"
+    rm -f "$TMP_TAR"
+    return 250
+  fi
+
+  $STD tar -C /usr/local -xzf "$TMP_TAR" || {
+    msg_error "Failed to extract Go tarball"
+    rm -f "$TMP_TAR"
+    return 251
+  }
+
+  ln -sf /usr/local/go/bin/go /usr/local/bin/go
+  ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+  rm -f "$TMP_TAR"
+
+  cache_installed_version "go" "$GO_VERSION"
+  ensure_usr_local_bin_persist
+  msg_ok "Setup Go $GO_VERSION"
+}
+
+# ------------------------------------------------------------------------------
+# Installs or updates Ghostscript (gs) from source.
+#
+# Description:
+#   - Fetches latest release
+#   - Builds and installs system-wide
+# ------------------------------------------------------------------------------
+
+setup_gs() {
+  local TMP_DIR=$(mktemp -d)
+  local CURRENT_VERSION=$(gs --version 2>/dev/null || echo "0")
+
+  ensure_dependencies jq
+
+  local LATEST_VERSION
+  # Tags are "gs10.05.1" format — fetch without stripping "v", then strip "gs"
+  LATEST_VERSION=$(get_latest_github_release "ArtifexSoftware/ghostpdl-downloads" "false") || {
+    msg_warn "Cannot fetch latest Ghostscript version from GitHub API"
+    if command -v gs &>/dev/null; then
+      gs --version | head -n1
+      cache_installed_version "ghostscript" "$CURRENT_VERSION"
+      return 0
+    fi
+    msg_error "Cannot determine Ghostscript version and no existing installation found"
+    return 250
+  }
+  LATEST_VERSION="${LATEST_VERSION#gs}"
+  local LATEST_VERSION_DOTTED=$(echo "$LATEST_VERSION" | sed 's/\([0-9]\{2\}\)\([0-9]\{2\}\)\([0-9]\{1\}\)/\1.\2.\3/')
+
+  if [[ -z "$LATEST_VERSION" || -z "$LATEST_VERSION_DOTTED" ]]; then
+    msg_warn "Could not determine latest Ghostscript version from GitHub - checking system"
+    # Fallback: try to use system version or return error
+    if [[ "$CURRENT_VERSION" == "0" ]]; then
+      msg_error "Ghostscript not installed and cannot determine latest version"
+      cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+      return 250
+    fi
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 0
+  fi
+
+  # Scenario 1: Already at latest version
+  if [[ -n "$LATEST_VERSION_DOTTED" ]] && dpkg --compare-versions "$CURRENT_VERSION" ge "$LATEST_VERSION_DOTTED" 2>/dev/null; then
+    cache_installed_version "ghostscript" "$LATEST_VERSION_DOTTED"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 0
+  fi
+
+  # Scenario 2: New install or upgrade
+  if [[ "$CURRENT_VERSION" != "0" && "$CURRENT_VERSION" != "$LATEST_VERSION_DOTTED" ]]; then
+    msg_info "Upgrade Ghostscript from $CURRENT_VERSION to $LATEST_VERSION_DOTTED"
+  else
+    msg_info "Setup Ghostscript $LATEST_VERSION_DOTTED"
+  fi
+
+  if ! CURL_TIMEOUT=180 curl_with_retry "https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs${LATEST_VERSION}/ghostscript-${LATEST_VERSION_DOTTED}.tar.gz" "$TMP_DIR/ghostscript.tar.gz"; then
+    msg_error "Failed to download Ghostscript"
+    msg_error "Hint: Check connectivity to github.com/ArtifexSoftware — may be a GitHub rate-limit, set GITHUB_TOKEN"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 250
+  fi
+
+  if ! tar -xzf "$TMP_DIR/ghostscript.tar.gz" -C "$TMP_DIR"; then
+    msg_error "Failed to extract Ghostscript archive"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 251
+  fi
+
+  # Verify directory exists before cd
+  if [[ ! -d "$TMP_DIR/ghostscript-${LATEST_VERSION_DOTTED}" ]]; then
+    msg_error "Ghostscript source directory not found: $TMP_DIR/ghostscript-${LATEST_VERSION_DOTTED}"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 252
+  fi
+
+  cd "$TMP_DIR/ghostscript-${LATEST_VERSION_DOTTED}" || {
+    msg_error "Failed to enter Ghostscript source directory"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 252
+  }
+
+  ensure_dependencies build-essential libpng-dev zlib1g-dev
+
+  $STD ./configure || {
+    msg_error "Ghostscript configure failed"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 150
+  }
+  $STD make -j"$(nproc)" || {
+    msg_error "Ghostscript compilation failed"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 150
+  }
+  $STD make install || {
+    msg_error "Ghostscript installation failed"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 150
+  }
+
+  hash -r
+  if [[ ! -x "$(command -v gs)" ]]; then
+    if [[ -x /usr/local/bin/gs ]]; then
+      ln -sf /usr/local/bin/gs /usr/bin/gs
+    fi
+  fi
+
+  cd "$PREV_DIR" 2>/dev/null || cd /
+  rm -rf "$TMP_DIR"
+  cache_installed_version "ghostscript" "$LATEST_VERSION_DOTTED"
+  ensure_usr_local_bin_persist
+  msg_ok "Setup Ghostscript $LATEST_VERSION_DOTTED"
+}
+
+# ------------------------------------------------------------------------------
+# Installs ImageMagick 7 from source (Debian/Ubuntu only).
+#
+# Description:
+#   - Downloads the latest ImageMagick source tarball
+#   - Builds and installs ImageMagick to /usr/local
+#   - Configures dynamic linker (ldconfig)
+#
+# Notes:
+#   - Requires: build-essential, libtool, libjpeg-dev, libpng-dev, etc.
+# ------------------------------------------------------------------------------
+setup_imagemagick() {
+  local BINARY_PATH="/usr/local/bin/magick"
+
+  # Get currently installed version
+  local INSTALLED_VERSION=""
+  if command -v magick &>/dev/null; then
+    INSTALLED_VERSION=$(magick -version | awk '/^Version/ {print $3}')
+  fi
+
+  msg_info "Setup ImageMagick"
+
+  ensure_dependencies \
+    build-essential \
+    libtool \
+    libjpeg-dev \
+    libpng-dev \
+    libtiff-dev \
+    libwebp-dev \
+    libheif-dev \
+    libde265-dev \
+    libopenjp2-7-dev \
+    libxml2-dev \
+    liblcms2-dev \
+    libfreetype6-dev \
+    libraw-dev \
+    libfftw3-dev \
+    liblqr-1-0-dev \
+    libgsl-dev \
+    pkg-config \
+    ghostscript
+
+  # Fetch and deploy source tarball from GitHub Releases
+  fetch_and_deploy_gh_release "imagemagick" "ImageMagick/ImageMagick" "tarball" || {
+    msg_error "Failed to download ImageMagick source from GitHub"
+    msg_error "Hint: Check connectivity to github.com/ImageMagick/ImageMagick"
+    return 250
+  }
+
+  cd /opt/imagemagick || {
+    msg_error "Failed to enter ImageMagick source directory"
+    return 251
+  }
+
+  $STD ./configure --disable-static || {
+    msg_error "ImageMagick configure failed"
+    return 150
+  }
+  $STD make -j"$(nproc)" || {
+    msg_error "ImageMagick compilation failed"
+    return 150
+  }
+  $STD make install || {
+    msg_error "ImageMagick installation failed"
+    return 150
+  }
+  $STD ldconfig /usr/local/lib
+
+  if [[ ! -x "$BINARY_PATH" ]]; then
+    msg_error "ImageMagick installation failed"
+    return 150
+  fi
+
+  local FINAL_VERSION
+  FINAL_VERSION=$("$BINARY_PATH" -version | awk '/^Version/ {print $3}')
+  cache_installed_version "imagemagick" "$FINAL_VERSION"
+  ensure_usr_local_bin_persist
+
+  if [[ -n "$INSTALLED_VERSION" ]]; then
+    msg_ok "Upgrade ImageMagick $INSTALLED_VERSION → $FINAL_VERSION"
+  else
+    msg_ok "Setup ImageMagick $FINAL_VERSION"
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# Installs Temurin JDK via Adoptium APT repository.
+#
+# Description:
+#   - Removes previous JDK if version mismatch
+#   - Installs or upgrades to specified JAVA_VERSION
+#
+# Variables:
+#   JAVA_VERSION   - Temurin JDK version to install (e.g. 17, 21)
+# ------------------------------------------------------------------------------
+
+setup_java() {
+  local JAVA_VERSION="${JAVA_VERSION:-21}"
+  local DISTRO_ID DISTRO_CODENAME
+  DISTRO_ID=$(get_os_info id)
+  DISTRO_CODENAME=$(get_os_info codename)
+  local DESIRED_PACKAGE="temurin-${JAVA_VERSION}-jdk"
+
+  # Prepare repository (cleanup + validation)
+  prepare_repository_setup "adoptium" || {
+    msg_error "Failed to prepare Adoptium repository"
+    return 100
+  }
+
+  # Add repo if needed
+  if [[ ! -f /etc/apt/sources.list.d/adoptium.sources ]]; then
+    local SUITE
+    SUITE=$(get_fallback_suite "$DISTRO_ID" "$DISTRO_CODENAME" "https://packages.adoptium.net/artifactory/deb")
+    setup_deb822_repo \
+      "adoptium" \
+      "https://packages.adoptium.net/artifactory/api/gpg/key/public" \
+      "https://packages.adoptium.net/artifactory/deb" \
+      "$SUITE" \
+      "main"
+  fi
+
+  # Get currently installed version
+  local INSTALLED_VERSION=""
+  INSTALLED_VERSION=$(dpkg-query -W -f '${Package}\n' 2>/dev/null | grep -oP '^temurin-\K[0-9]+(?=-jdk$)' | head -n1 || echo "")
+
+  # Scenario 1: Already at correct version
+  if [[ "$INSTALLED_VERSION" == "$JAVA_VERSION" ]]; then
+    msg_info "Update Temurin JDK $JAVA_VERSION"
+    ensure_apt_working || return 100
+    upgrade_packages_with_retry "$DESIRED_PACKAGE" || {
+      msg_error "Failed to update Temurin JDK"
+      return 100
+    }
+    cache_installed_version "temurin-jdk" "$JAVA_VERSION"
+    msg_ok "Update Temurin JDK $JAVA_VERSION"
+    return 0
+  fi
+
+  # Scenario 2: Different version - remove old and install new
+  if [[ -n "$INSTALLED_VERSION" ]]; then
+    msg_info "Upgrade Temurin JDK from $INSTALLED_VERSION to $JAVA_VERSION"
+    $STD apt purge -y "temurin-${INSTALLED_VERSION}-jdk" || true
+  else
+    msg_info "Setup Temurin JDK $JAVA_VERSION"
+  fi
+
+  ensure_apt_working || return 100
+
+  # Install with retry logic
+  install_packages_with_retry "$DESIRED_PACKAGE" || {
+    msg_error "Failed to install Temurin JDK $JAVA_VERSION"
+    return 100
+  }
+
+  cache_installed_version "temurin-jdk" "$JAVA_VERSION"
+  msg_ok "Setup Temurin JDK $JAVA_VERSION"
+}
+
+# ------------------------------------------------------------------------------
+# Installs a local IP updater script using networkd-dispatcher.
+#
+# Description:
+#   - Stores current IP in /run/local-ip.env
+#   - Automatically runs on network changes
+# ------------------------------------------------------------------------------
+
+setup_nodejs() {
+  local NODE_VERSION="${NODE_VERSION:-24}"
+  local NODE_MODULE="${NODE_MODULE:-}"
+  local NODE_COREPACK_ENABLE="${NODE_COREPACK_ENABLE:-1}"
+  local node_major="${NODE_VERSION%%.*}"
+  local wants_corepack=0
+  local node_setup_ok_msg=""
+
+  # Corepack must run fully non-interactive. Without this it prints
+  # "Corepack is about to download X. Do you want to continue? [Y/n]" and blocks
+  # the whole install waiting for keyboard input - both here and in the calling
+  # script's later `corepack prepare` / `corepack <pm>` calls, which run in this
+  # same shell and inherit the export.
+  export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+
+  # ALWAYS clean up legacy installations first (nvm, etc.) to prevent conflicts
+  cleanup_legacy_install "nodejs"
+
+  # Get currently installed version
+  local CURRENT_NODE_VERSION=""
+  CURRENT_NODE_VERSION=$(is_tool_installed "nodejs" 2>/dev/null) || true
+
+  # Ensure jq is available for JSON parsing
+  if ! command -v jq &>/dev/null; then
+    $STD apt update
+    $STD apt install -y jq || {
+      msg_error "Failed to install jq"
+      return 100
+    }
+  fi
+
+  # Scenario 1: Already installed at target version - upgrade to latest minor/patch + update packages/modules
+  if [[ -n "$CURRENT_NODE_VERSION" && "$CURRENT_NODE_VERSION" == "$NODE_VERSION" ]]; then
+    msg_info "Update Node.js $NODE_VERSION"
+
+    ensure_apt_working || return 100
+
+    # Upgrade to the latest minor/patch release from NodeSource
+    $STD apt-get install -y --only-upgrade nodejs 2>/dev/null || true
+
+    cache_installed_version "nodejs" "$NODE_VERSION"
+    msg_ok "Update Node.js $NODE_VERSION"
+  else
+    # Scenario 2: Different version installed - clean upgrade
+    if [[ -n "$CURRENT_NODE_VERSION" && "$CURRENT_NODE_VERSION" != "$NODE_VERSION" ]]; then
+      msg_info "Upgrade Node.js from $CURRENT_NODE_VERSION to $NODE_VERSION"
+      node_setup_ok_msg="Upgrade Node.js to $NODE_VERSION"
+      remove_old_tool_version "nodejs"
+    else
+      msg_info "Setup Node.js $NODE_VERSION"
+      node_setup_ok_msg="Setup Node.js $NODE_VERSION"
+    fi
+
+    # Remove ALL Debian nodejs packages BEFORE adding NodeSource repo
+    if dpkg -l 2>/dev/null | grep -qE "^ii.*(nodejs|libnode|node-cjs|node-acorn|node-balanced|node-brace|node-minimatch|node-undici|node-xtend|node-corepack)"; then
+      msg_info "Removing Debian-packaged Node.js and dependencies"
+      $STD apt purge -y nodejs nodejs-doc libnode* node-* 2>/dev/null || true
+      $STD apt autoremove -y 2>/dev/null || true
+      $STD apt clean 2>/dev/null || true
+      msg_ok "Removed Debian-packaged Node.js"
+    fi
+
+    # Remove any APT pinning (not needed)
+    rm -f /etc/apt/preferences.d/nodesource 2>/dev/null || true
+
+    # Prepare repository (cleanup + validation)
+    prepare_repository_setup "nodesource" || {
+      msg_error "Failed to prepare Node.js repository"
+      return 250
+    }
+
+    # Setup NodeSource repository
+    manage_tool_repository "nodejs" "$NODE_VERSION" "https://deb.nodesource.com/node_${NODE_VERSION}.x" "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key" || {
+      msg_error "Failed to setup Node.js repository"
+      return 250
+    }
+
+    # Force APT cache refresh after repository setup
+    $STD apt update || {
+      msg_warn "apt update failed after Node.js repository setup"
+    }
+
+    ensure_dependencies curl ca-certificates gnupg
+
+    install_packages_with_retry "nodejs" || {
+      msg_error "Failed to install Node.js ${NODE_VERSION} from NodeSource"
+      return 100
+    }
+
+    # Verify Node.js was installed correctly
+    if ! command -v node >/dev/null 2>&1; then
+      msg_error "Node.js binary not found after installation"
+      return 127
+    fi
+
+    local INSTALLED_NODE_VERSION
+    INSTALLED_NODE_VERSION=$(node -v 2>/dev/null | grep -oP '^v\K[0-9]+' || echo "0")
+    verify_tool_version "Node.js" "$NODE_VERSION" "$INSTALLED_NODE_VERSION" || true
+
+    # Verify npm is available (should come with NodeSource nodejs)
+    if ! command -v npm >/dev/null 2>&1; then
+      msg_error "npm not found after Node.js installation - repository issue?"
+      return 127
+    fi
+
+    cache_installed_version "nodejs" "$NODE_VERSION"
+    msg_ok "$node_setup_ok_msg"
+  fi
+
+  # Node 22.22.2 bundles npm 10.9.7 which cannot self-upgrade (nodejs/node#62425)
+  if [[ "$NODE_VERSION" == "22" && "$(npm -v 2>/dev/null)" == "10.9.7" ]]; then
+    msg_info "Updating npm (Node 22 regression fix)"
+    $STD npm install -g npm@10.9.8 2>/dev/null || true
+    if $STD npm install -g npm@latest 2>/dev/null; then
+      msg_ok "Updated npm ($(npm -v))"
+    else
+      msg_warn "npm update failed on Node 22.22.2"
+    fi
+  fi
+
+  # Set a safe default heap limit for Node.js builds if not explicitly provided.
+  # Priority:
+  #   1) NODE_OPTIONS (caller/user override)
+  #   2) NODE_MAX_OLD_SPACE_SIZE (explicit MB override)
+  #   3) var_ram (LXC memory setting, MB)
+  #   4) /proc/meminfo (runtime memory detection)
+  # Auto value is clamped to 1024..12288 MB.
+  if [[ -z "${NODE_OPTIONS:-}" ]]; then
+    local node_heap_mb=""
+
+    if [[ -n "${NODE_MAX_OLD_SPACE_SIZE:-}" ]] && [[ "${NODE_MAX_OLD_SPACE_SIZE}" =~ ^[0-9]+$ ]]; then
+      node_heap_mb="${NODE_MAX_OLD_SPACE_SIZE}"
+    elif [[ -n "${var_ram:-}" ]] && [[ "${var_ram}" =~ ^[0-9]+$ ]]; then
+      node_heap_mb=$((var_ram * 75 / 100))
+    else
+      local total_mem_kb=""
+      total_mem_kb=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo "")
+      if [[ "$total_mem_kb" =~ ^[0-9]+$ ]]; then
+        local total_mem_mb=$((total_mem_kb / 1024))
+        node_heap_mb=$((total_mem_mb * 75 / 100))
+      fi
+    fi
+
+    if [[ -z "$node_heap_mb" ]] || ((node_heap_mb < 1024)); then
+      node_heap_mb=1024
+    elif ((node_heap_mb > 12288)); then
+      node_heap_mb=12288
+    fi
+
+    export NODE_OPTIONS="--max-old-space-size=${node_heap_mb}"
+  fi
+
+  # Ensure valid working directory for npm (avoids uv_cwd error)
+  if [[ ! -d /opt ]]; then
+    mkdir -p /opt
+  fi
+  cd /opt || {
+    msg_error "Failed to set safe working directory before npm install"
+    return 127
+  }
+
+  # Install global Node modules
+  if [[ -n "$NODE_MODULE" ]] || ((node_major >= 25)); then
+    if ((node_major >= 25)) && [[ ",${NODE_MODULE}," != *",corepack,"* ]] && [[ "$NODE_MODULE" != corepack* ]]; then
+      NODE_MODULE="${NODE_MODULE:+$NODE_MODULE,}corepack"
+    fi
+
+    IFS=',' read -ra MODULES <<<"$NODE_MODULE"
+
+    local corepack_spec="corepack@latest"
+    for i in "${!MODULES[@]}"; do
+      if [[ "${MODULES[$i]}" == "corepack" || "${MODULES[$i]}" == corepack@* ]]; then
+        wants_corepack=1
+        [[ "${MODULES[$i]}" == corepack@* ]] && corepack_spec="${MODULES[$i]}"
+      fi
+      if [[ "${MODULES[$i]}" == "pnpm" ]]; then
+        MODULES[$i]="pnpm@^10"
+      fi
+    done
+
+    # When corepack is requested, install and enable it FIRST. The corepack npm
+    # package owns the global yarn/pnpm/pnpx/yarnpkg bin shims, so a second
+    # `npm install -g yarn`/`pnpm` collides on /usr/bin/<tool> (EEXIST). With
+    # corepack ready we provision those package managers THROUGH corepack instead.
+    local corepack_ready=0
+    if ((wants_corepack)); then
+      msg_info "Installing corepack"
+      if $STD npm install -g "$corepack_spec" 2>/dev/null ||
+        $STD npm install -g --force "$corepack_spec" 2>/dev/null; then
+        msg_ok "Installed corepack"
+      else
+        msg_warn "Failed to install corepack"
+      fi
+      if [[ "$NODE_COREPACK_ENABLE" == "1" ]] && command -v corepack >/dev/null 2>&1; then
+        msg_info "Enabling corepack"
+        if $STD corepack enable 2>/dev/null; then
+          corepack_ready=1
+          msg_ok "Enabled corepack"
+        else
+          msg_warn "corepack enable failed"
+        fi
+      fi
+    fi
+
+    local failed_modules=0
+    for mod in "${MODULES[@]}"; do
+      # corepack itself is already handled above
+      if [[ "$mod" == "corepack" || "$mod" == corepack@* ]]; then
+        continue
+      fi
+
+      local MODULE_NAME MODULE_REQ_VERSION MODULE_INSTALLED_VERSION
+      if [[ "$mod" == @*/*@* ]]; then
+        # Scoped package with version, e.g. @vue/cli-service@latest
+        MODULE_NAME="${mod%@*}"
+        MODULE_REQ_VERSION="${mod##*@}"
+      elif [[ "$mod" == *"@"* ]]; then
+        # Unscoped package with version, e.g. yarn@latest
+        MODULE_NAME="${mod%@*}"
+        MODULE_REQ_VERSION="${mod##*@}"
+      else
+        # No version specified
+        MODULE_NAME="$mod"
+        MODULE_REQ_VERSION="latest"
+      fi
+
+      # Provision pnpm/yarn through corepack when it is active, so we never fight
+      # corepack over the /usr/bin/{yarn,pnpm} shim locations it owns.
+      if ((corepack_ready)) && [[ "$MODULE_NAME" == "pnpm" || "$MODULE_NAME" == "yarn" ]]; then
+        local corepack_pkg="$MODULE_NAME"
+        [[ "$MODULE_REQ_VERSION" != "latest" ]] && corepack_pkg="${MODULE_NAME}@${MODULE_REQ_VERSION}"
+        msg_info "Provisioning $MODULE_NAME via corepack"
+        if $STD corepack prepare "$corepack_pkg" --activate 2>/dev/null || command -v "$MODULE_NAME" >/dev/null 2>&1; then
+          msg_ok "Provisioned $MODULE_NAME via corepack"
+        else
+          msg_warn "Failed to provision $MODULE_NAME via corepack"
+          ((failed_modules++)) || true
+        fi
+        continue
+      fi
+
+      # For the npm-global path, drop any corepack-provided shim first so the
+      # bin link can be created without an EEXIST collision.
+      if [[ "$MODULE_NAME" == "pnpm" || "$MODULE_NAME" == "yarn" || "$MODULE_NAME" == "yarnpkg" ]]; then
+        rm -f /usr/bin/"$MODULE_NAME" /usr/local/bin/"$MODULE_NAME" 2>/dev/null || true
+      fi
+
+      # Check if the module is already installed
+      if $STD npm list -g --depth=0 "$MODULE_NAME" 2>&1 | grep -q "$MODULE_NAME@"; then
+        MODULE_INSTALLED_VERSION="$(npm list -g --depth=0 "$MODULE_NAME" 2>&1 | grep "$MODULE_NAME@" | awk -F@ '{print $2}' 2>/dev/null | tr -d '[:space:]' || echo '')"
+        if [[ "$MODULE_REQ_VERSION" != "latest" && "$MODULE_REQ_VERSION" != "$MODULE_INSTALLED_VERSION" ]]; then
+          msg_info "Updating $MODULE_NAME to v$MODULE_REQ_VERSION"
+          # Retry with --force to overwrite corepack-provided shims (pnpm/yarn), which now
+          # ship with recent corepack and cause EEXIST on /usr/bin/<tool>
+          if $STD npm install -g "${MODULE_NAME}@${MODULE_REQ_VERSION}" 2>/dev/null ||
+            $STD npm install -g --force "${MODULE_NAME}@${MODULE_REQ_VERSION}" 2>/dev/null; then
+            msg_ok "Updated $MODULE_NAME"
+          else
+            msg_warn "Failed to update $MODULE_NAME to version $MODULE_REQ_VERSION"
+            ((failed_modules++)) || true
+          fi
+        elif [[ "$MODULE_REQ_VERSION" == "latest" ]]; then
+          msg_info "Updating $MODULE_NAME to latest version"
+          if $STD npm install -g "${MODULE_NAME}@latest" 2>/dev/null ||
+            $STD npm install -g --force "${MODULE_NAME}@latest" 2>/dev/null; then
+            msg_ok "Updated $MODULE_NAME"
+          else
+            msg_warn "Failed to update $MODULE_NAME to latest version"
+            ((failed_modules++)) || true
+          fi
+        fi
+      else
+        msg_info "Installing $MODULE_NAME@$MODULE_REQ_VERSION"
+        # Retry with --force to overwrite corepack-provided shims (pnpm/yarn), which now
+        # ship with recent corepack and cause EEXIST on /usr/bin/<tool>
+        if $STD npm install -g "${MODULE_NAME}@${MODULE_REQ_VERSION}" 2>/dev/null ||
+          $STD npm install -g --force "${MODULE_NAME}@${MODULE_REQ_VERSION}" 2>/dev/null; then
+          msg_ok "Installed $MODULE_NAME"
+        else
+          msg_warn "Failed to install $MODULE_NAME@$MODULE_REQ_VERSION"
+          ((failed_modules++)) || true
+        fi
+      fi
+    done
+    if ((failed_modules > 0)); then
+      msg_warn "$failed_modules Node.js module(s) failed: $NODE_MODULE"
+    fi
+  fi
+
+  # pnpm v10+ blocks dependency build scripts by default. Do NOT force
+  # `dangerouslyAllowAllBuilds` globally: pnpm implements that flag as an empty
+  # `neverBuiltDependencies`, which then clashes with any project that ships its
+  # own `onlyBuiltDependencies` (every create-t3-app based app, e.g. Split Pro)
+  # and aborts with ERR_PNPM_CONFIG_CONFLICT_BUILT_DEPENDENCIES. Instead relax the
+  # strict check so an unapproved build is a warning, not a fatal error; scripts
+  # that truly need every build script executed enable that themselves.
+  if command -v pnpm >/dev/null 2>&1; then
+    pnpm config set --global strictDepBuilds false >/dev/null 2>&1 || true
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# Installs PHP with selected modules and configures Apache/FPM support.
+#
+# Description:
+#   - Adds Sury PHP repo if needed
+#   - Installs default and user-defined modules
+#   - Patches php.ini for CLI, Apache, and FPM as needed
+#   - Handles built-in modules gracefully (e.g., opcache in PHP 8.5+)
+#   - Skips unavailable packages without failing
+#
+# Variables:
+#   PHP_VERSION                - PHP version to install (default: 8.4)
+#   PHP_MODULE                 - Additional comma-separated modules
+#   PHP_APACHE                 - Set YES to enable PHP with Apache
+#   PHP_FPM                    - Set YES to enable PHP-FPM
+#   PHP_MEMORY_LIMIT           - (default: 512M)
+#   PHP_UPLOAD_MAX_FILESIZE    - (default: 128M)
+#   PHP_POST_MAX_SIZE          - (default: 128M)
+#   PHP_MAX_EXECUTION_TIME     - (default: 300)
+#
+# Notes on modules:
+#   - Base modules (always installed): bcmath, cli, curl, gd, intl, mbstring,
+#     readline, xml, zip, common
+#   - Extended modules (commonly needed): mysql, sqlite3, pgsql, redis,
+#     imagick, bz2, ldap, soap, imap, gmp, apcu
+#   - Some modules are built-in depending on PHP version:
+#     * PHP 8.5+: opcache is built-in (no separate package)
+#     * All versions: ctype, fileinfo, iconv, tokenizer, phar, posix, etc.
+#       are part of php-common
+#   - Unavailable modules are skipped with a warning, not an error
+# ------------------------------------------------------------------------------
+
+setup_php() {
+  local PHP_VERSION="${PHP_VERSION:-8.4}"
+  local PHP_MODULE="${PHP_MODULE:-}"
+  local PHP_APACHE="${PHP_APACHE:-NO}"
+  local PHP_FPM="${PHP_FPM:-NO}"
+  local DISTRO_ID DISTRO_CODENAME
+  DISTRO_ID=$(get_os_info id)
+  DISTRO_CODENAME=$(get_os_info codename)
+
+  # Parse version for compatibility checks
+  local PHP_MAJOR="${PHP_VERSION%%.*}"
+  local PHP_MINOR="${PHP_VERSION#*.}"
+  PHP_MINOR="${PHP_MINOR%%.*}"
+
+  # Modules that are ALWAYS part of php-common (no separate package needed)
+  # These are either built-in or virtual packages provided by php-common
+  local BUILTIN_MODULES="calendar,ctype,exif,ffi,fileinfo,ftp,gettext,iconv,pdo,phar,posix,shmop,sockets,sysvmsg,sysvsem,sysvshm,tokenizer"
+
+  # Modules that became built-in in specific PHP versions
+  # PHP 8.5+: opcache is now part of the core
+  local BUILTIN_85=""
+  if [[ "$PHP_MAJOR" -gt 8 ]] || [[ "$PHP_MAJOR" -eq 8 && "$PHP_MINOR" -ge 5 ]]; then
+    BUILTIN_85="opcache"
+  fi
+
+  # Base modules - essential for most PHP applications
+  # Note: 'common' provides many built-in extensions
+  local BASE_MODULES="cli,common,bcmath,curl,dom,gd,gmp,intl,mbstring,readline,xml,zip"
+
+  # Add opcache only for PHP < 8.5 (it's built-in starting from 8.5)
+  if [[ "$PHP_MAJOR" -lt 8 ]] || [[ "$PHP_MAJOR" -eq 8 && "$PHP_MINOR" -lt 5 ]]; then
+    BASE_MODULES="${BASE_MODULES},opcache"
+  fi
+
+  # Extended default modules - commonly needed by web applications
+  # These cover ~90% of typical use cases without bloat
+  local EXTENDED_MODULES="mysql,sqlite3,pgsql,redis,imagick,bz2,apcu"
+
+  local COMBINED_MODULES="${BASE_MODULES},${EXTENDED_MODULES}"
+
+  local PHP_MEMORY_LIMIT="${PHP_MEMORY_LIMIT:-512M}"
+  local PHP_UPLOAD_MAX_FILESIZE="${PHP_UPLOAD_MAX_FILESIZE:-128M}"
+  local PHP_POST_MAX_SIZE="${PHP_POST_MAX_SIZE:-128M}"
+  local PHP_MAX_EXECUTION_TIME="${PHP_MAX_EXECUTION_TIME:-300}"
+
+  # Merge with user-defined modules
+  if [[ -n "$PHP_MODULE" ]]; then
+    COMBINED_MODULES="${COMBINED_MODULES},${PHP_MODULE}"
+  fi
+
+  # Filter out built-in modules (they don't have separate packages)
+  local FILTERED_MODULES=""
+  IFS=',' read -ra ALL_MODULES <<<"$COMBINED_MODULES"
+  for mod in "${ALL_MODULES[@]}"; do
+    mod=$(echo "$mod" | tr -d '[:space:]')
+    [[ -z "$mod" ]] && continue
+
+    # Skip if it's a known built-in module
+    if echo ",$BUILTIN_MODULES,$BUILTIN_85," | grep -qi ",$mod,"; then
+      continue
+    fi
+
+    # Add to filtered list
+    if [[ -z "$FILTERED_MODULES" ]]; then
+      FILTERED_MODULES="$mod"
+    else
+      FILTERED_MODULES="${FILTERED_MODULES},$mod"
+    fi
+  done
+
+  # Deduplicate
+  COMBINED_MODULES=$(echo "$FILTERED_MODULES" | tr ',' '\n' | awk '!seen[$0]++' | paste -sd, -)
+
+  # Get current PHP-CLI version
+  local CURRENT_PHP=""
+  CURRENT_PHP=$(is_tool_installed "php" 2>/dev/null) || true
+
+  # Remove conflicting PHP version before pinning
+  if [[ -n "$CURRENT_PHP" && "$CURRENT_PHP" != "$PHP_VERSION" ]]; then
+    msg_info "Removing conflicting PHP ${CURRENT_PHP} (need ${PHP_VERSION})"
+    stop_all_services "php.*-fpm"
+    $STD apt purge -y "php*" 2>/dev/null || true
+    $STD apt autoremove -y 2>/dev/null || true
+  fi
+
+  # NOW create pinning for the desired version
+  mkdir -p /etc/apt/preferences.d
+  cat <<EOF >/etc/apt/preferences.d/php-pin
+Package: php${PHP_VERSION}*
+Pin: version ${PHP_VERSION}.*
+Pin-Priority: 1001
+
+Package: php[0-9].*
+Pin: release o=packages.sury.org-php
+Pin-Priority: -1
+EOF
+
+  # Setup repository
+  prepare_repository_setup "php" "deb.sury.org-php" || {
+    msg_error "Failed to prepare PHP repository"
+    return 100
+  }
+
+  # Use different repository based on OS
+  if [[ "$DISTRO_ID" == "ubuntu" ]]; then
+    # Ubuntu: Use ondrej/php PPA
+    msg_info "Adding ondrej/php PPA for Ubuntu"
+    $STD apt install -y software-properties-common || {
+      msg_error "Failed to install software-properties-common"
+      return 100
+    }
+    # Don't use $STD for add-apt-repository as it uses background processes
+    add-apt-repository -y ppa:ondrej/php >>"$(get_active_logfile)" 2>&1
+  else
+    # Debian: Use Sury repository
+    manage_tool_repository "php" "$PHP_VERSION" "" "https://packages.sury.org/debsuryorg-archive-keyring.deb" || {
+      msg_error "Failed to setup PHP repository"
+      return 100
+    }
+  fi
+  ensure_apt_working || return 100
+  $STD apt update || {
+    msg_warn "apt update failed after PHP repository setup"
+  }
+
+  # Get available PHP version from repository
+  local AVAILABLE_PHP_VERSION=""
+  AVAILABLE_PHP_VERSION=$(apt-cache show "php${PHP_VERSION}" 2>/dev/null | grep -m1 "^Version:" | awk '{print $2}' 2>/dev/null | cut -d- -f1 || true)
+
+  if [[ -z "$AVAILABLE_PHP_VERSION" ]]; then
+    msg_error "PHP ${PHP_VERSION} not found in configured repositories"
+    return 100
+  fi
+
+  # Build module list - verify each package exists before adding
+  local MODULE_LIST="php${PHP_VERSION}"
+  local SKIPPED_MODULES=""
+
+  IFS=',' read -ra MODULES <<<"$COMBINED_MODULES"
+  for mod in "${MODULES[@]}"; do
+    mod=$(echo "$mod" | tr -d '[:space:]')
+    [[ -z "$mod" ]] && continue
+
+    local pkg_name="php${PHP_VERSION}-${mod}"
+
+    # Check if package exists in repository
+    if apt-cache show "$pkg_name" &>/dev/null; then
+      MODULE_LIST+=" $pkg_name"
+    else
+      # Package doesn't exist - could be built-in or renamed
+      if [[ -z "$SKIPPED_MODULES" ]]; then
+        SKIPPED_MODULES="$mod"
+      else
+        SKIPPED_MODULES="${SKIPPED_MODULES}, $mod"
+      fi
+    fi
+  done
+
+  # Log skipped modules (informational, not an error)
+  if [[ -n "$SKIPPED_MODULES" ]]; then
+    msg_info "Skipping unavailable/built-in modules: $SKIPPED_MODULES"
+  fi
+
+  if [[ "$PHP_FPM" == "YES" ]]; then
+    if apt-cache show "php${PHP_VERSION}-fpm" &>/dev/null; then
+      MODULE_LIST+=" php${PHP_VERSION}-fpm"
+    else
+      msg_warn "php${PHP_VERSION}-fpm not available"
+    fi
+    # Create systemd override for PHP-FPM to fix runtime directory issues in LXC containers
+    mkdir -p /etc/systemd/system/php${PHP_VERSION}-fpm.service.d/
+    cat <<EOF >/etc/systemd/system/php${PHP_VERSION}-fpm.service.d/override.conf
+[Service]
+RuntimeDirectory=php
+RuntimeDirectoryMode=0755
+EOF
+    $STD systemctl daemon-reload
+  fi
+
+  # install apache2 with PHP support if requested
+  if [[ "$PHP_APACHE" == "YES" ]]; then
+    if ! dpkg -l 2>/dev/null | grep -q "libapache2-mod-php${PHP_VERSION}"; then
+      msg_info "Installing Apache with PHP ${PHP_VERSION} module"
+      install_packages_with_retry "apache2" || {
+        msg_error "Failed to install Apache"
+        return 100
+      }
+      install_packages_with_retry "libapache2-mod-php${PHP_VERSION}" || {
+        msg_warn "Failed to install libapache2-mod-php${PHP_VERSION}, continuing without Apache module"
+      }
+    fi
+  fi
+
+  # Install PHP packages (pinning via preferences.d ensures correct version)
+  msg_info "Installing PHP ${PHP_VERSION} packages"
+
+  # First attempt: Install all verified packages at once
+  if ! $STD apt install -y $MODULE_LIST 2>/dev/null; then
+    msg_warn "Bulk installation failed, attempting individual installation"
+
+    # Install main package first (critical)
+    if ! $STD apt install -y "php${PHP_VERSION}" 2>/dev/null; then
+      msg_error "Failed to install php${PHP_VERSION}"
+      return 100
+    fi
+
+    # Try to install Apache module individually if requested
+    if [[ "$PHP_APACHE" == "YES" ]]; then
+      $STD apt install -y "libapache2-mod-php${PHP_VERSION}" 2>/dev/null || {
+        msg_warn "Could not install libapache2-mod-php${PHP_VERSION}"
+      }
+    fi
+
+    # Try to install each package individually
+    for pkg in $MODULE_LIST; do
+      [[ "$pkg" == "php${PHP_VERSION}" ]] && continue # Already installed
+      $STD apt install -y "$pkg" 2>/dev/null || {
+        msg_warn "Could not install $pkg - continuing without it"
+      }
+    done
+  fi
+  cache_installed_version "php" "$PHP_VERSION"
+
+  # Patch all relevant php.ini files
+  local PHP_INI_PATHS=("/etc/php/${PHP_VERSION}/cli/php.ini")
+  [[ "$PHP_FPM" == "YES" ]] && PHP_INI_PATHS+=("/etc/php/${PHP_VERSION}/fpm/php.ini")
+  [[ "$PHP_APACHE" == "YES" ]] && PHP_INI_PATHS+=("/etc/php/${PHP_VERSION}/apache2/php.ini")
+  for ini in "${PHP_INI_PATHS[@]}"; do
+    if [[ -f "$ini" ]]; then
+      $STD sed -i "s|^memory_limit = .*|memory_limit = ${PHP_MEMORY_LIMIT}|" "$ini"
+      $STD sed -i "s|^upload_max_filesize = .*|upload_max_filesize = ${PHP_UPLOAD_MAX_FILESIZE}|" "$ini"
+      $STD sed -i "s|^post_max_size = .*|post_max_size = ${PHP_POST_MAX_SIZE}|" "$ini"
+      $STD sed -i "s|^max_execution_time = .*|max_execution_time = ${PHP_MAX_EXECUTION_TIME}|" "$ini"
+    fi
+  done
+
+  # Patch Apache configuration if needed
+  if [[ "$PHP_APACHE" == "YES" ]]; then
+    for mod in $(ls /etc/apache2/mods-enabled/ 2>/dev/null | grep -E '^php[0-9]\.[0-9]\.conf$' | sed 's/\.conf//'); do
+      if [[ "$mod" != "php${PHP_VERSION}" ]]; then
+        $STD a2dismod "$mod" || true
+      fi
+    done
+    $STD a2enmod mpm_prefork
+    $STD a2enmod "php${PHP_VERSION}"
+    safe_service_restart apache2 || true
+  fi
+
+  # Enable and restart PHP-FPM if requested
+  if [[ "$PHP_FPM" == "YES" ]]; then
+    if systemctl list-unit-files | grep -q "php${PHP_VERSION}-fpm.service"; then
+      $STD systemctl enable php${PHP_VERSION}-fpm
+      safe_service_restart php${PHP_VERSION}-fpm
+    fi
+  fi
+
+  # Verify PHP installation - critical check
+  if ! command -v php >/dev/null 2>&1; then
+    msg_error "PHP installation verification failed - php command not found"
+    return 127
+  fi
+
+  local INSTALLED_VERSION=$(php -v 2>/dev/null | awk '/^PHP/{print $2}' | cut -d. -f1,2)
+
+  if [[ "$INSTALLED_VERSION" != "$PHP_VERSION" ]]; then
+    msg_error "PHP version mismatch: requested ${PHP_VERSION} but got ${INSTALLED_VERSION}"
+    msg_error "This indicates a critical package installation issue"
+    # Don't cache wrong version
+    return 127
+  fi
+
+  cache_installed_version "php" "$INSTALLED_VERSION"
+  msg_ok "Setup PHP ${INSTALLED_VERSION}"
+}
+
+# ------------------------------------------------------------------------------
+# Installs or upgrades PostgreSQL and optional extensions/modules.
+#
+# Description:
+#   - By default uses distro repository (Debian/Ubuntu apt) for stability
+#   - Optionally uses official PGDG repository for specific versions
+#   - Detects existing PostgreSQL version
+#   - Dumps all databases before upgrade
+#   - Installs optional PG_MODULES (e.g. postgis, contrib, cron)
+#   - Restores dumped data post-upgrade
+#
+# Variables:
+#   USE_PGDG_REPO  - Use official PGDG repository (default: true)
+#                    Set to "false" to use distro packages instead
+#   PG_VERSION    - Major PostgreSQL version (e.g. 15, 16) (default: 16)
+#   PG_MODULES    - Comma-separated list of modules (e.g. "postgis,contrib,cron")
+#
+# Examples:
+#   setup_postgresql                                          # Uses PGDG repo, PG 16
+#   PG_VERSION="17" setup_postgresql                          # Specific version from PGDG
+#   USE_PGDG_REPO=false setup_postgresql                      # Uses distro package instead
+#   PG_VERSION="17" PG_MODULES="cron" setup_postgresql        # With pg_cron module
+# ------------------------------------------------------------------------------
+
+setup_ruby() {
+  local RUBY_VERSION="${RUBY_VERSION:-3.4.4}"
+  local RUBY_INSTALL_RAILS="${RUBY_INSTALL_RAILS:-true}"
+  local RBENV_DIR="$HOME/.rbenv"
+  local RBENV_BIN="$RBENV_DIR/bin/rbenv"
+  local PROFILE_FILE="$HOME/.profile"
+  local BASH_PROFILE_FILE="$HOME/.bash_profile"
+  local BASHRC_FILE="$HOME/.bashrc"
+  local TMP_DIR=$(mktemp -d)
+
+  # Ensure HOME exists: callers may pass a not-yet-created home (e.g. a service
+  # user that is created later in the install), so the profile writes below do
+  # not fail on a missing directory.
+  mkdir -p "$HOME"
+
+  if ! grep -q 'rbenv init' "$PROFILE_FILE" 2>/dev/null; then
+    cat <<'EOF' >>"$PROFILE_FILE"
+export PATH="$HOME/.rbenv/bin:$PATH"
+eval "$(rbenv init -)"
+EOF
+  fi
+  if ! grep -q '.rbenv/shims' "$PROFILE_FILE" 2>/dev/null; then
+    echo 'export PATH="$HOME/.rbenv/shims:$HOME/.rbenv/bin:$PATH"' >>"$PROFILE_FILE"
+  fi
+  if [[ -f "$BASH_PROFILE_FILE" ]] && ! grep -q '.rbenv/shims' "$BASH_PROFILE_FILE"; then
+    echo 'export PATH="$HOME/.rbenv/shims:$HOME/.rbenv/bin:$PATH"' >>"$BASH_PROFILE_FILE"
+  fi
+  if [[ -f "$BASHRC_FILE" ]] && ! grep -q '.rbenv/shims' "$BASHRC_FILE"; then
+    echo 'export PATH="$HOME/.rbenv/shims:$HOME/.rbenv/bin:$PATH"' >>"$BASHRC_FILE"
+  fi
+
+  # Get currently installed Ruby version
+  local CURRENT_RUBY_VERSION=""
+  if [[ -x "$RBENV_BIN" ]]; then
+    CURRENT_RUBY_VERSION=$("$RBENV_BIN" global 2>/dev/null || echo "")
+  fi
+
+  # Scenario 1: Already at correct Ruby version
+  if [[ "$CURRENT_RUBY_VERSION" == "$RUBY_VERSION" ]]; then
+    msg_info "Update Ruby $RUBY_VERSION"
+    cache_installed_version "ruby" "$RUBY_VERSION"
+    msg_ok "Update Ruby $RUBY_VERSION"
+    return 0
+  fi
+
+  # Scenario 2: Different version - reinstall
+  if [[ -n "$CURRENT_RUBY_VERSION" ]]; then
+    msg_info "Upgrade Ruby from $CURRENT_RUBY_VERSION to $RUBY_VERSION"
+  else
+    msg_info "Setup Ruby $RUBY_VERSION"
+  fi
+
+  ensure_apt_working || return 100
+
+  # Install build dependencies with fallbacks
+  local ruby_deps=()
+  local dep_variations=(
+    "jq"
+    "autoconf"
+    "patch"
+    "build-essential"
+    "libssl-dev"
+    "libyaml-dev"
+    "libreadline-dev|libreadline6-dev"
+    "zlib1g-dev"
+    "libgmp-dev"
+    "libncurses-dev|libncurses5-dev"
+    "libffi-dev"
+    "libgdbm-dev"
+    "libdb-dev"
+    "uuid-dev"
+  )
+
+  for dep_pattern in "${dep_variations[@]}"; do
+    if [[ "$dep_pattern" == *"|"* ]]; then
+      IFS='|' read -ra variations <<<"$dep_pattern"
+      for var in "${variations[@]}"; do
+        if apt-cache search "^${var}$" 2>/dev/null | grep -q .; then
+          ruby_deps+=("$var")
+          break
+        fi
+      done
+    else
+      if apt-cache search "^${dep_pattern}$" 2>/dev/null | grep -q .; then
+        ruby_deps+=("$dep_pattern")
+      fi
+    fi
+  done
+
+  if [[ ${#ruby_deps[@]} -gt 0 ]]; then
+    $STD apt install -y "${ruby_deps[@]}" 2>/dev/null ||
+      msg_warn "Some Ruby build dependencies could not be installed — compilation may fail"
+  else
+    msg_error "No Ruby build dependencies available"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 100
+  fi
+
+  # Download and build rbenv if needed
+  if [[ ! -x "$RBENV_BIN" ]]; then
+    local RBENV_RELEASE
+    RBENV_RELEASE=$(get_latest_github_release "rbenv/rbenv") || {
+      msg_error "Failed to fetch latest rbenv version from GitHub"
+      cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+      return 7
+    }
+
+    if ! curl_with_retry "https://github.com/rbenv/rbenv/archive/refs/tags/v${RBENV_RELEASE}.tar.gz" "$TMP_DIR/rbenv.tar.gz"; then
+      msg_error "Failed to download rbenv"
+      msg_error "Hint: Check connectivity to github.com/rbenv/rbenv"
+      cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+      return 7
+    fi
+
+    tar -xzf "$TMP_DIR/rbenv.tar.gz" -C "$TMP_DIR" || {
+      msg_error "Failed to extract rbenv"
+      cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+      return 251
+    }
+
+    mkdir -p "$RBENV_DIR"
+    cp -r "$TMP_DIR/rbenv-${RBENV_RELEASE}/." "$RBENV_DIR/"
+    (cd "$RBENV_DIR" && src/configure && $STD make -C src) || {
+      msg_error "Failed to build rbenv"
+      cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+      return 150
+    }
+
+    # Setup profile
+    if ! grep -q 'rbenv init' "$PROFILE_FILE" 2>/dev/null; then
+      echo 'export PATH="$HOME/.rbenv/bin:$PATH"' >>"$PROFILE_FILE"
+      echo 'eval "$(rbenv init -)"' >>"$PROFILE_FILE"
+    fi
+  fi
+
+  # Install ruby-build plugin
+  _install_ruby_build_plugin() {
+    local RUBY_BUILD_RELEASE
+    RUBY_BUILD_RELEASE=$(get_latest_github_release "rbenv/ruby-build") || {
+      msg_error "Failed to fetch latest ruby-build version from GitHub"
+      return 7
+    }
+
+    if ! curl_with_retry "https://github.com/rbenv/ruby-build/archive/refs/tags/v${RUBY_BUILD_RELEASE}.tar.gz" "$TMP_DIR/ruby-build.tar.gz"; then
+      msg_error "Failed to download ruby-build"
+      msg_error "Hint: Check connectivity to github.com/rbenv/ruby-build"
+      return 7
+    fi
+
+    tar -xzf "$TMP_DIR/ruby-build.tar.gz" -C "$TMP_DIR" || {
+      msg_error "Failed to extract ruby-build"
+      return 251
+    }
+
+    mkdir -p "$RBENV_DIR/plugins/ruby-build"
+    cp -r "$TMP_DIR/ruby-build-${RUBY_BUILD_RELEASE}/." "$RBENV_DIR/plugins/ruby-build/"
+    return 0
+  }
+
+  if [[ ! -d "$RBENV_DIR/plugins/ruby-build" ]]; then
+    _install_ruby_build_plugin || {
+      cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+      return 7
+    }
+  fi
+
+  # Setup PATH and install Ruby version
+  export PATH="$RBENV_DIR/bin:$PATH"
+  eval "$("$RBENV_BIN" init - bash)" 2>/dev/null || true
+
+  if ! "$RBENV_BIN" versions --bare 2>/dev/null | grep -qx "$RUBY_VERSION"; then
+    if [[ ! -f "$RBENV_DIR/plugins/ruby-build/share/ruby-build/$RUBY_VERSION" ]]; then
+      msg_info "Updating ruby-build definitions"
+      _install_ruby_build_plugin || {
+        cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+        return 7
+      }
+      msg_ok "Updated ruby-build definitions"
+    fi
+    $STD "$RBENV_BIN" install "$RUBY_VERSION" || {
+      msg_error "Failed to install Ruby $RUBY_VERSION"
+      cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+      return 150
+    }
+  fi
+
+  "$RBENV_BIN" global "$RUBY_VERSION" || {
+    msg_error "Failed to set Ruby $RUBY_VERSION as global version"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 150
+  }
+
+  hash -r
+
+  # Install Rails if requested
+  if [[ "$RUBY_INSTALL_RAILS" == "true" ]]; then
+    $STD gem install rails || {
+      msg_warn "Failed to install Rails - Ruby installation successful"
+    }
+  fi
+
+  cd "$PREV_DIR" 2>/dev/null || cd /
+  rm -rf "$TMP_DIR"
+  cache_installed_version "ruby" "$RUBY_VERSION"
+  msg_ok "Setup Ruby $RUBY_VERSION"
+}
+
+# ------------------------------------------------------------------------------
+# Installs Rust toolchain and optional global crates via cargo.
+#
+# Description:
+#   - Installs rustup (if missing)
+#   - Installs or updates desired Rust toolchain (stable, nightly, or versioned)
+#   - Installs or updates specified global crates using `cargo install`
+#
+# Notes:
+#   - Skips crate install if exact version is already present
+#   - Updates crate if newer version or different version is requested
+#
+# Variables:
+#   RUST_TOOLCHAIN  - Rust toolchain to install (default: stable)
+#   RUST_PROFILE    - Rust installation profile (default: default, e.g. minimal)
+#   RUST_CRATES     - Comma-separated list of crates (e.g. "cargo-edit,wasm-pack@0.12.1")
+# ------------------------------------------------------------------------------
+
+setup_rust() {
+  local RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-stable}"
+  local RUST_PROFILE="${RUST_PROFILE:-default}"
+  local RUST_CRATES="${RUST_CRATES:-}"
+  local CARGO_BIN="${HOME}/.cargo/bin"
+
+  # Get currently installed version
+  local CURRENT_VERSION=""
+  if command -v rustc &>/dev/null; then
+    CURRENT_VERSION=$(rustc --version 2>/dev/null | awk '{print $2}' 2>/dev/null) || true
+  fi
+
+  # Scenario 1: Rustup not installed - fresh install
+  if ! command -v rustup &>/dev/null; then
+    msg_info "Setup Rust ($RUST_TOOLCHAIN, profile: $RUST_PROFILE)"
+    curl -fsSL https://sh.rustup.rs | $STD sh -s -- -y --profile "$RUST_PROFILE" --default-toolchain "$RUST_TOOLCHAIN" || {
+      msg_error "Failed to install Rust"
+      msg_error "Hint: Check connectivity to sh.rustup.rs and static.rust-lang.org"
+      return 7
+    }
+    export PATH="$CARGO_BIN:$PATH"
+    echo 'export PATH="$HOME/.cargo/bin:$PATH"' >>"$HOME/.profile"
+
+    # Verify installation
+    if ! command -v rustc >/dev/null 2>&1; then
+      msg_error "Rust binary not found after installation"
+      return 127
+    fi
+
+    local RUST_VERSION
+    RUST_VERSION=$(rustc --version 2>/dev/null | awk '{print $2}' 2>/dev/null) || true
+    if [[ -z "$RUST_VERSION" ]]; then
+      msg_error "Failed to determine Rust version"
+      return 250
+    fi
+
+    cache_installed_version "rust" "$RUST_VERSION"
+    msg_ok "Setup Rust $RUST_VERSION"
+  else
+    # Scenario 2: Rustup already installed - update/maintain
+    msg_info "Update Rust ($RUST_TOOLCHAIN)"
+
+    # Ensure default toolchain is set
+    $STD rustup default "$RUST_TOOLCHAIN" 2>/dev/null || {
+      # If default fails, install the toolchain first
+      $STD rustup install "$RUST_TOOLCHAIN" || {
+        msg_error "Failed to install Rust toolchain $RUST_TOOLCHAIN"
+        return 150
+      }
+      $STD rustup default "$RUST_TOOLCHAIN" || {
+        msg_error "Failed to set default Rust toolchain"
+        return 150
+      }
+    }
+
+    # Update to latest patch version
+    $STD rustup update "$RUST_TOOLCHAIN" </dev/null || {
+      msg_warn "Rust toolchain update had issues"
+    }
+
+    # Ensure PATH is updated for current shell session
+    export PATH="$CARGO_BIN:$PATH"
+
+    local RUST_VERSION
+    RUST_VERSION=$(rustc --version 2>/dev/null | awk '{print $2}' 2>/dev/null) || true
+    if [[ -z "$RUST_VERSION" ]]; then
+      msg_error "Failed to determine Rust version after update"
+      return 250
+    fi
+
+    cache_installed_version "rust" "$RUST_VERSION"
+    msg_ok "Update Rust $RUST_VERSION"
+  fi
+
+  # Install global crates
+  if [[ -n "$RUST_CRATES" ]]; then
+    msg_info "Processing Rust crates: $RUST_CRATES"
+    IFS=',' read -ra CRATES <<<"$RUST_CRATES"
+    for crate in "${CRATES[@]}"; do
+      crate=$(echo "$crate" | xargs) # trim whitespace
+      [[ -z "$crate" ]] && continue  # skip empty entries
+
+      local NAME VER INSTALLED_VER CRATE_LIST
+      if [[ "$crate" == *"@"* ]]; then
+        NAME="${crate%@*}"
+        VER="${crate##*@}"
+      else
+        NAME="$crate"
+        VER=""
+      fi
+
+      # Get list of installed crates once
+      CRATE_LIST=$(cargo install --list 2>/dev/null || echo "")
+
+      # Check if already installed
+      if echo "$CRATE_LIST" | grep -q "^${NAME} "; then
+        INSTALLED_VER=$(echo "$CRATE_LIST" | grep "^${NAME} " | head -1 | awk '{print $2}' 2>/dev/null | tr -d 'v:' || echo '')
+
+        if [[ -n "$VER" && "$VER" != "$INSTALLED_VER" ]]; then
+          msg_info "Upgrading $NAME from v$INSTALLED_VER to v$VER"
+          $STD cargo install "$NAME" --version "$VER" --force || {
+            msg_error "Failed to install $NAME@$VER"
+            return 150
+          }
+          msg_ok "Upgraded $NAME to v$VER"
+        elif [[ -z "$VER" ]]; then
+          msg_info "Upgrading $NAME to latest"
+          $STD cargo install "$NAME" --force || {
+            msg_error "Failed to upgrade $NAME"
+            return 150
+          }
+          local NEW_VER=$(cargo install --list 2>/dev/null | grep "^${NAME} " | head -1 | awk '{print $2}' 2>/dev/null | tr -d 'v:' || echo 'unknown')
+          msg_ok "Upgraded $NAME to v$NEW_VER"
+        else
+          msg_ok "$NAME v$INSTALLED_VER already installed"
+        fi
+      else
+        msg_info "Installing $NAME${VER:+@$VER}"
+        if [[ -n "$VER" ]]; then
+          $STD cargo install "$NAME" --version "$VER" || {
+            msg_error "Failed to install $NAME@$VER"
+            return 150
+          }
+          msg_ok "Installed $NAME v$VER"
+        else
+          $STD cargo install "$NAME" || {
+            msg_error "Failed to install $NAME"
+            return 150
+          }
+          local NEW_VER=$(cargo install --list 2>/dev/null | grep "^${NAME} " | head -1 | awk '{print $2}' 2>/dev/null | tr -d 'v:' || echo 'unknown')
+          msg_ok "Installed $NAME v$NEW_VER"
+        fi
+      fi
+    done
+    msg_ok "Processed Rust crates"
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# Installs or upgrades uv (Python package manager) from GitHub releases.
+#   - Downloads platform-specific tarball (no install.sh!)
+#   - Extracts uv binary
+#   - Places it in /usr/local/bin
+#   - Optionally installs a specific Python version via uv
+# ------------------------------------------------------------------------------
+
+setup_uv() {
+  local UV_BIN="/usr/local/bin/uv"
+  local UVX_BIN="/usr/local/bin/uvx"
+  local TMP_DIR=$(mktemp -d)
+
+  # trap for TMP Cleanup
+  trap "rm -rf '$TMP_DIR'" EXIT
+
+  # Architecture Detection
+  local ARCH=$(uname -m)
+  local OS_TYPE=""
+  local UV_TAR=""
+
+  if grep -qi "alpine" /etc/os-release; then
+    OS_TYPE="musl"
+  else
+    OS_TYPE="gnu"
+  fi
+
+  case "$ARCH" in
+  x86_64)
+    UV_TAR="uv-x86_64-unknown-linux-${OS_TYPE}.tar.gz"
+    ;;
+  aarch64)
+    UV_TAR="uv-aarch64-unknown-linux-${OS_TYPE}.tar.gz"
+    ;;
+  i686)
+    UV_TAR="uv-i686-unknown-linux-${OS_TYPE}.tar.gz"
+    ;;
+  *)
+    msg_error "Unsupported architecture: $ARCH (supported: x86_64, aarch64, i686)"
+    return 236
+    ;;
+  esac
+
+  ensure_dependencies jq
+
+  # Fetch target version (pinned via UV_VERSION or latest release)
+  local TARGET_VERSION="${UV_VERSION:-}"
+  if [[ -z "$TARGET_VERSION" ]]; then
+    TARGET_VERSION=$(get_latest_github_release "astral-sh/uv") || {
+      msg_error "Could not fetch latest uv version from GitHub API"
+      return 7
+    }
+  fi
+
+  # Get currently installed version
+  local INSTALLED_VERSION=""
+  if [[ -x "$UV_BIN" ]]; then
+    INSTALLED_VERSION=$("$UV_BIN" --version 2>/dev/null | awk '{print $2}')
+  fi
+
+  # Scenario 1: Already at target version
+  if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" == "$TARGET_VERSION" ]]; then
+    cache_installed_version "uv" "$TARGET_VERSION"
+
+    # Check if uvx is needed and missing
+    if [[ "${USE_UVX:-NO}" == "YES" ]] && [[ ! -x "$UVX_BIN" ]]; then
+      msg_info "Installing uvx wrapper"
+      _install_uvx_wrapper || return 252
+      msg_ok "uvx wrapper installed"
+    fi
+
+    # Install specific Python version if requested (even when uv is already up to date)
+    if [[ -n "${PYTHON_VERSION:-}" ]]; then
+      msg_info "Installing Python $PYTHON_VERSION via uv"
+      $STD uv python install "$PYTHON_VERSION" || {
+        msg_error "Failed to install Python $PYTHON_VERSION"
+        return 150
+      }
+      msg_ok "Python $PYTHON_VERSION installed"
+    fi
+
+    return 0
+  fi
+
+  # Scenario 2: New install or upgrade
+  if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" != "$TARGET_VERSION" ]]; then
+    msg_info "Upgrade uv from $INSTALLED_VERSION to $TARGET_VERSION"
+  else
+    msg_info "Setup uv $TARGET_VERSION"
+  fi
+
+  local UV_URL="https://github.com/astral-sh/uv/releases/download/${TARGET_VERSION}/${UV_TAR}"
+
+  if ! curl_with_retry "$UV_URL" "$TMP_DIR/uv.tar.gz"; then
+    msg_error "Failed to download uv from $UV_URL"
+    msg_error "Hint: GitHub Releases — check connectivity or set GITHUB_TOKEN to avoid rate-limiting"
+    return 7
+  fi
+
+  # Extract
+  $STD tar -xzf "$TMP_DIR/uv.tar.gz" -C "$TMP_DIR" || {
+    msg_error "Failed to extract uv"
+    return 251
+  }
+
+  # Find and install uv binary (tarball extracts to uv-VERSION-ARCH/ directory)
+  local UV_BINARY=$(find "$TMP_DIR" -name "uv" -type f -executable | head -n1)
+  if [[ ! -f "$UV_BINARY" ]]; then
+    msg_error "Could not find uv binary in extracted tarball"
+    return 127
+  fi
+
+  $STD /usr/bin/install -m 755 "$UV_BINARY" "$UV_BIN" || {
+    msg_error "Failed to install uv binary"
+    return 252
+  }
+
+  ensure_usr_local_bin_persist
+  export PATH="/usr/local/bin:$PATH"
+
+  # Optional: Install uvx wrapper
+  if [[ "${USE_UVX:-NO}" == "YES" ]]; then
+    msg_info "Installing uvx wrapper"
+    _install_uvx_wrapper || {
+      msg_error "Failed to install uvx wrapper"
+      return 252
+    }
+    msg_ok "uvx wrapper installed"
+  fi
+
+  # Optional: Generate shell completions
+  $STD uv generate-shell-completion bash >/etc/bash_completion.d/uv 2>/dev/null || true
+  if [[ -d /usr/share/zsh/site-functions ]]; then
+    $STD uv generate-shell-completion zsh >/usr/share/zsh/site-functions/_uv 2>/dev/null || true
+  fi
+
+  # Optional: Install specific Python version if requested
+  if [[ -n "${PYTHON_VERSION:-}" ]]; then
+    msg_info "Installing Python $PYTHON_VERSION via uv"
+    $STD uv python install "$PYTHON_VERSION" || {
+      msg_error "Failed to install Python $PYTHON_VERSION"
+      return 150
+    }
+    msg_ok "Python $PYTHON_VERSION installed"
+  fi
+
+  cache_installed_version "uv" "$TARGET_VERSION"
+  msg_ok "Setup uv $TARGET_VERSION"
+}
+
+# Helper function to install uvx wrapper
+_install_uvx_wrapper() {
+  local UVX_BIN="/usr/local/bin/uvx"
+
+  cat >"$UVX_BIN" <<'EOF'
+#!/bin/bash
+# uvx - Run Python applications from PyPI as command-line tools
+# Wrapper for: uv tool run
+exec /usr/local/bin/uv tool run "$@"
+EOF
+
+  chmod +x "$UVX_BIN"
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# Installs or updates yq (mikefarah/yq - Go version).
+#
+# Description:
+#   - Checks if yq is installed and from correct source
+#   - Compares with latest release on GitHub
+#   - Updates if outdated or wrong implementation
+# ------------------------------------------------------------------------------
+
+setup_yq() {
+  local TMP_DIR=$(mktemp -d)
+  local BINARY_PATH="/usr/local/bin/yq"
+  local GITHUB_REPO="mikefarah/yq"
+
+  ensure_dependencies jq
+  ensure_usr_local_bin_persist
+
+  # Remove non-mikefarah implementations
+  if command -v yq &>/dev/null; then
+    if ! yq --version 2>&1 | grep -q 'mikefarah'; then
+      rm -f "$(command -v yq)"
+    fi
+  fi
+
+  local LATEST_VERSION
+  LATEST_VERSION=$(get_latest_github_release "${GITHUB_REPO}") || {
+    msg_error "Could not fetch latest yq version from GitHub API"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 250
+  }
+
+  # Get currently installed version
+  local INSTALLED_VERSION=""
+  if command -v yq &>/dev/null && yq --version 2>&1 | grep -q 'mikefarah'; then
+    INSTALLED_VERSION=$(yq --version 2>/dev/null | awk '{print $NF}' | sed 's/^v//')
+  fi
+
+  # Scenario 1: Already at latest version
+  if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" == "$LATEST_VERSION" ]]; then
+    cache_installed_version "yq" "$LATEST_VERSION"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 0
+  fi
+
+  # Scenario 2: New install or upgrade
+  if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" != "$LATEST_VERSION" ]]; then
+    msg_info "Upgrade yq from $INSTALLED_VERSION to $LATEST_VERSION"
+  else
+    msg_info "Setup yq $LATEST_VERSION"
+  fi
+
+  local yq_arch detected_arch
+  if command -v dpkg &>/dev/null; then
+    detected_arch="$(dpkg --print-architecture 2>/dev/null)"
+  else
+    detected_arch="$(uname -m 2>/dev/null)"
+  fi
+
+  case "$detected_arch" in
+  arm64 | aarch64) yq_arch="arm64" ;;
+  amd64 | x86_64) yq_arch="amd64" ;;
+  *) yq_arch="amd64" ;;
+  esac
+  if ! curl_with_retry "https://github.com/${GITHUB_REPO}/releases/download/v${LATEST_VERSION}/yq_linux_${yq_arch}" "$TMP_DIR/yq"; then
+    msg_error "Failed to download yq"
+    msg_error "Hint: Check connectivity to github.com/${GITHUB_REPO} — set GITHUB_TOKEN to avoid rate-limiting"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 250
+  fi
+
+  chmod +x "$TMP_DIR/yq"
+  mv "$TMP_DIR/yq" "$BINARY_PATH" || {
+    msg_error "Failed to install yq"
+    cd "$PREV_DIR" 2>/dev/null || cd /
+    rm -rf "$TMP_DIR"
+    return 252
+  }
+
+  rm -rf "$TMP_DIR"
+  hash -r
+
+  local FINAL_VERSION
+  FINAL_VERSION=$("$BINARY_PATH" --version 2>/dev/null | awk '{print $NF}' | sed 's/^v//')
+  cache_installed_version "yq" "$FINAL_VERSION"
+  msg_ok "Setup yq $FINAL_VERSION"
+}
+
+# ------------------------------------------------------------------------------
+# Download NLTK data packages directly from GitHub, bypassing Python.
+# Avoids CPU-instruction failures (SIGILL) on older hardware lacking AVX.
+#
+# Usage:
+#   setup_nltk "averaged_perceptron_tagger_eng" "/nltk_data"
+#   setup_nltk "snowball_data stopwords punkt_tab" "/usr/share/nltk_data"
+#
+# Parameters:
+#   $1 - Space-separated list of NLTK package IDs
+#   $2 - Target directory (default: /usr/share/nltk_data)
+#
+# Returns: 0 on success, non-zero if any package failed
+# ------------------------------------------------------------------------------
+setup_nltk() {
+  local packages="${1:?setup_nltk requires at least one package name}"
+  local target_dir="${2:-/usr/share/nltk_data}"
+  local NLTK_INDEX_URL="https://raw.githubusercontent.com/nltk/nltk_data/gh-pages/index.xml"
+  local index_xml rc=0
+
+  ensure_dependencies unzip
+
+  index_xml=$(curl_with_retry "$NLTK_INDEX_URL" "-") || {
+    msg_error "Failed to fetch NLTK package index"
+    return 1
+  }
+
+  local pkg
+  for pkg in $packages; do
+    msg_info "Downloading NLTK: $pkg"
+    local pkg_line subdir pkg_url do_unzip tmp_zip
+
+    pkg_line=$(echo "$index_xml" | grep "id=\"${pkg}\"" | head -1)
+    if [[ -z "$pkg_line" ]]; then
+      msg_error "NLTK package not found in index: $pkg"
+      rc=1
+      continue
+    fi
+
+    subdir=$(echo "$pkg_line" | grep -oP 'subdir="\K[^"]+')
+    pkg_url=$(echo "$pkg_line" | grep -oP 'url="\K[^"]+')
+    do_unzip=$(echo "$pkg_line" | grep -oP 'unzip="\K[^"]+')
+
+    if [[ -z "$subdir" || -z "$pkg_url" ]]; then
+      msg_error "Could not parse NLTK index entry for: $pkg"
+      rc=1
+      continue
+    fi
+
+    mkdir -p "${target_dir}/${subdir}"
+    tmp_zip=$(mktemp)
+
+    if CURL_TIMEOUT=120 curl_with_retry "$pkg_url" "$tmp_zip"; then
+      if [[ "$do_unzip" == "1" ]]; then
+        $STD unzip -q -o "$tmp_zip" -d "${target_dir}/${subdir}/"
+        rm -f "$tmp_zip"
+      else
+        mv "$tmp_zip" "${target_dir}/${subdir}/${pkg}.zip"
+      fi
+      msg_ok "Downloaded NLTK: $pkg"
+    else
+      msg_error "Failed to download NLTK package: $pkg"
+      rm -f "$tmp_zip"
+      rc=1
+    fi
+  done
+
+  return $rc
+}
