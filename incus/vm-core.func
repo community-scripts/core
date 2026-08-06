@@ -408,6 +408,80 @@ vm_prompt_description() {
   echo -e "${DEFAULT}${BOLD}${DGN}Description: ${BGN}${VM_DESCRIPTION}${CL}"
 }
 
+# ── Guest OS and agent ────────────────────────────────────────────────────────
+
+# Incus changes real behaviour based on image.os: on Windows it disables
+# unsupported virtual devices, bases the RTC on local time instead of UTC and
+# switches to an Intel IOMMU; on FreeBSD it disables memory hotplug.
+vm_prompt_guest_os() {
+  GUEST_OS=$(prompt_select "Guest operating system" "1" 60 "Linux" "Windows" "macOS" "FreeBSD")
+  [[ -z "${GUEST_OS:-}" ]] && GUEST_OS="Linux"
+  # Windows 11 needs a TPM; offer it rather than let setup refuse to install.
+  if [[ "$GUEST_OS" == "Windows" && "${VTPM:-no}" != "yes" ]]; then
+    prompt_confirm "Windows detected - add a virtual TPM (required by Windows 11)?" "y" 60 &&
+      VTPM="yes"
+  fi
+  echo -e "${OS}${BOLD}${DGN}Guest OS: ${BGN}${GUEST_OS}${CL}"
+}
+
+# The agent is what makes incus exec, file transfer and metrics work. Images
+# from images: ship it; anything else needs the CD-ROM to install it from.
+vm_prompt_agent_disk() {
+  AGENT_DISK="no"
+  if prompt_confirm "Attach the agent CD-ROM? (needed if the image has no incus-agent)" "n" 60; then
+    AGENT_DISK="yes"
+  fi
+  echo -e "${DEFAULT}${BOLD}${DGN}Agent CD-ROM: ${BGN}${AGENT_DISK}${CL}"
+}
+
+# ── Sizing shortcut ───────────────────────────────────────────────────────────
+
+# Incus accepts cloud instance types (t2.micro, aws:t2.micro, c1-m1) as a
+# shorthand for cpu and memory limits.
+vm_prompt_instance_type() {
+  INSTANCE_TYPE=""
+  if prompt_confirm "Size from a cloud instance type instead of cores/RAM?" "n" 60; then
+    INSTANCE_TYPE=$(prompt_input "Instance type (e.g. t2.micro, c2-m4)" "c${CORE_COUNT:-2}-m$(((${RAM_SIZE:-2048} + 1023) / 1024))" 60)
+  fi
+  echo -e "${CPUCORE}${BOLD}${DGN}Instance Type: ${BGN}${INSTANCE_TYPE:-custom}${CL}"
+}
+
+# ── Protection ────────────────────────────────────────────────────────────────
+
+vm_prompt_delete_protection() {
+  if prompt_confirm "Protect this VM from accidental deletion?" "n" 60; then
+    DELETE_PROTECTION="yes"
+  else
+    DELETE_PROTECTION="no"
+  fi
+  echo -e "${DEFAULT}${BOLD}${DGN}Delete Protection: ${BGN}${DELETE_PROTECTION}${CL}"
+}
+
+# ── Cloud-init vendor data ────────────────────────────────────────────────────
+
+# vendor-data carries the general defaults, user-data the instance specifics.
+# cloud-init merges them, so this is the place for a site-wide baseline.
+vm_prompt_vendor_data() {
+  CLOUDINIT_VENDOR_DATA=""
+  [[ "${USE_CLOUD_INIT:-no}" != "yes" ]] && return 0
+  if prompt_confirm "Add cloud-init vendor-data (site defaults)?" "n" 60; then
+    local pkgs
+    pkgs=$(prompt_input "Packages to install, space separated" "qemu-guest-agent" 60)
+    local upgrade="false"
+    prompt_confirm "Upgrade all packages on first boot?" "n" 60 && upgrade="true"
+    CLOUDINIT_VENDOR_DATA="#cloud-config
+package_upgrade: ${upgrade}"
+    if [[ -n "$pkgs" ]]; then
+      CLOUDINIT_VENDOR_DATA+="
+packages:"
+      local pkg
+      for pkg in $pkgs; do CLOUDINIT_VENDOR_DATA+="
+  - ${pkg}"; done
+    fi
+  fi
+  echo -e "${CLOUD}${BOLD}${DGN}Vendor-Data: ${BGN}$([[ -n "$CLOUDINIT_VENDOR_DATA" ]] && echo configured || echo none)${CL}"
+}
+
 # ── Networking beyond the basics ──────────────────────────────────────────────
 
 # A managed Incus network can hand out a fixed lease; this is not the same as
@@ -523,6 +597,29 @@ _vm_cloud_init_user_data() {
   fi
 }
 
+# cloud-init only works on an image that actually ships it. On the images:
+# remote those are the /cloud variants -- images:debian/13 has no cloud-init at
+# all, so the configuration would be set and silently ignored.
+_vm_resolve_cloud_image() {
+  local image="$1"
+  [[ "${USE_CLOUD_INIT:-no}" != "yes" ]] && {
+    echo "$image"
+    return 0
+  }
+  [[ "$image" == */cloud ]] && {
+    echo "$image"
+    return 0
+  }
+  local candidate="${image}/cloud"
+  if incus image info "$candidate" >/dev/null 2>&1; then
+    msg_ok "Using the cloud-init variant ${candidate}"
+    echo "$candidate"
+    return 0
+  fi
+  msg_warn "No /cloud variant for ${image} - cloud-init may not run in this guest"
+  echo "$image"
+}
+
 _vm_cloud_init_network_config() {
   local dns="${CLOUDINIT_DNS:-1.1.1.1 8.8.8.8}"
   printf 'version: 2\nethernets:\n  eth0:\n    dhcp4: false\n    addresses: [%s]\n    gateway4: %s\n    nameservers:\n      addresses: [%s]\n' \
@@ -542,6 +639,7 @@ incus_vm_create() {
 
   [[ -z "$vm_name" ]] && { fatal "No VM name given"; return 1; }
   kvm_check
+  image="$(_vm_resolve_cloud_image "$image")"
   vm_check_image "$image"
   check_hostname_conflict "$vm_name"
 
@@ -589,6 +687,16 @@ incus_vm_create() {
   fi
 
   [[ -n "${CLUSTER_TARGET:-}" ]] && args+=(--target "$CLUSTER_TARGET")
+  [[ -n "${INSTANCE_TYPE:-}" ]] && args+=(--type "$INSTANCE_TYPE")
+
+  # image.os is not cosmetic: Incus disables unsupported devices, changes the
+  # RTC base and switches IOMMU handling based on it.
+  case "${GUEST_OS:-Linux}" in
+  Windows | macOS | FreeBSD) args+=(--config "image.os=${GUEST_OS}") ;;
+  esac
+
+  [[ "${DELETE_PROTECTION:-no}" == "yes" ]] &&
+    args+=(--config "security.protection.delete=true")
 
   msg_info "Creating VM ${vm_name} (${CORE_COUNT:-2} vCPU, ${RAM_SIZE:-2048} MiB, ${disk_gib} GiB)"
   if ! incus init "$image" "$vm_name" "${args[@]}" >/dev/null; then
@@ -609,6 +717,12 @@ incus_vm_create() {
   _vm_set_nic vlan "${VLAN:-}" "VLAN"
   _vm_set_nic mtu "${MTU:-}" "MTU"
   _vm_set_nic ipv4.address "${NIC_IPV4:-}" "fixed IPv4 lease"
+
+  if [[ "${AGENT_DISK:-no}" == "yes" ]]; then
+    incus config device add "$vm_name" agent disk source=agent:config >/dev/null 2>&1 &&
+      msg_ok "Attached the agent CD-ROM (run install.sh inside the guest)" ||
+      msg_warn "Could not attach the agent CD-ROM"
+  fi
 
   if [[ "${VTPM:-no}" == "yes" ]]; then
     if incus config device add "$vm_name" vtpm tpm >/dev/null 2>&1; then
@@ -638,9 +752,32 @@ incus_vm_create() {
 
   if [[ "${USE_CLOUD_INIT:-no}" == "yes" ]]; then
     msg_info "Applying cloud-init configuration"
-    incus config set "$vm_name" cloud-init.user-data "$(_vm_cloud_init_user_data)" >/dev/null
+    local ud nc
+    ud="$(_vm_cloud_init_user_data)"
+
+    # Newer images read cloud-init.*, older ones user.*. Setting both costs
+    # nothing and removes the guesswork about which an image supports.
+    incus config set "$vm_name" cloud-init.user-data "$ud" >/dev/null
+    incus config set "$vm_name" user.user-data "$ud" >/dev/null 2>&1 || true
+
+    if [[ -n "${CLOUDINIT_VENDOR_DATA:-}" ]]; then
+      incus config set "$vm_name" cloud-init.vendor-data "$CLOUDINIT_VENDOR_DATA" >/dev/null
+      incus config set "$vm_name" user.vendor-data "$CLOUDINIT_VENDOR_DATA" >/dev/null 2>&1 || true
+    fi
+
     if [[ "${CLOUDINIT_NETWORK_MODE:-dhcp}" == "static" && -n "${CLOUDINIT_IP:-}" && -n "${CLOUDINIT_GW:-}" ]]; then
-      incus config set "$vm_name" cloud-init.network-config "$(_vm_cloud_init_network_config)" >/dev/null
+      nc="$(_vm_cloud_init_network_config)"
+      incus config set "$vm_name" cloud-init.network-config "$nc" >/dev/null
+      incus config set "$vm_name" user.network-config "$nc" >/dev/null 2>&1 || true
+    fi
+
+    # Without a working incus-agent the guest cannot read the config over 9p,
+    # so hand it the seed disk as well. Images from images: ship the agent, but
+    # anything built elsewhere may not.
+    if [[ "$image" != images:* ]]; then
+      incus config device add "$vm_name" cloud-init disk source=cloud-init:config >/dev/null 2>&1 &&
+        msg_ok "Attached the cloud-init seed disk" ||
+        msg_warn "Could not attach the cloud-init seed disk"
     fi
     msg_ok "Applied cloud-init configuration"
   fi
