@@ -56,11 +56,11 @@ load_incus_vm_functions() {
 load_functions() { load_incus_vm_functions; }
 
 header_info() {
-  local app_name header_content=""
-  app_name=$(echo "${APP,,}" | tr -d ' ')
+  # get_header derives the slug from APP and APP_TYPE itself.
+  local header_content=""
   APP_TYPE="${APP_TYPE:-vm}"
   if declare -f get_header >/dev/null 2>&1; then
-    header_content=$(get_header "$app_name" 2>/dev/null || true)
+    header_content=$(get_header 2>/dev/null || true)
   fi
   clear
   if [[ -n "$header_content" ]]; then
@@ -107,6 +107,59 @@ sanitize_vm_hostname() {
 # ==============================================================================
 # SECTION 1: PROMPTS
 # ==============================================================================
+# Containers on Incus get whiptail through shared/build-ui.func; the VM path
+# does not go through it and fell back to plain read prompts. Overriding the
+# three primitives here lifts every vm_prompt_* below onto whiptail at once,
+# with the text versions kept for non-TTY, missing whiptail, or VM_UI=text.
+
+VM_BACKTITLE="Community Scripts :: Incus VM"
+
+_vm_use_whiptail() {
+  [[ "${VM_UI:-}" == "text" ]] && return 1
+  command -v whiptail >/dev/null 2>&1 || return 1
+  [[ -t 0 && -t 2 ]] || return 1
+  declare -f is_unattended >/dev/null 2>&1 && is_unattended && return 1
+  return 0
+}
+
+if _vm_use_whiptail; then
+  _vm_text_prompt_confirm() { :; }
+
+  prompt_confirm() {
+    local message="${1:-Confirm?}" default="${2:-n}"
+    local defno=()
+    [[ "${default,,}" != "y" ]] && defno=(--defaultno)
+    whiptail --backtitle "$VM_BACKTITLE" --title "${APP:-VM}"       "${defno[@]}" --yesno "$message" 10 68
+  }
+
+  prompt_input() {
+    local message="${1:-Enter value:}" default="${2:-}" out
+    out=$(whiptail --backtitle "$VM_BACKTITLE" --title "${APP:-VM}"       --inputbox "$message" 10 68 "$default" 3>&1 1>&2 2>&3) || {
+      echo "$default"
+      return 0
+    }
+    echo "${out:-$default}"
+  }
+
+  # Same contract as the text version: message, default index, timeout, then the
+  # options; echoes the chosen option string.
+  prompt_select() {
+    local message="${1:-Select option:}" default="${2:-1}"
+    shift 3
+    local options=("$@") menu=() i=1 out
+    ((${#options[@]} == 0)) && return 1
+    for o in "${options[@]}"; do
+      menu+=("$i" "$o")
+      i=$((i + 1))
+    done
+    out=$(whiptail --backtitle "$VM_BACKTITLE" --title "${APP:-VM}"       --default-item "$default" --menu "$message" 16 68 "${#options[@]}"       "${menu[@]}" 3>&1 1>&2 2>&3) || {
+      echo "${options[$((default - 1))]}"
+      return 0
+    }
+    echo "${options[$((out - 1))]}"
+  }
+fi
+
 
 vm_confirm_new_vm() {
   local message="${2:-Create new VM?}"
