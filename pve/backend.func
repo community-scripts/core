@@ -2500,7 +2500,8 @@ create_lxc_container() {
     # Step 1: Check local templates first (instant)
     mapfile -t LOCAL_TEMPLATES < <(
       pveam list "$TEMPLATE_STORAGE" 2>/dev/null |
-        awk -v search="${TEMPLATE_SEARCH}" -v pattern="${TEMPLATE_PATTERN}" '$1 ~ search && $1 ~ pattern {print $1}' |
+        awk -v search="${TEMPLATE_SEARCH}" -v pattern="${TEMPLATE_PATTERN}" -v arch="${ARCH}" \
+          '$1 ~ search && $1 ~ pattern && $1 ~ ("_" arch "\\.(tar\\.zst|tar\\.xz|tar\\.gz)$") {print $1}' |
         sed 's|.*/||' | sort -t - -k 2 -V
     )
 

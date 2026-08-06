@@ -89,8 +89,12 @@ choose_and_set_storage_for_file() {
 _list_os_versions() {
   local ostype="${1:-}"
   [[ -n "$ostype" ]] || return 0
+  # Templates are per-architecture. Without this the catalog offers amd64
+  # images on an arm64 host, which fail only after the download.
+  local arch
+  arch="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
   pveam available -section system 2>/dev/null |
-    grep -E '\.(tar\.zst|tar\.xz|tar\.gz)$' |
+    grep -E "_${arch}\.(tar\.zst|tar\.xz|tar\.gz)$" |
     awk '{print $2}' |
     sed -nE "s/^${ostype}-([0-9]+(\.[0-9]+)?).*/\1/p" |
     sort -u -V || true
@@ -104,8 +108,10 @@ _list_os_versions() {
 _list_templates() {
   local search="${1:-}" pattern="${2:-}"
   [[ -n "$search" ]] || return 0
+  local arch
+  arch="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
   pveam available -section system 2>/dev/null |
-    grep -E '\.(tar\.zst|tar\.xz|tar\.gz)$' |
+    grep -E "_${arch}\.(tar\.zst|tar\.xz|tar\.gz)$" |
     awk '{print $2}' |
     grep -E "^${search}.*${pattern}" |
     sort -t - -k 2 -V || true
