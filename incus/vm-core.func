@@ -494,35 +494,12 @@ vm_prompt_instance_type() {
   echo -e "${CPUCORE}${BOLD}${DGN}Instance Type: ${BGN}${INSTANCE_TYPE:-custom}${CL}"
 }
 
-# ── Resource limits beyond core count ─────────────────────────────────────────
+# ── Resource limits ───────────────────────────────────────────────────────────
+# CPU quota, swap and kernel modules are container-only in Incus and live on
+# the container path; a VM is capped by its core count and its own kernel.
 
-vm_prompt_cpu_limits() {
-  CPU_ALLOWANCE=""
-  CPU_PRIORITY=""
-  if prompt_confirm "Set a CPU quota on top of the core count?" "n" 60; then
-    CPU_ALLOWANCE=$(prompt_input "CPU allowance (e.g. 50% or 25ms/100ms)" "50%" 60)
-    CPU_PRIORITY=$(prompt_input "CPU priority under contention (0-10)" "5" 60)
-  fi
-  echo -e "${CPUCORE}${BOLD}${DGN}CPU Limits: ${BGN}${CPU_ALLOWANCE:-none}${CL}"
-}
 
-vm_prompt_memory_swap() {
-  MEMORY_SWAP=""
-  if prompt_confirm "Allow this instance to swap?" "y" 60; then
-    MEMORY_SWAP="true"
-  else
-    MEMORY_SWAP="false"
-  fi
-  echo -e "${RAMSIZE}${BOLD}${DGN}Swap: ${BGN}${MEMORY_SWAP}${CL}"
-}
 
-vm_prompt_kernel_modules() {
-  KERNEL_MODULES=""
-  if prompt_confirm "Load specific kernel modules for this instance?" "n" 60; then
-    KERNEL_MODULES=$(prompt_input "Module names, comma separated (e.g. br_netfilter,overlay)" "" 60)
-  fi
-  echo -e "${DEFAULT}${BOLD}${DGN}Kernel Modules: ${BGN}${KERNEL_MODULES:-none}${CL}"
-}
 
 # Live migration and suspend both require transferable memory state.
 vm_prompt_stateful() {
@@ -800,12 +777,11 @@ incus_vm_create() {
   # transferable; without this Incus refuses either.
   [[ "${STATEFUL:-no}" == "yes" ]] && args+=(--config "migration.stateful=true")
 
-  # A CPU count caps how many cores are visible; an allowance caps how much of
-  # them may actually be used.
-  [[ -n "${CPU_ALLOWANCE:-}" ]] && args+=(--config "limits.cpu.allowance=${CPU_ALLOWANCE}")
-  [[ -n "${CPU_PRIORITY:-}" ]] && args+=(--config "limits.cpu.priority=${CPU_PRIORITY}")
-  [[ -n "${MEMORY_SWAP:-}" ]] && args+=(--config "limits.memory.swap=${MEMORY_SWAP}")
-  [[ -n "${KERNEL_MODULES:-}" ]] && args+=(--config "linux.kernel_modules=${KERNEL_MODULES}")
+  # limits.cpu.allowance, limits.cpu.priority, limits.memory.swap and
+  # linux.kernel_modules are container-only -- the host's own
+  # /1.0/metadata/configuration marks them "condition: container". Setting them
+  # on a VM is accepted silently and does nothing, so they live on the
+  # container path instead. A VM has its own kernel and its own scheduler.
   [[ -n "${AUTOSTART_DELAY:-}" ]] && args+=(--config "boot.autostart.delay=${AUTOSTART_DELAY}")
   [[ -n "${SNAPSHOT_PATTERN:-}" ]] && args+=(--config "snapshots.pattern=${SNAPSHOT_PATTERN}")
 

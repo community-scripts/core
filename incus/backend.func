@@ -296,6 +296,18 @@ incus_create_lxc_container() {
   [[ "${PROTECTION:-no}" == "yes" || "${PROTECTION:-0}" == "1" ]] &&
     launch_args+=("--config" "security.protection.delete=true")
 
+  # Container-only per the host's own /1.0/metadata/configuration. A core count
+  # caps how many CPUs are visible, an allowance caps how much of them may be
+  # used; both are cgroup constructs and do nothing on a VM.
+  [[ -n "${CPU_ALLOWANCE:-}" ]] &&
+    launch_args+=("--config" "limits.cpu.allowance=${CPU_ALLOWANCE}")
+  [[ -n "${CPU_PRIORITY:-}" ]] &&
+    launch_args+=("--config" "limits.cpu.priority=${CPU_PRIORITY}")
+  [[ -n "${MEMORY_SWAP:-}" ]] &&
+    launch_args+=("--config" "limits.memory.swap=${MEMORY_SWAP}")
+  [[ -n "${KERNEL_MODULES:-}" ]] &&
+    launch_args+=("--config" "linux.kernel_modules=${KERNEL_MODULES}")
+
   if [[ "${CT_TYPE:-1}" != "1" || "${ENABLE_FUSE:-no}" == "yes" || "${ENABLE_TUN:-no}" == "yes" ]]; then
     launch_args+=("--config" "security.privileged=true")
   fi
