@@ -47,6 +47,7 @@ enable_and_start_service
 end_timer
 ensure_apt_working
 ensure_dependencies
+ensure_docker
 ensure_usr_local_bin_persist
 extract_version_from_json
 fetch_and_deploy_codeberg_release
@@ -69,6 +70,7 @@ get_latest_gl_tag
 get_os_info
 get_os_version_major
 get_parallel_jobs
+get_php_fpm_socket
 get_system_arch
 github_api_call
 hold_package_version
@@ -82,6 +84,7 @@ is_service_running
 is_tool_installed
 is_ubuntu
 manage_tool_repository
+nginx_enable_site
 prepare_repository_setup
 prompt_for_github_token
 remove_old_tool_version

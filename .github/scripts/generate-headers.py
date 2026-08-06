@@ -80,20 +80,14 @@ def main(repos: list[str]) -> int:
                     continue
                 t = TYPE_RE.search(text)
                 app_type = t.group(1) if t else "ct"
-                # APP_TYPE=tools resolves to headers/tools/<platform> at
-                # runtime. tools/pve/ and tools/incus/ each belong to one
-                # platform; anything else declaring APP_TYPE=tools (scripts under
-                # tools/addon/ do) runs on both, so it is written to both.
-                targets = [app_type]
-                if app_type == "tools":
-                    parts = script.relative_to(root).parts
-                    platform = parts[1] if len(parts) > 2 and parts[1] in TOOL_PLATFORMS else None
-                    targets = (
-                        [f"tools/{platform}"] if platform
-                        else [f"tools/{p}" for p in TOOL_PLATFORMS]
-                    )
-                keys = [(t, slug(app)) for t in targets]
-                if all(k in written for k in keys):
+                # A pve/ or incus/ segment anywhere in the path marks the
+                # script as platform-specific, whatever its type. Everything
+                # else is agnostic and lands flat under its type.
+                parts = script.relative_to(root).parts[:-1]
+                platform = next((p for p in parts if p in PLATFORMS), None)
+                target = f"{app_type}/{platform}" if platform else app_type
+                key = (target, slug(app))
+                if key in written:
                     continue
                 art = figlet(app)
                 if art is None:
