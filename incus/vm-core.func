@@ -271,6 +271,10 @@ check_hostname_conflict() {
 # SECTION 3: CREATION
 # ==============================================================================
 
+# fatal() signals via kill -INT $$, which is not guaranteed to stop execution in
+# every environment, so every failure path below also returns explicitly rather
+# than trusting it.
+
 # Set by incus_vm_create so cleanup knows what to remove on failure.
 _INCUS_VM_NAME=""
 _INCUS_VM_CREATED=0
@@ -350,7 +354,7 @@ incus_vm_create() {
   local disk_size="${3:-${DISK_SIZE:-10G}}"
   local disk_gib="${disk_size%G}"
 
-  [[ -z "$vm_name" ]] && fatal "No VM name given"
+  [[ -z "$vm_name" ]] && { fatal "No VM name given"; return 1; }
   kvm_check
   vm_check_image "$image"
   check_hostname_conflict "$vm_name"
@@ -368,6 +372,7 @@ incus_vm_create() {
   msg_info "Creating VM ${vm_name} (${CORE_COUNT:-2} vCPU, ${RAM_SIZE:-2048} MiB, ${disk_gib} GiB)"
   if ! incus init "$image" "$vm_name" "${args[@]}" >/dev/null; then
     fatal "Failed to create VM ${vm_name}"
+    return 1
   fi
   _INCUS_VM_CREATED=1
   msg_ok "Created VM ${vm_name}"
@@ -400,6 +405,8 @@ incus_vm_create() {
   msg_info "Starting VM ${vm_name}"
   if ! incus start "$vm_name" >/dev/null 2>&1; then
     fatal "Failed to start VM ${vm_name}"
+    cleanup_vmid
+    return 1
   fi
   msg_ok "Started VM ${vm_name}"
 

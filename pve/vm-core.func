@@ -10,7 +10,19 @@ COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.co
 if command -v pveversion &>/dev/null; then
   :
 elif command -v incus &>/dev/null && incus info &>/dev/null 2>&1; then
-  source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/incus/vm-core.func" 2>/dev/null || wget -qO- "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/incus/vm-core.func")
+  # Honour the dispatcher's resolver and a local checkout before reaching for
+  # the network, so a fork or branch of core is picked up here too.
+  if declare -f _cs_source_func >/dev/null 2>&1; then
+    _cs_source_func "incus/vm-core.func"
+  elif [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -f "${COMMUNITY_SCRIPTS_CORE_DIR}/incus/vm-core.func" ]]; then
+    # shellcheck disable=SC1090
+    source "${COMMUNITY_SCRIPTS_CORE_DIR}/incus/vm-core.func"
+  else
+    _vm_core_base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
+    # shellcheck disable=SC1090
+    source <(curl -fsSL "${_vm_core_base}/incus/vm-core.func" 2>/dev/null ||
+      wget -qO- "${_vm_core_base}/incus/vm-core.func")
+  fi
   return 0
 fi
 
