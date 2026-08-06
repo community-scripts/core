@@ -1,15 +1,47 @@
 #!/usr/bin/env bash
 # Copyright (c) 2021-2026 community-scripts ORG
-# License: MIT | https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main/LICENSE
+# License: MIT | https://raw.githubusercontent.com/community-scripts/core/main/LICENSE
+
+# ==============================================================================
+# INCUS/VM-CORE.FUNC - VIRTUAL MACHINE CREATION ON AN INCUS HOST
+# ==============================================================================
+# Counterpart to pve/vm-core.func. A VM script describes how the machine is
+# built, and that is genuinely different per platform: Proxmox drives qm and
+# imports a downloaded cloud image, Incus launches a VM image from a remote and
+# configures it through native keys. So VM scripts are NOT shared between the
+# two the way ct/ scripts are.
+#
+# Entry point: incus_vm_create <image> <name> <disk-size>
+# ==============================================================================
 
 [[ -n "${_INCUS_VM_CORE_LOADED:-}" ]] && return
 _INCUS_VM_CORE_LOADED=1
 
-INCUS_COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+_CORE_BASE="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
 
-source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/incus/core.func")
+# Prefer the dispatcher's resolver so a local checkout and forks keep working.
+_incus_vm_source() {
+  local rel="$1"
+  if declare -f _cs_source_func >/dev/null 2>&1; then
+    _cs_source_func "$rel"
+    return
+  fi
+  if [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -f "${COMMUNITY_SCRIPTS_CORE_DIR}/${rel}" ]]; then
+    # shellcheck disable=SC1090
+    source "${COMMUNITY_SCRIPTS_CORE_DIR}/${rel}"
+    return
+  fi
+  # shellcheck disable=SC1090
+  source <(curl -fsSL "${_CORE_BASE}/${rel}")
+}
+
+# shared/core.func first: it owns prompt_confirm/prompt_input/prompt_select,
+# which every prompt below needs and which incus/core.func does not provide.
+_incus_vm_source "shared/core.func"
+_incus_vm_source "incus/core.func"
 load_incus_functions
 incus_install_compat_aliases
+incus_catch_errors
 
 load_incus_vm_functions() {
   [[ -n "${__INCUS_VM_FUNCTIONS_LOADED:-}" ]] && return
@@ -24,8 +56,7 @@ load_incus_vm_functions() {
 load_functions() { load_incus_vm_functions; }
 
 header_info() {
-  local app_name
-  local header_content=""
+  local app_name header_content=""
   app_name=$(echo "${APP,,}" | tr -d ' ')
   APP_TYPE="${APP_TYPE:-vm}"
   if declare -f get_header >/dev/null 2>&1; then
@@ -43,9 +74,20 @@ check_root() { incus_root_check; }
 pve_check() { incus_check; }
 
 arch_check() {
+  # uname, not dpkg: an Incus host is not necessarily Debian-based.
   local arch
-  arch="$(dpkg --print-architecture 2>/dev/null || echo unknown)"
-  [[ "$arch" == "amd64" || "$arch" == "arm64" ]] || fatal "Unsupported architecture: $arch"
+  arch="$(uname -m 2>/dev/null || echo unknown)"
+  case "$arch" in
+  x86_64 | amd64 | aarch64 | arm64) ;;
+  *) fatal "Unsupported architecture for Incus VMs: $arch" ;;
+  esac
+}
+
+# An Incus host without KVM can only run containers.
+kvm_check() {
+  if [[ ! -e /dev/kvm ]]; then
+    fatal "No /dev/kvm on this host - Incus cannot run virtual machines here."
+  fi
 }
 
 ssh_check() { :; }
@@ -53,7 +95,7 @@ ssh_check() { :; }
 exit_script() {
   clear
   echo -e "\n${CROSS}${RD}User exited script${CL}\n"
-  exit
+  exit 1
 }
 
 sanitize_vm_hostname() {
@@ -62,8 +104,11 @@ sanitize_vm_hostname() {
   echo "${hostname:0:63}"
 }
 
+# ==============================================================================
+# SECTION 1: PROMPTS
+# ==============================================================================
+
 vm_confirm_new_vm() {
-  local _title="${1:-New VM}"
   local message="${2:-Create new VM?}"
   prompt_confirm "$message" "y" 60
 }
@@ -73,92 +118,14 @@ vm_choose_settings_mode() {
 }
 
 vm_confirm_advanced_settings() {
-  local message="${1:-Ready to create VM?}"
-  prompt_confirm "$message" "y" 120
-}
-
-vm_apply_machine_type() {
-  MACHINE_TYPE="${1:-q35}"
-  MACHINE=""
-  FORMAT=""
-}
-
-vm_machine_type_label() {
-  case "${1:-q35}" in
-  q35) echo "Q35 (Modern)" ;;
-  *) echo "$1" ;;
-  esac
-}
-
-vm_prompt_machine_type() {
-  local default_machine="${1:-q35}"
-  local choice
-  choice=$(prompt_select "Machine Type" "1" 60 "q35" "default") || exit_script
-  vm_apply_machine_type "${choice:-$default_machine}"
-  echo -e "${CONTAINERTYPE}${BOLD}${DGN}Machine Type: ${BGN}$(vm_machine_type_label "$MACHINE_TYPE")${CL}"
-}
-
-vm_prompt_cloud_init() {
-  local default_user="${1:-ubuntu}"
-  if prompt_confirm "Enable Cloud-Init?" "n" 60; then
-    USE_CLOUD_INIT="yes"
-    CLOUDINIT_USER=$(prompt_input "Cloud-Init user" "$default_user" 60)
-    CLOUDINIT_NETWORK_MODE=$(prompt_select "Cloud-Init network mode" "1" 60 "dhcp" "static")
-    if [[ "$CLOUDINIT_NETWORK_MODE" == "static" ]]; then
-      CLOUDINIT_IP=$(prompt_input "Static IP/CIDR (e.g. 10.0.0.10/24)" "" 60)
-      CLOUDINIT_GW=$(prompt_input "Gateway IPv4" "" 60)
-      CLOUDINIT_DNS=$(prompt_input "DNS servers (space separated)" "1.1.1.1 8.8.8.8" 60)
-    fi
-  else
-    USE_CLOUD_INIT="no"
-  fi
-  echo -e "${CLOUD}${BOLD}${DGN}Cloud-Init: ${BGN}${USE_CLOUD_INIT}${CL}"
-}
-
-get_valid_nextid() {
-  local try_id=100
-  while incus info "vm-${try_id}" >/dev/null 2>&1; do
-    try_id=$((try_id + 1))
-  done
-  echo "$try_id"
-}
-
-vm_prompt_vmid() {
-  local default_vmid="${1:-$(get_valid_nextid)}"
-  VMID=$(prompt_input "Set Virtual Machine numeric ID" "$default_vmid" 60)
-  [[ "$VMID" =~ ^[0-9]+$ ]] || VMID="$default_vmid"
-  echo -e "${CONTAINERID}${BOLD}${DGN}Virtual Machine ID: ${BGN}${VMID}${CL}"
-}
-
-vm_prompt_disk_size() {
-  local default_size="${1:-8G}"
-  local size
-  size=$(prompt_input "Set Disk Size in GiB (e.g., 10, 20 or 20G)" "$default_size" 60)
-  size="${size// /}"
-  if [[ "$size" =~ ^[0-9]+$ ]]; then size="${size}G"; fi
-  [[ "$size" =~ ^[0-9]+G$ ]] || size="$default_size"
-  DISK_SIZE="$size"
-  echo -e "${DISKSIZE}${BOLD}${DGN}Disk Size: ${BGN}${DISK_SIZE}${CL}"
-}
-
-vm_prompt_disk_cache() {
-  DISK_CACHE=""
-  echo -e "${DISKSIZE}${BOLD}${DGN}Disk Cache: ${BGN}None${CL}"
+  prompt_confirm "${1:-Ready to create VM?}" "y" 120
 }
 
 vm_prompt_hostname() {
-  local default_hostname="${1:-vm}"
-  local in
+  local default_hostname="${1:-vm}" in
   in=$(prompt_input "Set Hostname" "$default_hostname" 60)
   HN=$(sanitize_vm_hostname "${in:-$default_hostname}")
   echo -e "${HOSTNAME}${BOLD}${DGN}Hostname: ${BGN}${HN}${CL}"
-}
-
-vm_prompt_cpu_model() {
-  local default_model="${1:-host}"
-  CPU_TYPE=$(prompt_select "CPU Model" "2" 60 "kvm64" "host")
-  [[ -z "${CPU_TYPE:-}" ]] && CPU_TYPE="$default_model"
-  echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}${CPU_TYPE}${CL}"
 }
 
 vm_prompt_cpu_cores() {
@@ -175,16 +142,29 @@ vm_prompt_ram() {
   echo -e "${RAMSIZE}${BOLD}${DGN}RAM Size: ${BGN}${RAM_SIZE}${CL}"
 }
 
+vm_prompt_disk_size() {
+  local default_size="${1:-10G}" size
+  size=$(prompt_input "Set Disk Size in GiB (e.g. 10 or 10G)" "$default_size" 60)
+  size="${size// /}"
+  [[ "$size" =~ ^[0-9]+$ ]] && size="${size}G"
+  [[ "$size" =~ ^[0-9]+G$ ]] || size="$default_size"
+  DISK_SIZE="$size"
+  echo -e "${DISKSIZE}${BOLD}${DGN}Disk Size: ${BGN}${DISK_SIZE}${CL}"
+}
+
 vm_prompt_bridge() {
-  local default_bridge="${1:-incusbr0}"
-  BRG=$(prompt_input "Set Network Bridge" "$default_bridge" 60)
+  local default_bridge="${1:-incusbr0}" networks
+  networks=$(incus_get_networks 2>/dev/null | sed '/^\s*$/d')
+  if [[ -n "$networks" ]] && ! grep -qx "$default_bridge" <<<"$networks"; then
+    default_bridge=$(head -1 <<<"$networks")
+  fi
+  BRG=$(prompt_input "Set Network" "$default_bridge" 60)
   [[ -z "${BRG:-}" ]] && BRG="$default_bridge"
-  echo -e "${BRIDGE}${BOLD}${DGN}Bridge: ${BGN}${BRG}${CL}"
+  echo -e "${BRIDGE}${BOLD}${DGN}Network: ${BGN}${BRG}${CL}"
 }
 
 vm_prompt_mac() {
-  local default_mac="${1:-}"
-  MAC=$(prompt_input "Set MAC Address (empty=auto)" "$default_mac" 60)
+  MAC=$(prompt_input "Set MAC Address (empty=auto)" "${1:-}" 60)
   echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}${MAC:-auto}${CL}"
 }
 
@@ -195,7 +175,7 @@ vm_prompt_vlan() {
 
 vm_prompt_mtu() {
   MTU=$(prompt_input "Set Interface MTU (empty=default)" "${MTU:-}" 60)
-  echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}${MTU:-Default}${CL}"
+  echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU: ${BGN}${MTU:-Default}${CL}"
 }
 
 vm_prompt_start_vm() {
@@ -208,16 +188,42 @@ vm_prompt_start_vm() {
   echo -e "${GATEWAY}${BOLD}${DGN}Start VM when completed: ${BGN}${START_VM}${CL}"
 }
 
-vm_select_storage() {
-  local default_name="${1:-vm}"
-  local pools
-  pools=$(incus_get_storage_pools | sed '/^\s*$/d')
-  if [[ -z "$pools" ]]; then
-    fatal "No Incus storage pools available"
+# Secure Boot is on by default for Incus VMs and stops images whose bootloader
+# is not signed for it. Offer the escape hatch rather than let the VM hang.
+vm_prompt_secureboot() {
+  if prompt_confirm "Enable Secure Boot? (No is safer for most images)" "n" 60; then
+    SECUREBOOT="yes"
+  else
+    SECUREBOOT="no"
   fi
-  local first
-  first=$(echo "$pools" | head -1)
-  local selected="$first"
+  echo -e "${DEFAULT}${BOLD}${DGN}Secure Boot: ${BGN}${SECUREBOOT}${CL}"
+}
+
+vm_prompt_cloud_init() {
+  local default_user="${1:-ubuntu}"
+  if prompt_confirm "Enable Cloud-Init?" "n" 60; then
+    USE_CLOUD_INIT="yes"
+    CLOUDINIT_USER=$(prompt_input "Cloud-Init user" "$default_user" 60)
+    CLOUDINIT_PASSWORD=$(prompt_input "Cloud-Init password (empty=SSH key only)" "" 60)
+    CLOUDINIT_SSHKEY=$(prompt_input "SSH public key (empty=none)" "" 60)
+    CLOUDINIT_NETWORK_MODE=$(prompt_select "Cloud-Init network mode" "1" 60 "dhcp" "static")
+    if [[ "$CLOUDINIT_NETWORK_MODE" == "static" ]]; then
+      CLOUDINIT_IP=$(prompt_input "Static IP/CIDR (e.g. 10.0.0.10/24)" "" 60)
+      CLOUDINIT_GW=$(prompt_input "Gateway IPv4" "" 60)
+      CLOUDINIT_DNS=$(prompt_input "DNS servers (space separated)" "1.1.1.1 8.8.8.8" 60)
+    fi
+  else
+    USE_CLOUD_INIT="no"
+  fi
+  echo -e "${CLOUD}${BOLD}${DGN}Cloud-Init: ${BGN}${USE_CLOUD_INIT}${CL}"
+}
+
+vm_select_storage() {
+  local pools first selected
+  pools=$(incus_get_storage_pools | sed '/^\s*$/d')
+  [[ -z "$pools" ]] && fatal "No Incus storage pools available"
+  first=$(head -1 <<<"$pools")
+  selected="$first"
   while IFS= read -r p; do
     [[ -z "$p" ]] && continue
     if prompt_confirm "Use storage pool '$p'?" "$([[ "$p" == "$first" ]] && echo y || echo n)" 15; then
@@ -229,72 +235,205 @@ vm_select_storage() {
   echo -e "${DISKSIZE}${BOLD}${DGN}Storage: ${BGN}${STORAGE}${CL}"
 }
 
-vm_define_disk_references() { :; }
-vm_apply_storage_layout() { :; }
-check_hostname_conflict() { :; }
-set_description() { :; }
-cleanup_vmid() { :; }
-cleanup() { :; }
+# ==============================================================================
+# SECTION 2: VALIDATION
+# ==============================================================================
 
-post_to_api_vm() { :; }
-post_update_to_api() { :; }
+# Not every image in a remote ships a virtual-machine variant; launching one
+# that does not fails with a message nobody reads. Check first.
+vm_check_image() {
+  local image="${1:?image}"
+  local remote="${image%%:*}" fingerprint="${image#*:}"
+  [[ "$image" != *:* ]] && remote="local"
 
+  msg_info "Checking image ${image} for a VM variant"
+  if incus image list "${remote}:" type=virtual-machine --format csv -c l 2>/dev/null |
+    tr ',' '\n' | grep -qx "$fingerprint"; then
+    msg_ok "Image ${image} has a VM variant"
+    return 0
+  fi
+  # Aliases are not always listed verbatim; fall back to asking about the image.
+  if incus image info "$image" >/dev/null 2>&1; then
+    msg_warn "Could not confirm a VM variant for ${image} - continuing"
+    return 0
+  fi
+  fatal "Image ${image} not found. Try: incus image list images: type=virtual-machine"
+}
+
+check_hostname_conflict() {
+  local name="${1:-$HN}"
+  if incus info "$name" >/dev/null 2>&1; then
+    fatal "An instance named '${name}' already exists on this host"
+  fi
+}
+
+# ==============================================================================
+# SECTION 3: CREATION
+# ==============================================================================
+
+# Set by incus_vm_create so cleanup knows what to remove on failure.
+_INCUS_VM_NAME=""
+_INCUS_VM_CREATED=0
+
+cleanup_vmid() {
+  [[ "$_INCUS_VM_CREATED" -eq 1 && -n "$_INCUS_VM_NAME" ]] || return 0
+  msg_warn "Removing partially created VM ${_INCUS_VM_NAME}"
+  incus delete "$_INCUS_VM_NAME" --force >/dev/null 2>&1 || true
+  _INCUS_VM_CREATED=0
+}
+
+cleanup() { cleanup_vmid; }
+
+set_description() {
+  [[ -z "${_INCUS_VM_NAME:-}" ]] && return 0
+  incus config set "$_INCUS_VM_NAME" \
+    user.description "${APP:-VM} - community-scripts.org" >/dev/null 2>&1 || true
+}
+
+# Wait for the incus-agent inside the guest. Until it answers, incus exec fails
+# and any post-install step would run against a machine that is not there yet.
+vm_wait_for_agent() {
+  local name="${1:?name}" timeout="${2:-180}" waited=0
+  msg_info "Waiting for the guest agent (up to ${timeout}s)"
+  while ((waited < timeout)); do
+    if incus exec "$name" -- true >/dev/null 2>&1; then
+      msg_ok "Guest agent is up"
+      return 0
+    fi
+    sleep 3
+    waited=$((waited + 3))
+  done
+  msg_warn "Guest agent did not respond within ${timeout}s - the VM is running, but incus exec is unavailable"
+  return 1
+}
+
+vm_get_ip() {
+  local name="${1:?name}" timeout="${2:-90}" waited=0 ip=""
+  while ((waited < timeout)); do
+    ip=$(incus list "$name" --format csv -c 4 2>/dev/null | tr ' ' '\n' | grep -oE '^[0-9.]+' | head -1)
+    [[ -n "$ip" ]] && {
+      echo "$ip"
+      return 0
+    }
+    sleep 3
+    waited=$((waited + 3))
+  done
+  return 1
+}
+
+_vm_cloud_init_user_data() {
+  local user="${CLOUDINIT_USER:-ubuntu}"
+  printf '#cloud-config\nhostname: %s\nmanage_etc_hosts: true\nusers:\n  - name: %s\n    sudo: ALL=(ALL) NOPASSWD:ALL\n    shell: /bin/bash\n    lock_passwd: false\n' \
+    "${HN}" "$user"
+  [[ -n "${CLOUDINIT_SSHKEY:-}" ]] &&
+    printf '    ssh_authorized_keys:\n      - %s\n' "$CLOUDINIT_SSHKEY"
+  if [[ -n "${CLOUDINIT_PASSWORD:-}" ]]; then
+    printf 'chpasswd:\n  expire: false\n  list: |\n    %s:%s\nssh_pwauth: true\n' \
+      "$user" "$CLOUDINIT_PASSWORD"
+  fi
+}
+
+_vm_cloud_init_network_config() {
+  local dns="${CLOUDINIT_DNS:-1.1.1.1 8.8.8.8}"
+  printf 'version: 2\nethernets:\n  eth0:\n    dhcp4: false\n    addresses: [%s]\n    gateway4: %s\n    nameservers:\n      addresses: [%s]\n' \
+    "$CLOUDINIT_IP" "$CLOUDINIT_GW" "${dns// /, }"
+}
+
+# incus_vm_create <image> <name> <disk-size>
+#
+# init -> configure -> start, in that order. Launching first and configuring
+# afterwards means cloud-init lands after the guest has already booted, where
+# it no longer does anything.
 incus_vm_create() {
-  local image="${1:-images:ubuntu/26.04}"
+  local image="${1:-images:debian/13}"
   local vm_name="${2:-$HN}"
-  local disk_size="${3:-7G}"
-
-  msg_info "Creating VM ${vm_name}"
+  local disk_size="${3:-${DISK_SIZE:-10G}}"
   local disk_gib="${disk_size%G}"
-  local args=()
-  args+=("--vm")
-  args+=("--config" "limits.cpu=${CORE_COUNT:-2}")
-  args+=("--config" "limits.memory=${RAM_SIZE:-2048}MiB")
-  args+=("--network" "${BRG:-incusbr0}")
-  args+=("--storage" "${STORAGE:-default}")
-  args+=("--device" "root,size=${disk_gib}GiB")
 
-  incus launch "$image" "$vm_name" "${args[@]}" >/dev/null
+  [[ -z "$vm_name" ]] && fatal "No VM name given"
+  kvm_check
+  vm_check_image "$image"
+  check_hostname_conflict "$vm_name"
 
-  [[ -n "${MAC:-}" ]] && incus config device set "$vm_name" eth0 hwaddr "$MAC" >/dev/null 2>&1 || true
-  [[ -n "${VLAN:-}" ]] && incus config device set "$vm_name" eth0 vlan "$VLAN" >/dev/null 2>&1 || true
-  [[ -n "${MTU:-}" ]] && incus config device set "$vm_name" eth0 mtu "$MTU" >/dev/null 2>&1 || true
+  _INCUS_VM_NAME="$vm_name"
+
+  local args=(--vm)
+  args+=(--config "limits.cpu=${CORE_COUNT:-2}")
+  args+=(--config "limits.memory=${RAM_SIZE:-2048}MiB")
+  args+=(--config "security.secureboot=$([[ "${SECUREBOOT:-no}" == "yes" ]] && echo true || echo false)")
+  args+=(--network "${BRG:-incusbr0}")
+  args+=(--storage "${STORAGE:-default}")
+  args+=(--device "root,size=${disk_gib}GiB")
+
+  msg_info "Creating VM ${vm_name} (${CORE_COUNT:-2} vCPU, ${RAM_SIZE:-2048} MiB, ${disk_gib} GiB)"
+  if ! incus init "$image" "$vm_name" "${args[@]}" >/dev/null; then
+    fatal "Failed to create VM ${vm_name}"
+  fi
+  _INCUS_VM_CREATED=1
+  msg_ok "Created VM ${vm_name}"
+
+  # NIC tweaks before first boot so the guest sees its final identity.
+  [[ -n "${MAC:-}" ]] && incus config device set "$vm_name" eth0 hwaddr "$MAC" >/dev/null 2>&1 ||
+    { [[ -n "${MAC:-}" ]] && msg_warn "Could not set MAC address"; }
+  [[ -n "${VLAN:-}" ]] && incus config device set "$vm_name" eth0 vlan "$VLAN" >/dev/null 2>&1 ||
+    { [[ -n "${VLAN:-}" ]] && msg_warn "Could not set VLAN (not supported on this network type)"; }
+  [[ -n "${MTU:-}" ]] && incus config device set "$vm_name" eth0 mtu "$MTU" >/dev/null 2>&1 ||
+    { [[ -n "${MTU:-}" ]] && msg_warn "Could not set MTU"; }
 
   if [[ "${USE_CLOUD_INIT:-no}" == "yes" ]]; then
-    local cloud_user="${CLOUDINIT_USER:-ubuntu}"
-    local dns="${CLOUDINIT_DNS:-1.1.1.1 8.8.8.8}"
-    local user_data
-    user_data=$(cat <<EOF
-#cloud-config
-hostname: ${HN}
-manage_etc_hosts: true
-users:
-  - name: ${cloud_user}
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    shell: /bin/bash
-EOF
-)
-    incus config set "$vm_name" cloud-init.user-data "$user_data" >/dev/null
+    msg_info "Applying cloud-init configuration"
+    incus config set "$vm_name" cloud-init.user-data "$(_vm_cloud_init_user_data)" >/dev/null
     if [[ "${CLOUDINIT_NETWORK_MODE:-dhcp}" == "static" && -n "${CLOUDINIT_IP:-}" && -n "${CLOUDINIT_GW:-}" ]]; then
-      local net_data
-      net_data=$(cat <<EOF
-version: 2
-ethernets:
-  eth0:
-    dhcp4: false
-    addresses: [${CLOUDINIT_IP}]
-    gateway4: ${CLOUDINIT_GW}
-    nameservers:
-      addresses: [${dns// /, }]
-EOF
-)
-      incus config set "$vm_name" cloud-init.network-config "$net_data" >/dev/null
+      incus config set "$vm_name" cloud-init.network-config "$(_vm_cloud_init_network_config)" >/dev/null
     fi
-    incus config device add "$vm_name" cloudinit disk source=cloud-init:config >/dev/null 2>&1 || true
+    msg_ok "Applied cloud-init configuration"
   fi
 
+  set_description
+
   if [[ "${START_VM:-yes}" == "no" ]]; then
-    incus stop "$vm_name" --force >/dev/null 2>&1 || true
+    msg_ok "VM ${vm_name} created but not started"
+    _INCUS_VM_CREATED=0 # a deliberately stopped VM is not a failed one
+    return 0
   fi
-  msg_ok "Created VM ${vm_name}"
+
+  msg_info "Starting VM ${vm_name}"
+  if ! incus start "$vm_name" >/dev/null 2>&1; then
+    fatal "Failed to start VM ${vm_name}"
+  fi
+  msg_ok "Started VM ${vm_name}"
+
+  vm_wait_for_agent "$vm_name" "${VM_AGENT_TIMEOUT:-180}" || true
+
+  local ip
+  if ip=$(vm_get_ip "$vm_name"); then
+    VM_IP="$ip"
+    msg_ok "VM ${vm_name} is reachable at ${BL}${ip}${CL}"
+  else
+    msg_warn "No IPv4 address yet - check 'incus list ${vm_name}'"
+  fi
+
+  _INCUS_VM_CREATED=0 # completed successfully, nothing to roll back
+  return 0
 }
+
+# ==============================================================================
+# SECTION 4: TELEMETRY
+# ==============================================================================
+# api.func is the shared reporter; the host is the single reporting side.
+
+post_to_api_vm() {
+  declare -f post_to_api >/dev/null 2>&1 || return 0
+  export TELEMETRY_PLATFORM="incus"
+  post_to_api "$@" 2>/dev/null || true
+}
+
+post_update_to_api() {
+  declare -f post_update_to_api_real >/dev/null 2>&1 && post_update_to_api_real "$@"
+  return 0
+}
+
+# Kept for parity with the Proxmox entry point; Incus has no numeric IDs and no
+# separate storage layout step, so these are intentionally empty.
+vm_define_disk_references() { :; }
+vm_apply_storage_layout() { :; }
