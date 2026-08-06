@@ -358,6 +358,54 @@ vm_prompt_gpu() {
   echo -e "${GPU}${BOLD}${DGN}GPU Passthrough: ${BGN}${GPU_PASSTHROUGH}${GPU_PCI:+ (${GPU_PCI})}${CL}"
 }
 
+# Incus has a first-class usb device keyed on vendor/product id. Matching on a
+# device path instead breaks the moment the guest or host renumbers it, which
+# is exactly what happens across a replug or a reboot.
+vm_prompt_usb() {
+  USB_DEVICES=""
+  local listing
+  listing=$(incus info --resources 2>/dev/null |
+    awk '/^ *USB devices:/,/^ *[A-Z][a-z]+ devices:/' |
+    awk '/Vendor ID|Product ID|Vendor:|Product:/ {print}' | head -40)
+  if prompt_confirm "Pass through USB devices?" "n" 60; then
+    USB_DEVICES=$(prompt_input "vendorid:productid pairs, comma separated (e.g. 10c4:ea60)" "" 60)
+  fi
+  echo -e "${DEFAULT}${BOLD}${DGN}USB Passthrough: ${BGN}${USB_DEVICES:-none}${CL}"
+}
+
+# Raw PCI passthrough. Only meaningful for VMs, and only with the device bound
+# to vfio-pci on the host -- otherwise the host is still using it.
+vm_prompt_pci() {
+  PCI_DEVICES=""
+  if prompt_confirm "Pass through raw PCI devices (NIC, HBA, ...)?" "n" 60; then
+    PCI_DEVICES=$(prompt_input "PCI addresses, comma separated (e.g. 0000:03:00.0)" "" 60)
+  fi
+  echo -e "${DEFAULT}${BOLD}${DGN}PCI Passthrough: ${BGN}${PCI_DEVICES:-none}${CL}"
+}
+
+# ── Shared storage ────────────────────────────────────────────────────────────
+
+# A host directory handed straight to the guest. For a VM this rides on 9p or
+# virtiofs and therefore needs the agent; for a container it is a plain bind
+# mount.
+vm_prompt_bind_mounts() {
+  BIND_MOUNTS=""
+  if prompt_confirm "Share a host directory with the VM?" "n" 60; then
+    BIND_MOUNTS=$(prompt_input "host:guest pairs, comma separated (e.g. /srv/media:/media)" "" 60)
+  fi
+  echo -e "${DISKSIZE}${BOLD}${DGN}Shared folders: ${BGN}${BIND_MOUNTS:-none}${CL}"
+}
+
+# ── Port forwarding ───────────────────────────────────────────────────────────
+
+vm_prompt_proxy() {
+  PROXY_PORTS=""
+  if prompt_confirm "Forward host ports into the VM?" "n" 60; then
+    PROXY_PORTS=$(prompt_input "hostport:guestport pairs, comma separated (e.g. 8080:80)" "" 60)
+  fi
+  echo -e "${NETWORK}${BOLD}${DGN}Port forwards: ${BGN}${PROXY_PORTS:-none}${CL}"
+}
+
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 vm_prompt_autostart() {
@@ -444,6 +492,56 @@ vm_prompt_instance_type() {
     INSTANCE_TYPE=$(prompt_input "Instance type (e.g. t2.micro, c2-m4)" "c${CORE_COUNT:-2}-m$(((${RAM_SIZE:-2048} + 1023) / 1024))" 60)
   fi
   echo -e "${CPUCORE}${BOLD}${DGN}Instance Type: ${BGN}${INSTANCE_TYPE:-custom}${CL}"
+}
+
+# ── Resource limits beyond core count ─────────────────────────────────────────
+
+vm_prompt_cpu_limits() {
+  CPU_ALLOWANCE=""
+  CPU_PRIORITY=""
+  if prompt_confirm "Set a CPU quota on top of the core count?" "n" 60; then
+    CPU_ALLOWANCE=$(prompt_input "CPU allowance (e.g. 50% or 25ms/100ms)" "50%" 60)
+    CPU_PRIORITY=$(prompt_input "CPU priority under contention (0-10)" "5" 60)
+  fi
+  echo -e "${CPUCORE}${BOLD}${DGN}CPU Limits: ${BGN}${CPU_ALLOWANCE:-none}${CL}"
+}
+
+vm_prompt_memory_swap() {
+  MEMORY_SWAP=""
+  if prompt_confirm "Allow this instance to swap?" "y" 60; then
+    MEMORY_SWAP="true"
+  else
+    MEMORY_SWAP="false"
+  fi
+  echo -e "${RAMSIZE}${BOLD}${DGN}Swap: ${BGN}${MEMORY_SWAP}${CL}"
+}
+
+vm_prompt_kernel_modules() {
+  KERNEL_MODULES=""
+  if prompt_confirm "Load specific kernel modules for this instance?" "n" 60; then
+    KERNEL_MODULES=$(prompt_input "Module names, comma separated (e.g. br_netfilter,overlay)" "" 60)
+  fi
+  echo -e "${DEFAULT}${BOLD}${DGN}Kernel Modules: ${BGN}${KERNEL_MODULES:-none}${CL}"
+}
+
+# Live migration and suspend both require transferable memory state.
+vm_prompt_stateful() {
+  if prompt_confirm "Enable stateful migration and suspend?" "n" 60; then
+    STATEFUL="yes"
+  else
+    STATEFUL="no"
+  fi
+  echo -e "${NETWORK}${BOLD}${DGN}Stateful: ${BGN}${STATEFUL}${CL}"
+}
+
+# Deliberately a free-form field rather than twenty more prompts: raw.qemu,
+# security.idmap.* and friends belong to people who already know what they do.
+vm_prompt_extra_config() {
+  EXTRA_CONFIG=""
+  if prompt_confirm "Set additional raw config keys?" "n" 60; then
+    EXTRA_CONFIG=$(prompt_input "key=value pairs, comma separated" "" 60)
+  fi
+  echo -e "${ADVANCED}${BOLD}${DGN}Extra config: ${BGN}${EXTRA_CONFIG:-none}${CL}"
 }
 
 # ── Protection ────────────────────────────────────────────────────────────────
@@ -698,6 +796,29 @@ incus_vm_create() {
   [[ "${DELETE_PROTECTION:-no}" == "yes" ]] &&
     args+=(--config "security.protection.delete=true")
 
+  # Live migration and suspend-to-disk both need the memory state to be
+  # transferable; without this Incus refuses either.
+  [[ "${STATEFUL:-no}" == "yes" ]] && args+=(--config "migration.stateful=true")
+
+  # A CPU count caps how many cores are visible; an allowance caps how much of
+  # them may actually be used.
+  [[ -n "${CPU_ALLOWANCE:-}" ]] && args+=(--config "limits.cpu.allowance=${CPU_ALLOWANCE}")
+  [[ -n "${CPU_PRIORITY:-}" ]] && args+=(--config "limits.cpu.priority=${CPU_PRIORITY}")
+  [[ -n "${MEMORY_SWAP:-}" ]] && args+=(--config "limits.memory.swap=${MEMORY_SWAP}")
+  [[ -n "${KERNEL_MODULES:-}" ]] && args+=(--config "linux.kernel_modules=${KERNEL_MODULES}")
+  [[ -n "${AUTOSTART_DELAY:-}" ]] && args+=(--config "boot.autostart.delay=${AUTOSTART_DELAY}")
+  [[ -n "${SNAPSHOT_PATTERN:-}" ]] && args+=(--config "snapshots.pattern=${SNAPSHOT_PATTERN}")
+
+  # Escape hatch: anything the prompts do not cover, as key=value pairs.
+  if [[ -n "${EXTRA_CONFIG:-}" ]]; then
+    local _kv
+    IFS=',' read -ra _extra <<<"$EXTRA_CONFIG"
+    for _kv in "${_extra[@]}"; do
+      _kv="${_kv# }"
+      [[ -n "$_kv" ]] && args+=(--config "$_kv")
+    done
+  fi
+
   msg_info "Creating VM ${vm_name} (${CORE_COUNT:-2} vCPU, ${RAM_SIZE:-2048} MiB, ${disk_gib} GiB)"
   if ! incus init "$image" "$vm_name" "${args[@]}" >/dev/null; then
     fatal "Failed to create VM ${vm_name}"
@@ -743,11 +864,82 @@ incus_vm_create() {
   fi
 
   if [[ -n "${EXTRA_DISK_SIZE:-}" ]]; then
-    if incus config device add "$vm_name" data disk       pool="${STORAGE:-default}" size="${EXTRA_DISK_SIZE}GiB" >/dev/null 2>&1; then
+    if incus config device add "$vm_name" data disk \
+      pool="${STORAGE:-default}" size="${EXTRA_DISK_SIZE}GiB" >/dev/null 2>&1; then
       msg_ok "Attached a ${EXTRA_DISK_SIZE} GiB second disk (unformatted)"
     else
       msg_warn "Could not attach the second disk"
     fi
+  fi
+
+  # USB by vendor/product id, so a replug or renumbering does not break it.
+  if [[ -n "${USB_DEVICES:-}" ]]; then
+    local _u _i=0
+    IFS=',' read -ra _usbs <<<"$USB_DEVICES"
+    for _u in "${_usbs[@]}"; do
+      _u="${_u// /}"
+      [[ -z "$_u" ]] && continue
+      local _vid="${_u%%:*}" _pid="${_u##*:}"
+      if incus config device add "$vm_name" "usb${_i}" usb \
+        vendorid="$_vid" productid="$_pid" >/dev/null 2>&1; then
+        msg_ok "Passed through USB ${_u}"
+      else
+        msg_warn "Could not pass through USB ${_u}"
+      fi
+      _i=$((_i + 1))
+    done
+  fi
+
+  # Raw PCI. Requires the device to be bound to vfio-pci on the host.
+  if [[ -n "${PCI_DEVICES:-}" ]]; then
+    local _p _i=0
+    IFS=',' read -ra _pcis <<<"$PCI_DEVICES"
+    for _p in "${_pcis[@]}"; do
+      _p="${_p// /}"
+      [[ -z "$_p" ]] && continue
+      if incus config device add "$vm_name" "pci${_i}" pci address="$_p" >/dev/null 2>&1; then
+        msg_ok "Passed through PCI ${_p}"
+      else
+        msg_warn "Could not pass through PCI ${_p} - is it bound to vfio-pci?"
+      fi
+      _i=$((_i + 1))
+    done
+  fi
+
+  # Shared host directories. In a VM these ride on virtiofs/9p and only appear
+  # once the agent is running.
+  if [[ -n "${BIND_MOUNTS:-}" ]]; then
+    local _m _i=0
+    IFS=',' read -ra _mnts <<<"$BIND_MOUNTS"
+    for _m in "${_mnts[@]}"; do
+      _m="${_m// /}"
+      [[ -z "$_m" ]] && continue
+      local _src="${_m%%:*}" _dst="${_m##*:}"
+      if incus config device add "$vm_name" "share${_i}" disk \
+        source="$_src" path="$_dst" >/dev/null 2>&1; then
+        msg_ok "Shared ${_src} at ${_dst}"
+      else
+        msg_warn "Could not share ${_src}"
+      fi
+      _i=$((_i + 1))
+    done
+  fi
+
+  if [[ -n "${PROXY_PORTS:-}" ]]; then
+    local _f _i=0
+    IFS=',' read -ra _fwds <<<"$PROXY_PORTS"
+    for _f in "${_fwds[@]}"; do
+      _f="${_f// /}"
+      [[ -z "$_f" ]] && continue
+      local _hp="${_f%%:*}" _gp="${_f##*:}"
+      if incus config device add "$vm_name" "proxy${_i}" proxy \
+        listen="tcp:0.0.0.0:${_hp}" connect="tcp:127.0.0.1:${_gp}" >/dev/null 2>&1; then
+        msg_ok "Forwarding host ${_hp} to guest ${_gp}"
+      else
+        msg_warn "Could not forward port ${_f}"
+      fi
+      _i=$((_i + 1))
+    done
   fi
 
   if [[ "${USE_CLOUD_INIT:-no}" == "yes" ]]; then
