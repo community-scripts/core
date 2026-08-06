@@ -132,6 +132,10 @@ incus_icons() {
   ADVANCED="${TAB}🧩${TAB}${CL}"
   FUSE="${TAB}🗂️${TAB}${CL}"
   GPU="${TAB}🎮${TAB}${CL}"
+  CLOUD="${TAB}☁️${TAB}"
+  VTPM="${TAB}🔐${TAB}"
+  DISKBUS="${TAB}🔌${TAB}"
+  SNAPSHOT="${TAB}📸${TAB}"
   HOURGLASS="${TAB}⏳${TAB}"
 }
 

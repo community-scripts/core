@@ -288,6 +288,139 @@ vm_select_storage() {
   echo -e "${DISKSIZE}${BOLD}${DGN}Storage: ${BGN}${STORAGE}${CL}"
 }
 
+
+# ── Storage / disk ────────────────────────────────────────────────────────────
+
+# virtio-blk is the Incus default. virtio-scsi allows discard/TRIM passthrough,
+# nvme is fastest on modern guests but needs a driver the guest actually has.
+vm_prompt_disk_bus() {
+  DISK_BUS=$(prompt_select "Disk bus" "1" 60 "virtio-blk" "virtio-scsi" "nvme")
+  [[ -z "${DISK_BUS:-}" ]] && DISK_BUS="virtio-blk"
+  echo -e "${DISKBUS}${BOLD}${DGN}Disk Bus: ${BGN}${DISK_BUS}${CL}"
+}
+
+vm_prompt_disk_cache() {
+  DISK_CACHE=$(prompt_select "Disk cache mode" "1" 60 "none" "writeback" "unsafe")
+  [[ -z "${DISK_CACHE:-}" ]] && DISK_CACHE="none"
+  echo -e "${DISKSIZE}${BOLD}${DGN}Disk Cache: ${BGN}${DISK_CACHE}${CL}"
+}
+
+# A second disk is attached as a raw block device: without the agent running,
+# Incus cannot mount it inside the guest for you.
+vm_prompt_extra_disk() {
+  EXTRA_DISK_SIZE=""
+  if prompt_confirm "Attach a second disk?" "n" 60; then
+    local size
+    size=$(prompt_input "Extra disk size in GiB (e.g. 50)" "50" 60)
+    size="${size// /}"
+    [[ "$size" =~ ^[0-9]+G?$ ]] && EXTRA_DISK_SIZE="${size%G}"
+  fi
+  echo -e "${DISKSIZE}${BOLD}${DGN}Extra Disk: ${BGN}${EXTRA_DISK_SIZE:+${EXTRA_DISK_SIZE} GiB}${EXTRA_DISK_SIZE:-none}${CL}"
+}
+
+# ── Firmware ──────────────────────────────────────────────────────────────────
+
+# CSM swaps UEFI for legacy BIOS. Needed by images with no EFI bootloader, and
+# mutually exclusive with Secure Boot.
+vm_prompt_csm() {
+  if prompt_confirm "Use legacy BIOS instead of UEFI (CSM)?" "n" 60; then
+    CSM="yes"
+    SECUREBOOT="no"
+  else
+    CSM="no"
+  fi
+  echo -e "${OS}${BOLD}${DGN}Firmware: ${BGN}$([[ "$CSM" == "yes" ]] && echo "Legacy BIOS (CSM)" || echo "UEFI")${CL}"
+}
+
+# Windows 11 and anything doing measured boot needs a TPM 2.0 device.
+vm_prompt_vtpm() {
+  if prompt_confirm "Add a virtual TPM (needed for Windows 11)?" "n" 60; then
+    VTPM="yes"
+  else
+    VTPM="no"
+  fi
+  echo -e "${VTPM_ICON:-${DEFAULT}}${BOLD}${DGN}Virtual TPM: ${BGN}${VTPM}${CL}"
+}
+
+# ── Hardware passthrough ──────────────────────────────────────────────────────
+
+vm_prompt_gpu() {
+  GPU_PASSTHROUGH="no"
+  GPU_PCI=""
+  if prompt_confirm "Pass through a GPU?" "n" 60; then
+    GPU_PASSTHROUGH="yes"
+    local gpus
+    gpus=$(incus info --resources 2>/dev/null | awk '/PCI address:/ {print $NF}' | head -8)
+    if [[ -n "$gpus" ]]; then
+      GPU_PCI=$(prompt_input "GPU PCI address (empty = first available)" "" 60)
+    fi
+  fi
+  echo -e "${GPU}${BOLD}${DGN}GPU Passthrough: ${BGN}${GPU_PASSTHROUGH}${GPU_PCI:+ (${GPU_PCI})}${CL}"
+}
+
+# ── Lifecycle ─────────────────────────────────────────────────────────────────
+
+vm_prompt_autostart() {
+  if prompt_confirm "Start this VM automatically when the host boots?" "n" 60; then
+    AUTOSTART="yes"
+    AUTOSTART_ORDER=$(prompt_input "Boot priority (higher starts earlier)" "0" 60)
+    [[ "$AUTOSTART_ORDER" =~ ^[0-9]+$ ]] || AUTOSTART_ORDER="0"
+  else
+    AUTOSTART="no"
+  fi
+  echo -e "${GATEWAY}${BOLD}${DGN}Autostart: ${BGN}${AUTOSTART}${CL}"
+}
+
+vm_prompt_snapshots() {
+  SNAPSHOT_SCHEDULE=""
+  if prompt_confirm "Enable automatic snapshots?" "n" 60; then
+    SNAPSHOT_SCHEDULE=$(prompt_select "Snapshot schedule" "2" 60 "@hourly" "@daily" "@weekly")
+    SNAPSHOT_EXPIRY=$(prompt_input "Keep snapshots for (e.g. 7d, 4w)" "7d" 60)
+  fi
+  echo -e "${SNAPSHOT}${BOLD}${DGN}Snapshots: ${BGN}${SNAPSHOT_SCHEDULE:-disabled}${CL}"
+}
+
+# ── Placement ─────────────────────────────────────────────────────────────────
+
+vm_prompt_profiles() {
+  PROFILES=""
+  local available
+  available=$(incus_get_profiles 2>/dev/null | tr '\n' ' ')
+  if [[ -n "$available" ]] && prompt_confirm "Apply extra profiles? (available: ${available})" "n" 60; then
+    PROFILES=$(prompt_input "Profile names, comma separated" "" 60)
+  fi
+  echo -e "${ADVANCED}${BOLD}${DGN}Profiles: ${BGN}${PROFILES:-default}${CL}"
+}
+
+# Only meaningful on a cluster; skipped silently on a standalone host.
+vm_prompt_cluster_target() {
+  CLUSTER_TARGET=""
+  local members
+  members=$(incus cluster list --format csv 2>/dev/null | cut -d, -f1 | sed '/^\s*$/d')
+  if [[ -n "$members" ]]; then
+    CLUSTER_TARGET=$(prompt_input "Cluster member (empty = automatic)" "" 60)
+    echo -e "${NETWORK}${BOLD}${DGN}Cluster Target: ${BGN}${CLUSTER_TARGET:-auto}${CL}"
+  fi
+}
+
+vm_prompt_description() {
+  VM_DESCRIPTION=$(prompt_input "Description" "${APP:-VM} - community-scripts.org" 60)
+  echo -e "${DEFAULT}${BOLD}${DGN}Description: ${BGN}${VM_DESCRIPTION}${CL}"
+}
+
+# ── Networking beyond the basics ──────────────────────────────────────────────
+
+# A managed Incus network can hand out a fixed lease; this is not the same as
+# configuring a static address inside the guest, which cloud-init does.
+vm_prompt_static_lease() {
+  NIC_IPV4=""
+  if prompt_confirm "Reserve a fixed IPv4 on the managed network?" "n" 60; then
+    NIC_IPV4=$(prompt_input "IPv4 address (must be inside the network subnet)" "" 60)
+  fi
+  echo -e "${NETWORK}${BOLD}${DGN}Fixed lease: ${BGN}${NIC_IPV4:-none}${CL}"
+}
+
+
 # ==============================================================================
 # SECTION 2: VALIDATION
 # ==============================================================================
@@ -344,7 +477,7 @@ cleanup() { cleanup_vmid; }
 set_description() {
   [[ -z "${_INCUS_VM_NAME:-}" ]] && return 0
   incus config set "$_INCUS_VM_NAME" \
-    user.description "${APP:-VM} - community-scripts.org" >/dev/null 2>&1 || true
+    user.description "${VM_DESCRIPTION:-${APP:-VM} - community-scripts.org}" >/dev/null 2>&1 || true
 }
 
 # Wait for the incus-agent inside the guest. Until it answers, incus exec fails
@@ -417,10 +550,45 @@ incus_vm_create() {
   local args=(--vm)
   args+=(--config "limits.cpu=${CORE_COUNT:-2}")
   args+=(--config "limits.memory=${RAM_SIZE:-2048}MiB")
-  args+=(--config "security.secureboot=$([[ "${SECUREBOOT:-no}" == "yes" ]] && echo true || echo false)")
+
+  # CSM replaces UEFI with legacy BIOS and cannot coexist with Secure Boot.
+  if [[ "${CSM:-no}" == "yes" ]]; then
+    args+=(--config "security.csm=true")
+    args+=(--config "security.secureboot=false")
+  else
+    args+=(--config "security.secureboot=$([[ "${SECUREBOOT:-no}" == "yes" ]] && echo true || echo false)")
+  fi
+
+  [[ "${AUTOSTART:-no}" == "yes" ]] && {
+    args+=(--config "boot.autostart=true")
+    args+=(--config "boot.autostart.priority=${AUTOSTART_ORDER:-0}")
+  }
+  [[ -n "${SNAPSHOT_SCHEDULE:-}" ]] && {
+    args+=(--config "snapshots.schedule=${SNAPSHOT_SCHEDULE}")
+    args+=(--config "snapshots.expiry=${SNAPSHOT_EXPIRY:-7d}")
+  }
+
   args+=(--network "${BRG:-incusbr0}")
   args+=(--storage "${STORAGE:-default}")
-  args+=(--device "root,size=${disk_gib}GiB")
+
+  # Root disk: size plus the optional bus and cache overrides.
+  local root_dev="root,size=${disk_gib}GiB"
+  [[ -n "${DISK_BUS:-}" && "${DISK_BUS}" != "virtio-blk" ]] && root_dev+=",io.bus=${DISK_BUS}"
+  [[ -n "${DISK_CACHE:-}" && "${DISK_CACHE}" != "none" ]] && root_dev+=",io.cache=${DISK_CACHE}"
+  args+=(--device "$root_dev")
+
+  # Profiles are additive; naming any at all replaces the implicit default.
+  if [[ -n "${PROFILES:-}" ]]; then
+    args+=(--profile default)
+    local _p
+    IFS=',' read -ra _profs <<<"$PROFILES"
+    for _p in "${_profs[@]}"; do
+      _p="${_p// /}"
+      [[ -n "$_p" && "$_p" != "default" ]] && args+=(--profile "$_p")
+    done
+  fi
+
+  [[ -n "${CLUSTER_TARGET:-}" ]] && args+=(--target "$CLUSTER_TARGET")
 
   msg_info "Creating VM ${vm_name} (${CORE_COUNT:-2} vCPU, ${RAM_SIZE:-2048} MiB, ${disk_gib} GiB)"
   if ! incus init "$image" "$vm_name" "${args[@]}" >/dev/null; then
@@ -430,13 +598,43 @@ incus_vm_create() {
   _INCUS_VM_CREATED=1
   msg_ok "Created VM ${vm_name}"
 
-  # NIC tweaks before first boot so the guest sees its final identity.
-  [[ -n "${MAC:-}" ]] && incus config device set "$vm_name" eth0 hwaddr "$MAC" >/dev/null 2>&1 ||
-    { [[ -n "${MAC:-}" ]] && msg_warn "Could not set MAC address"; }
-  [[ -n "${VLAN:-}" ]] && incus config device set "$vm_name" eth0 vlan "$VLAN" >/dev/null 2>&1 ||
-    { [[ -n "${VLAN:-}" ]] && msg_warn "Could not set VLAN (not supported on this network type)"; }
-  [[ -n "${MTU:-}" ]] && incus config device set "$vm_name" eth0 mtu "$MTU" >/dev/null 2>&1 ||
-    { [[ -n "${MTU:-}" ]] && msg_warn "Could not set MTU"; }
+  # Everything below runs before first boot so the guest sees its final shape.
+  _vm_set_nic() {
+    local key="$1" value="$2" label="$3"
+    [[ -z "$value" ]] && return 0
+    incus config device set "$vm_name" eth0 "$key" "$value" >/dev/null 2>&1 ||
+      msg_warn "Could not set ${label} (not supported on this network type)"
+  }
+  _vm_set_nic hwaddr "${MAC:-}" "MAC address"
+  _vm_set_nic vlan "${VLAN:-}" "VLAN"
+  _vm_set_nic mtu "${MTU:-}" "MTU"
+  _vm_set_nic ipv4.address "${NIC_IPV4:-}" "fixed IPv4 lease"
+
+  if [[ "${VTPM:-no}" == "yes" ]]; then
+    if incus config device add "$vm_name" vtpm tpm >/dev/null 2>&1; then
+      msg_ok "Added virtual TPM"
+    else
+      msg_warn "Could not add a virtual TPM (needs swtpm on the host)"
+    fi
+  fi
+
+  if [[ "${GPU_PASSTHROUGH:-no}" == "yes" ]]; then
+    local gpu_args=(gpu)
+    [[ -n "${GPU_PCI:-}" ]] && gpu_args+=("pci=${GPU_PCI}")
+    if incus config device add "$vm_name" gpu0 "${gpu_args[@]}" >/dev/null 2>&1; then
+      msg_ok "Added GPU passthrough${GPU_PCI:+ (${GPU_PCI})}"
+    else
+      msg_warn "Could not add the GPU - check 'incus info --resources'"
+    fi
+  fi
+
+  if [[ -n "${EXTRA_DISK_SIZE:-}" ]]; then
+    if incus config device add "$vm_name" data disk       pool="${STORAGE:-default}" size="${EXTRA_DISK_SIZE}GiB" >/dev/null 2>&1; then
+      msg_ok "Attached a ${EXTRA_DISK_SIZE} GiB second disk (unformatted)"
+    else
+      msg_warn "Could not attach the second disk"
+    fi
+  fi
 
   if [[ "${USE_CLOUD_INIT:-no}" == "yes" ]]; then
     msg_info "Applying cloud-init configuration"
