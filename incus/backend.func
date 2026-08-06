@@ -287,6 +287,15 @@ incus_create_lxc_container() {
 
   [[ "${ENABLE_NESTING:-1}" == "1" ]] && launch_args+=("--config" "security.nesting=true")
 
+  # Settings the shared wizard already collects but that were dropped here.
+  # mknod maps onto the syscall interception Incus offers; protection maps onto
+  # the delete guard. keyctl has no Incus equivalent -- unprivileged containers
+  # get their own keyring session -- so it is deliberately not faked.
+  [[ "${ENABLE_MKNOD:-no}" == "yes" || "${ENABLE_MKNOD:-0}" == "1" ]] &&
+    launch_args+=("--config" "security.syscalls.intercept.mknod=true")
+  [[ "${PROTECTION:-no}" == "yes" || "${PROTECTION:-0}" == "1" ]] &&
+    launch_args+=("--config" "security.protection.delete=true")
+
   if [[ "${CT_TYPE:-1}" != "1" || "${ENABLE_FUSE:-no}" == "yes" || "${ENABLE_TUN:-no}" == "yes" ]]; then
     launch_args+=("--config" "security.privileged=true")
   fi
