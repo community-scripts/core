@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Copyright (c) 2021-2026 community-scripts ORG
+# License: MIT | https://raw.githubusercontent.com/community-scripts/core/main/LICENSE
+
+# ==============================================================================
+# VALIDATE.FUNC - VALUE CHECKS SHARED BY EVERY PLATFORM
+# ==============================================================================
+#
+# Whether an MTU is in range or a MAC looks like a MAC does not depend on
+# whether the host runs Proxmox VE or Incus. Only what the value is then
+# formatted into does — ",mtu=1500" on one side, `incus config device set` on
+# the other — so the checks live here and the formatting stays in the backends.
+#
+# Every function takes the raw value, returns 0 when it is acceptable, and
+# treats empty as acceptable: "leave blank for the default" is a valid answer
+# everywhere, and a caller that needs a value checks for empty itself.
+#
+# No dependencies, no output. Sourced by the container UI and by both VM paths.
+#
+# ==============================================================================
+
+[[ -n "${_VALIDATE_FUNC_LOADED:-}" ]] && return
+_VALIDATE_FUNC_LOADED=1
+
+# ------------------------------------------------------------------------------
+# validate_mac_address()
+#
+# - Validates MAC address format (XX:XX:XX:XX:XX:XX)
+# - Empty value is allowed (auto-generate)
+# - Returns 0 if valid, 1 if invalid
+# ------------------------------------------------------------------------------
+validate_mac_address() {
+  local mac="$1"
+  [[ -z "$mac" ]] && return 0
+  if [[ ! "$mac" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; then
+    return 1
+  fi
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# validate_vlan_tag()
+#
+# - Validates VLAN tag (1-4094)
+# - Empty value is allowed (no VLAN)
+# - Returns 0 if valid, 1 if invalid
+# ------------------------------------------------------------------------------
+validate_vlan_tag() {
+  local vlan="$1"
+  [[ -z "$vlan" ]] && return 0
+  if ! [[ "$vlan" =~ ^[0-9]+$ ]] || ((vlan < 1 || vlan > 4094)); then
+    return 1
+  fi
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# validate_mtu()
+#
+# - Validates MTU size (576-65520, common values: 1500, 9000)
+# - Empty value is allowed (default 1500)
+# - Returns 0 if valid, 1 if invalid
+#
+# The upper bound is the Proxmox one, not the Linux one. `qm set`/`pct set`
+# reject anything above 65520, so accepting up to 65535 here would let a prompt
+# take a value the API then refuses — a check that passes and an install that
+# fails is worse than a check that is slightly strict.
+# ------------------------------------------------------------------------------
+validate_mtu() {
+  local mtu="$1"
+  [[ -z "$mtu" ]] && return 0
+  if ! [[ "$mtu" =~ ^[0-9]+$ ]] || ((mtu < 576 || mtu > 65520)); then
+    return 1
+  fi
+  return 0
+}

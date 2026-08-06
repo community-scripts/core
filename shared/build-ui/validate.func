@@ -212,53 +212,8 @@ validate_hostname() {
   return 0
 }
 
-# ------------------------------------------------------------------------------
-# validate_mac_address()
-#
-# - Validates MAC address format (XX:XX:XX:XX:XX:XX)
-# - Empty value is allowed (auto-generated)
-# - Returns 0 if valid, 1 if invalid
-# ------------------------------------------------------------------------------
-validate_mac_address() {
-  local mac="$1"
-  [[ -z "$mac" ]] && return 0
-  if [[ ! "$mac" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; then
-    return 1
-  fi
-  return 0
-}
 
-# ------------------------------------------------------------------------------
-# validate_vlan_tag()
-#
-# - Validates VLAN tag (1-4094)
-# - Empty value is allowed (no VLAN)
-# - Returns 0 if valid, 1 if invalid
-# ------------------------------------------------------------------------------
-validate_vlan_tag() {
-  local vlan="$1"
-  [[ -z "$vlan" ]] && return 0
-  if ! [[ "$vlan" =~ ^[0-9]+$ ]] || ((vlan < 1 || vlan > 4094)); then
-    return 1
-  fi
-  return 0
-}
 
-# ------------------------------------------------------------------------------
-# validate_mtu()
-#
-# - Validates MTU size (576-65535, common values: 1500, 9000)
-# - Empty value is allowed (default 1500)
-# - Returns 0 if valid, 1 if invalid
-# ------------------------------------------------------------------------------
-validate_mtu() {
-  local mtu="$1"
-  [[ -z "$mtu" ]] && return 0
-  if ! [[ "$mtu" =~ ^[0-9]+$ ]] || ((mtu < 576 || mtu > 65535)); then
-    return 1
-  fi
-  return 0
-}
 
 # ------------------------------------------------------------------------------
 # validate_ipv6_address()

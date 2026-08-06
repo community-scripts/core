@@ -27,6 +27,21 @@ elif command -v incus &>/dev/null && incus info &>/dev/null 2>&1; then
 fi
 
 set -euo pipefail
+
+# Value checks shared with the Incus VM path; the formatting below stays
+# Proxmox-specific (",mtu=" / ",tag=" are pve-net syntax).
+if declare -f _cs_source_func >/dev/null 2>&1; then
+  _cs_source_func "shared/validate.func"
+elif [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -f "${COMMUNITY_SCRIPTS_CORE_DIR}/shared/validate.func" ]]; then
+  # shellcheck disable=SC1090
+  source "${COMMUNITY_SCRIPTS_CORE_DIR}/shared/validate.func"
+else
+  _vm_validate_base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
+  # shellcheck disable=SC1090
+  source <(curl -fsSL "${_vm_validate_base}/shared/validate.func" 2>/dev/null ||
+    wget -qO- "${_vm_validate_base}/shared/validate.func")
+fi
+
 SPINNER_PID=""
 SPINNER_ACTIVE=0
 SPINNER_MSG=""
@@ -953,7 +968,7 @@ vm_prompt_mac() {
         echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}$MAC${CL}"
         break
       fi
-      if [[ "$input_mac" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; then
+      if validate_mac_address "$input_mac"; then
         MAC="$input_mac"
         echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}$MAC${CL}"
         break
@@ -976,7 +991,7 @@ vm_prompt_vlan() {
         echo -e "${VLANTAG}${BOLD}${DGN}VLAN: ${BGN}Default${CL}"
         break
       fi
-      if [[ "$input_vlan" =~ ^[0-9]+$ ]] && [ "$input_vlan" -ge 1 ] && [ "$input_vlan" -le 4094 ]; then
+      if validate_vlan_tag "$input_vlan"; then
         VLAN=",tag=$input_vlan"
         echo -e "${VLANTAG}${BOLD}${DGN}VLAN: ${BGN}$input_vlan${CL}"
         break
@@ -999,7 +1014,7 @@ vm_prompt_mtu() {
         echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}Default${CL}"
         break
       fi
-      if [[ "$input_mtu" =~ ^[0-9]+$ ]] && [ "$input_mtu" -ge 576 ] && [ "$input_mtu" -le 65520 ]; then
+      if validate_mtu "$input_mtu"; then
         MTU=",mtu=$input_mtu"
         echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}$input_mtu${CL}"
         break

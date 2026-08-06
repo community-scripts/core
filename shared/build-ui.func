@@ -209,6 +209,8 @@ maxkeys_check() {
 #   menu.func      settings and diagnostics menus, install_script, start
 # ==============================================================================
 
+# Platform-independent value checks; the VM paths load the same file.
+_build_ui_source "shared/validate.func"
 _build_ui_source "shared/build-ui/validate.func"
 _build_ui_source "shared/build-ui/defaults.func"
 _build_ui_source "shared/build-ui/advanced.func"

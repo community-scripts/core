@@ -38,6 +38,9 @@ _incus_vm_source() {
 # shared/core.func first: it owns prompt_confirm/prompt_input/prompt_select,
 # which every prompt below needs and which incus/core.func does not provide.
 _incus_vm_source "shared/core.func"
+# Value checks that do not depend on the platform — the Proxmox VE VM path
+# loads the same file, so an MTU means the same thing on both.
+_incus_vm_source "shared/validate.func"
 _incus_vm_source "incus/core.func"
 load_incus_functions
 incus_install_compat_aliases
@@ -217,17 +220,35 @@ vm_prompt_bridge() {
 }
 
 vm_prompt_mac() {
-  MAC=$(prompt_input "Set MAC Address (empty=auto)" "${1:-}" 60)
+  local input
+  while true; do
+    input=$(prompt_input "Set MAC Address (empty=auto)" "${1:-}" 60)
+    validate_mac_address "$input" && break
+    msg_warn "Use XX:XX:XX:XX:XX:XX (e.g. AA:BB:CC:DD:EE:FF), or empty to auto-generate."
+  done
+  MAC="$input"
   echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}${MAC:-auto}${CL}"
 }
 
 vm_prompt_vlan() {
-  VLAN=$(prompt_input "Set VLAN Tag (empty=none)" "${VLAN:-}" 60)
+  local input
+  while true; do
+    input=$(prompt_input "Set VLAN Tag (empty=none)" "${VLAN:-}" 60)
+    validate_vlan_tag "$input" && break
+    msg_warn "VLAN must be a number between 1 and 4094, or empty for none."
+  done
+  VLAN="$input"
   echo -e "${VLANTAG}${BOLD}${DGN}VLAN: ${BGN}${VLAN:-Default}${CL}"
 }
 
 vm_prompt_mtu() {
-  MTU=$(prompt_input "Set Interface MTU (empty=default)" "${MTU:-}" 60)
+  local input
+  while true; do
+    input=$(prompt_input "Set Interface MTU (empty=default)" "${MTU:-}" 60)
+    validate_mtu "$input" && break
+    msg_warn "MTU must be a number between 576 and 65520, or empty for the default."
+  done
+  MTU="$input"
   echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU: ${BGN}${MTU:-Default}${CL}"
 }
 
