@@ -1,0 +1,336 @@
+#!/usr/bin/env bash
+# Copyright (c) 2021-2026 community-scripts ORG
+# License: MIT | https://raw.githubusercontent.com/community-scripts/core/main/LICENSE
+
+# ==============================================================================
+# API/ERROR LOG EXTRACTION
+# ==============================================================================
+# Part of the telemetry layer. Load shared/api.func -- it sources every part --
+# rather than this file directly; the split is for maintenance only and no
+# function name or behaviour changed with it.
+#
+# Finds the log that belongs to a failure, trims it to something sendable and
+# builds the error string. Everything here is about producing text, not about
+# sending it.
+# ==============================================================================
+
+[[ -n "${_API_ERRORLOG_LOADED:-}" ]] && return 0
+_API_ERRORLOG_LOADED=1
+
+# ------------------------------------------------------------------------------
+# json_escape()
+#
+# - Escapes a string for safe JSON embedding
+# - Strips ANSI escape sequences and non-printable control characters
+# - Uses jq when available (guaranteed correct), falls back to awk
+# ------------------------------------------------------------------------------
+json_escape() {
+  local input
+  input=$(printf '%s' "$1" |
+    sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' |
+    tr -d '\000-\010\013\014\016-\037\177\r')
+
+  if command -v jq &>/dev/null; then
+    printf '%s' "$input" | jq -Rs '.' | sed 's/^"//;s/"$//'
+    return
+  fi
+
+  # Fallback: character-by-character processing with awk
+  printf '%s' "$input" |
+    awk '
+        BEGIN { ORS="" }
+        {
+          if (NR > 1) printf "%s", "\\n"
+          for (i = 1; i <= length($0); i++) {
+            c = substr($0, i, 1)
+            if (c == "\\") printf "%s", "\\\\"
+            else if (c == "\"") printf "%s", "\\\""
+            else if (c == "\t") printf "%s", "\\t"
+            else printf "%s", c
+          }
+        }'
+}
+
+# ------------------------------------------------------------------------------
+# _tm_clean_log()
+#
+# - stdin filter: strips ANSI/CR, anonymizes IPs (GDPR), drops pure
+#   progress-noise lines (apt/dpkg download and unpack chatter)
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# _tm_clean_log()
+#
+# - stdin filter: strips ANSI/CR, anonymizes IPs (GDPR), drops pure
+#   progress-noise lines (apt/dpkg download and unpack chatter)
+# ------------------------------------------------------------------------------
+_tm_clean_log() {
+  sed 's/\r$//' |
+    sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' |
+    sed -E 's/([0-9]{1,3}\.)[0-9]{1,3}\.[0-9]{1,3}/\1x.x/g' |
+    grep -avE '^(Get:|Hit:|Ign:|Fetched |Reading package lists|Reading state information|Building dependency tree|Selecting previously|Preparing to unpack|Unpacking |Processing triggers for|\(Reading database|[0-9]+%[[:space:]]*\[)' |
+    grep -avE '^[[:space:]]*$' || true
+}
+
+# ------------------------------------------------------------------------------
+# _tm_pick_logfile()
+#
+# - Returns the most specific available log file (combined → INSTALL_LOG →
+#   BUILD_LOG → SILENT_LOGFILE). Never downgrades a present log.
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# _tm_pick_logfile()
+#
+# - Returns the most specific available log file (combined → INSTALL_LOG →
+#   BUILD_LOG → SILENT_LOGFILE). Never downgrades a present log.
+# ------------------------------------------------------------------------------
+_tm_pick_logfile() {
+  local candidate
+  for candidate in \
+    "${combined_log:-}" \
+    "/tmp/install-${SESSION_ID:-}-combined.log" \
+    "/tmp/${NSAPP:-lxc}-${CTID:-}-${SESSION_ID:-}.log" \
+    "${INSTALL_LOG:-}" \
+    "${BUILD_LOG:-}" \
+    "${SILENT_LOGFILE:-}"; do
+    if [[ -n "$candidate" && -s "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# get_error_log()
+#
+# - Returns the last N (default 50) RELEVANT lines of the active log
+# - Fallback error source when no .errinfo capture exists
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# get_error_log()
+#
+# - Returns the last N (default 50) RELEVANT lines of the active log
+# - Fallback error source when no .errinfo capture exists
+# ------------------------------------------------------------------------------
+get_error_log() {
+  local max_lines="${1:-50}"
+  local logfile
+
+  if declare -f ensure_log_on_host >/dev/null 2>&1; then
+    ensure_log_on_host 2>/dev/null || true
+  fi
+
+  logfile=$(_tm_pick_logfile)
+  [[ -z "$logfile" || ! -s "$logfile" ]] && return 0
+
+  _tm_clean_log <"$logfile" | tail -n "$max_lines"
+}
+
+# ------------------------------------------------------------------------------
+# get_error_text()  (legacy compatibility)
+#
+# - Returns last 20 relevant lines of the active log
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# get_error_text()  (legacy compatibility)
+#
+# - Returns last 20 relevant lines of the active log
+# ------------------------------------------------------------------------------
+get_error_text() {
+  get_error_log 20
+}
+
+# ------------------------------------------------------------------------------
+# get_full_log()  (legacy compatibility - dev/debug use only)
+#
+# - Returns the full log, ANSI-stripped and IP-anonymized, capped at max_bytes
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# get_full_log()  (legacy compatibility - dev/debug use only)
+#
+# - Returns the full log, ANSI-stripped and IP-anonymized, capped at max_bytes
+# ------------------------------------------------------------------------------
+get_full_log() {
+  local max_bytes="${1:-122880}"
+  local logfile
+  if declare -f ensure_log_on_host >/dev/null 2>&1; then
+    ensure_log_on_host 2>/dev/null || true
+  fi
+  logfile=$(_tm_pick_logfile)
+  [[ -z "$logfile" || ! -s "$logfile" ]] && return 0
+  sed 's/\r$//' "$logfile" 2>/dev/null |
+    sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' |
+    sed -E 's/([0-9]{1,3}\.)[0-9]{1,3}\.[0-9]{1,3}/\1x.x/g' |
+    head -c "$max_bytes"
+}
+
+# ==============================================================================
+# SECTION 3: STRUCTURED ERROR CAPTURE (.errinfo protocol)
+# ==============================================================================
+#
+# When a command run via silent() fails, silent() writes "<logfile>.errinfo":
+#
+#   EXIT_CODE=<n>
+#   LINE=<n>
+#   COMMAND=<the exact command, single line>
+#   --- OUTPUT ---
+#   <the failing command's OWN output (last 60 lines)>
+#
+# error_handler() writes the same file for non-silent failures (best effort:
+# tail of the active log). The HOST reads this file (pulling it from the
+# container if needed) and builds the telemetry error field from it.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# _tm_find_errinfo()
+#
+# - Locates the newest .errinfo file for this session
+# - Honors TELEMETRY_ERRINFO override (set by the host after pulling the
+#   container's copy)
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# _tm_find_errinfo()
+#
+# - Locates the newest .errinfo file for this session
+# - Honors TELEMETRY_ERRINFO override (set by the host after pulling the
+#   container's copy)
+# ------------------------------------------------------------------------------
+_tm_find_errinfo() {
+  local candidate
+  for candidate in \
+    "${TELEMETRY_ERRINFO:-}" \
+    "/tmp/.errinfo-${SESSION_ID:-none}" \
+    "${INSTALL_LOG:-/nonexistent}.errinfo" \
+    "${BUILD_LOG:-/nonexistent}.errinfo"; do
+    if [[ -n "$candidate" && -s "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ------------------------------------------------------------------------------
+# write_errinfo()
+#
+# - Writes a structured .errinfo file next to the given logfile
+# - Arguments:
+#   * $1: target file path
+#   * $2: exit_code
+#   * $3: line number
+#   * $4: command (flattened to one line, truncated)
+#   * stdin: output segment of the failing command
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# write_errinfo()
+#
+# - Writes a structured .errinfo file next to the given logfile
+# - Arguments:
+#   * $1: target file path
+#   * $2: exit_code
+#   * $3: line number
+#   * $4: command (flattened to one line, truncated)
+#   * stdin: output segment of the failing command
+# ------------------------------------------------------------------------------
+write_errinfo() {
+  local target="$1" exit_code="$2" line="$3" command="$4"
+  command=$(printf '%s' "$command" | tr '\n' ' ' | head -c 300)
+  {
+    echo "EXIT_CODE=${exit_code}"
+    echo "LINE=${line}"
+    echo "COMMAND=${command}"
+    echo "--- OUTPUT ---"
+    _tm_clean_log | tail -n "${TELEMETRY_ERROR_MAX_LINES}" | head -c "${TELEMETRY_ERROR_MAX_BYTES}"
+  } >"$target" 2>/dev/null || true
+}
+
+# ------------------------------------------------------------------------------
+# build_error_string()
+#
+# - Builds the final structured error string for telemetry:
+#   "exit_code=N | <explanation> | at line L: <cmd>\n---\n<focused output>"
+# - Sources, in priority order:
+#   1. .errinfo file (exact output of the failing command)
+#   2. FAILED_COMMAND/FAILED_LINE globals + filtered log tail
+#   3. Explanation only
+# - Arguments:
+#   * $1: exit_code
+#   * $2: log_text (optional override for the output section)
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# build_error_string()
+#
+# - Builds the final structured error string for telemetry:
+#   "exit_code=N | <explanation> | at line L: <cmd>\n---\n<focused output>"
+# - Sources, in priority order:
+#   1. .errinfo file (exact output of the failing command)
+#   2. FAILED_COMMAND/FAILED_LINE globals + filtered log tail
+#   3. Explanation only
+# - Arguments:
+#   * $1: exit_code
+#   * $2: log_text (optional override for the output section)
+# ------------------------------------------------------------------------------
+build_error_string() {
+  local exit_code="${1:-1}"
+  local log_text="${2:-}"
+  local explanation location="" cmd="" line="" errinfo=""
+
+  # Prefer the structured capture from the failure moment
+  if errinfo=$(_tm_find_errinfo); then
+    local captured_code
+    captured_code=$(sed -n 's/^EXIT_CODE=//p' "$errinfo" | head -1)
+    line=$(sed -n 's/^LINE=//p' "$errinfo" | head -1)
+    cmd=$(sed -n 's/^COMMAND=//p' "$errinfo" | head -1)
+    # Only trust the capture when it matches the reported failure (or the
+    # reported code is the generic 1 that bash propagates upward)
+    if [[ -n "$captured_code" && ("$captured_code" == "$exit_code" || "$exit_code" == "1" || "$exit_code" == "255") ]]; then
+      exit_code="$captured_code"
+      if [[ -z "$log_text" ]]; then
+        log_text=$(awk 'found{print} /^--- OUTPUT ---$/{found=1}' "$errinfo")
+      fi
+    else
+      cmd="" line=""
+    fi
+  fi
+
+  # Fall back to globals exported by silent()/error_handler
+  [[ -z "$cmd" && -n "${FAILED_COMMAND:-}" ]] && cmd="${FAILED_COMMAND}"
+  [[ -z "$line" && -n "${FAILED_LINE:-}" ]] && line="${FAILED_LINE}"
+
+  explanation=$(explain_exit_code "$exit_code")
+
+  if [[ -n "$cmd" ]]; then
+    if [[ -n "$line" ]]; then
+      location=$(printf ' | at line %s: %s' "$line" "$cmd")
+    else
+      location=$(printf ' | command: %s' "$cmd")
+    fi
+  fi
+
+  # Last-resort output: filtered tail of the active log
+  if [[ -z "$log_text" ]]; then
+    log_text=$(get_error_log 40) || true
+  fi
+
+  if [[ -n "$log_text" ]]; then
+    printf 'exit_code=%s | %s%s\n---\n%s' "$exit_code" "$explanation" "$location" "$log_text"
+  else
+    printf 'exit_code=%s | %s%s' "$exit_code" "$explanation" "$location"
+  fi
+}
+
+# ==============================================================================
+# SECTION 4: SYSTEM INFO COLLECTION (collected once, sent with EVERY payload)
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# detect_gpu() - GPU vendor, model, passthrough type
+# ------------------------------------------------------------------------------

@@ -1,0 +1,578 @@
+#!/usr/bin/env bash
+# Copyright (c) 2021-2026 community-scripts ORG
+# License: MIT | https://raw.githubusercontent.com/community-scripts/core/main/LICENSE
+
+# ==============================================================================
+# API/TELEMETRY TRANSPORT
+# ==============================================================================
+# Part of the telemetry layer. Load shared/api.func -- it sources every part --
+# rather than this file directly; the split is for maintenance only and no
+# function name or behaviour changed with it.
+#
+# Building the payload and sending it. Every send is best-effort: telemetry
+# must never be the reason an install fails, which is also why a bug in here
+# stays quiet -- treat changes with more care than the || true suggests.
+# ==============================================================================
+
+[[ -n "${_API_TELEMETRY_LOADED:-}" ]] && return 0
+_API_TELEMETRY_LOADED=1
+
+# ------------------------------------------------------------------------------
+# _tm_enabled()
+#
+# - Central gate: curl present, DIAGNOSTICS=yes, RANDOM_UUID set
+# ------------------------------------------------------------------------------
+_tm_enabled() {
+  command -v curl &>/dev/null || return 1
+  [[ "${DIAGNOSTICS:-no}" == "no" ]] && return 1
+  [[ -z "${RANDOM_UUID:-}" ]] && return 1
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# _tm_payload()
+#
+# - Builds the COMPLETE JSON payload. Every send (installing, progress ping,
+#   final status) carries the full metadata so no record is ever empty,
+#   regardless of which event the server persists.
+# - Arguments:
+#   * $1: status
+#   * $2: exit_code (optional, default 0)
+#   * $3: error text (optional, raw - will be JSON-escaped here)
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# _tm_payload()
+#
+# - Builds the COMPLETE JSON payload. Every send (installing, progress ping,
+#   final status) carries the full metadata so no record is ever empty,
+#   regardless of which event the server persists.
+# - Arguments:
+#   * $1: status
+#   * $2: exit_code (optional, default 0)
+#   * $3: error text (optional, raw - will be JSON-escaped here)
+# ------------------------------------------------------------------------------
+_tm_payload() {
+  local status="$1"
+  local exit_code="${2:-0}"
+  local error_raw="${3:-}"
+
+  telemetry_collect_sysinfo
+
+  # Numeric sanitation (server rejects out-of-range values)
+  [[ ! "$exit_code" =~ ^[0-9]+$ ]] && exit_code=1
+  ((exit_code > 255)) && exit_code=255
+
+  local disk_size="${DISK_SIZE:-0}"
+  disk_size="${disk_size%G}"
+  [[ ! "$disk_size" =~ ^[0-9]+$ ]] && disk_size=0
+
+  local duration=0
+  if [[ -n "${INSTALL_START_TIME:-}" ]]; then
+    duration=$(($(date +%s) - INSTALL_START_TIME))
+    ((duration < 0)) && duration=0
+    ((duration > 86400)) && duration=86400
+  fi
+
+  local error_json="" error_category=""
+  if [[ -n "$error_raw" ]]; then
+    error_json=$(json_escape "$error_raw")
+    error_category=$(categorize_error "$exit_code")
+  fi
+
+  local gpu_model cpu_model
+  gpu_model=$(json_escape "${GPU_MODEL:-}")
+  cpu_model=$(json_escape "${CPU_MODEL:-}")
+
+  cat <<EOF
+{
+    "random_id": "${RANDOM_UUID}",
+    "execution_id": "${EXECUTION_ID:-${RANDOM_UUID}}",
+    "type": "${TELEMETRY_TYPE:-lxc}",
+    "nsapp": "${NSAPP:-${app:-unknown}}",
+    "status": "${status}",
+    "ct_type": ${CT_TYPE:-1},
+    "disk_size": ${disk_size},
+    "core_count": ${CORE_COUNT:-0},
+    "ram_size": ${RAM_SIZE:-0},
+    "os_type": "${var_os:-}",
+    "os_version": "${var_version:-}",
+    "pve_version": "${TM_PVE_VERSION:-}",
+    "method": "${METHOD:-default}",
+    "exit_code": ${exit_code},
+    "error": "${error_json}",
+    "error_category": "${error_category}",
+    "install_duration": ${duration},
+    "cpu_vendor": "${CPU_VENDOR:-unknown}",
+    "cpu_model": "${cpu_model}",
+    "gpu_vendor": "${GPU_VENDOR:-unknown}",
+    "gpu_model": "${gpu_model}",
+    "gpu_passthrough": "${GPU_PASSTHROUGH:-unknown}",
+    "ram_speed": "${RAM_SPEED:-}",
+    "arch": "${TM_ARCH:-}",
+    "platform": "${TM_PLATFORM:-}",
+    "has_arm": ${HAS_ARM:-false},
+    "repo_source": "${REPO_SOURCE}",
+    "repo_slug": "${REPO_SLUG:-}"
+}
+EOF
+}
+
+# ------------------------------------------------------------------------------
+# _tm_send()
+#
+# - Single curl wrapper for all telemetry sends
+# - Arguments:
+#   * $1: JSON payload
+#   * $2: timeout seconds (default TELEMETRY_TIMEOUT)
+#   * $3: attempts (default 1)
+# - Returns 0 on HTTP 2xx, 1 otherwise. Never raises errors.
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# _tm_send()
+#
+# - Single curl wrapper for all telemetry sends
+# - Arguments:
+#   * $1: JSON payload
+#   * $2: timeout seconds (default TELEMETRY_TIMEOUT)
+#   * $3: attempts (default 1)
+# - Returns 0 on HTTP 2xx, 1 otherwise. Never raises errors.
+# ------------------------------------------------------------------------------
+_tm_send() {
+  local payload="$1"
+  local timeout="${2:-$TELEMETRY_TIMEOUT}"
+  local attempts="${3:-1}"
+  local http_code attempt
+
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    if [[ "${DEV_MODE:-}" == "true" ]]; then
+      echo "[DEBUG] telemetry POST (attempt ${attempt}/${attempts}): $payload" >&2
+    fi
+    http_code=$(curl -sS -w "%{http_code}" -m "$timeout" -X POST "${TELEMETRY_URL}" \
+      -H "Content-Type: application/json" \
+      -d "$payload" -o /dev/null 2>/dev/null) || http_code="000"
+    [[ "${DEV_MODE:-}" == "true" ]] && echo "[DEBUG] telemetry HTTP=${http_code}" >&2
+    if [[ "$http_code" =~ ^2[0-9]{2}$ ]]; then
+      return 0
+    fi
+    ((attempt < attempts)) && sleep 1
+  done
+  return 1
+}
+
+# ==============================================================================
+# SECTION 6: PUBLIC TELEMETRY API
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# post_to_api()
+#
+# - Sends the initial "installing" record for LXC container creation
+# - Full metadata payload; retried up to 3x
+# - Idempotent per execution (POST_TO_API_DONE)
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# post_to_api()
+#
+# - Sends the initial "installing" record for LXC container creation
+# - Full metadata payload; retried up to 3x
+# - Idempotent per execution (POST_TO_API_DONE)
+# ------------------------------------------------------------------------------
+post_to_api() {
+  [[ "${POST_TO_API_DONE:-}" == "true" ]] && return 0
+  _tm_enabled || return 0
+
+  TELEMETRY_TYPE="${TELEMETRY_TYPE:-lxc}"
+
+  local payload
+  payload=$(_tm_payload "installing")
+
+  if _tm_send "$payload" "$TELEMETRY_TIMEOUT" 3; then
+    POST_TO_API_DONE=true
+  else
+    POST_TO_API_DONE=false
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# post_to_api_vm()
+#
+# - Sends the initial "installing" record for VM creation
+# - Reads DIAGNOSTICS from /usr/local/community-scripts/diagnostics
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# post_to_api_vm()
+#
+# - Sends the initial "installing" record for VM creation
+# - Reads DIAGNOSTICS from /usr/local/community-scripts/diagnostics
+# ------------------------------------------------------------------------------
+post_to_api_vm() {
+  [[ "${POST_TO_API_DONE:-}" == "true" ]] && return 0
+
+  if [[ -f /usr/local/community-scripts/diagnostics ]]; then
+    DIAGNOSTICS=$(grep -i "^DIAGNOSTICS=" /usr/local/community-scripts/diagnostics 2>/dev/null | awk -F'=' '{print $2}') || true
+  fi
+
+  _tm_enabled || return 0
+
+  TELEMETRY_TYPE="vm"
+  CT_TYPE=2
+
+  local payload
+  payload=$(_tm_payload "installing")
+
+  if _tm_send "$payload" "$TELEMETRY_TIMEOUT" 3; then
+    POST_TO_API_DONE=true
+  else
+    POST_TO_API_DONE=false
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# post_progress_to_api()
+#
+# - Progress ping ("validation" / "configuring")
+# - Sends the FULL payload (not a minimal one) so that even if the server
+#   ever has to fall back to a progress row, it carries all metadata
+# - Fire-and-forget, single attempt
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# post_progress_to_api()
+#
+# - Progress ping ("validation" / "configuring")
+# - Sends the FULL payload (not a minimal one) so that even if the server
+#   ever has to fall back to a progress row, it carries all metadata
+# - Fire-and-forget, single attempt
+# ------------------------------------------------------------------------------
+post_progress_to_api() {
+  _tm_enabled || return 0
+
+  local progress_status="${1:-configuring}"
+  local payload
+  payload=$(_tm_payload "$progress_status")
+  _tm_send "$payload" "$TELEMETRY_TIMEOUT" 1 || true
+}
+
+# ------------------------------------------------------------------------------
+# post_update_to_api()
+#
+# - Reports the FINAL installation status. This is the single most important
+#   telemetry event - it must carry full metadata AND the focused error trace.
+# - Arguments:
+#   * $1: status ("done"/"success" | "failed" | "aborted")
+#   * $2: exit_code (numeric; "none" → 0)
+#   * $3: "force" to bypass the duplicate guard (new information available)
+# - Signal exit codes (129/130/143) are reported as "aborted", not "failed"
+# - Idempotent via POST_UPDATE_DONE
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# post_update_to_api()
+#
+# - Reports the FINAL installation status. This is the single most important
+#   telemetry event - it must carry full metadata AND the focused error trace.
+# - Arguments:
+#   * $1: status ("done"/"success" | "failed" | "aborted")
+#   * $2: exit_code (numeric; "none" → 0)
+#   * $3: "force" to bypass the duplicate guard (new information available)
+# - Signal exit codes (129/130/143) are reported as "aborted", not "failed"
+# - Idempotent via POST_UPDATE_DONE
+# ------------------------------------------------------------------------------
+post_update_to_api() {
+  command -v curl &>/dev/null || return 0
+
+  local status="${1:-failed}"
+  local raw_exit_code="${2:-1}"
+  local force="${3:-}"
+
+  POST_UPDATE_DONE=${POST_UPDATE_DONE:-false}
+  if [[ "$POST_UPDATE_DONE" == "true" && "$force" != "force" ]]; then
+    return 0
+  fi
+
+  [[ "${DIAGNOSTICS:-no}" == "no" ]] && return 0
+  [[ -z "${RANDOM_UUID:-}" ]] && return 0
+
+  local exit_code=0
+  if [[ "$raw_exit_code" =~ ^[0-9]+$ ]]; then
+    exit_code="$raw_exit_code"
+  elif [[ "$raw_exit_code" == "none" ]]; then
+    exit_code=0
+  else
+    exit_code=1
+  fi
+
+  local pb_status error_raw=""
+  case "$status" in
+  done | success)
+    pb_status="success"
+    exit_code=0
+    ;;
+  aborted)
+    pb_status="aborted"
+    ;;
+  failed)
+    # Signal-based exits are user aborts, not installation failures
+    case "$exit_code" in
+    129 | 130 | 143) pb_status="aborted" ;;
+    *) pb_status="failed" ;;
+    esac
+    ;;
+  *)
+    pb_status="unknown"
+    ;;
+  esac
+
+  if [[ "$pb_status" == "failed" || "$pb_status" == "unknown" ]]; then
+    error_raw=$(build_error_string "$exit_code")
+  elif [[ "$pb_status" == "aborted" ]]; then
+    # Short context line only - no log dump for user aborts
+    error_raw="exit_code=${exit_code} | $(explain_exit_code "$exit_code")"
+    ERROR_CATEGORY_OVERRIDE="${ERROR_CATEGORY_OVERRIDE:-user_aborted}"
+  fi
+
+  local payload
+  payload=$(_tm_payload "$pb_status" "$exit_code" "$error_raw")
+
+  if _tm_send "$payload" "$STATUS_TIMEOUT" 2; then
+    POST_UPDATE_DONE=true
+    return 0
+  fi
+
+  # Retry with a smaller error trace (in case the payload was the problem)
+  if [[ -n "$error_raw" ]]; then
+    local short_error
+    short_error="exit_code=${exit_code} | $(explain_exit_code "$exit_code")"
+    [[ -n "${FAILED_COMMAND:-}" ]] && short_error+=" | at line ${FAILED_LINE:-?}: $(printf '%s' "$FAILED_COMMAND" | head -c 200)"
+    payload=$(_tm_payload "$pb_status" "$exit_code" "$short_error")
+    if _tm_send "$payload" "$STATUS_TIMEOUT" 2; then
+      POST_UPDATE_DONE=true
+      return 0
+    fi
+  fi
+
+  # All attempts failed - leave POST_UPDATE_DONE=false so the EXIT trap can retry
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# telemetry_new_attempt()
+#
+# - Resets telemetry state for a RETRY of the same session (recovery menu:
+#   rebuild, OOM retry, DNS retry, APT repair). Each attempt becomes its own
+#   execution on the server (the previous one keeps its terminal status).
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# post_tool_to_api() - PVE host tool usage report
+# ------------------------------------------------------------------------------
+post_tool_to_api() {
+  command -v curl &>/dev/null || return 0
+  [[ "${DIAGNOSTICS:-no}" == "no" ]] && return 0
+
+  local tool_name="${1:-unknown}"
+  local status="${2:-success}"
+  local exit_code="${3:-0}"
+  local error="" error_category=""
+  local uuid duration
+
+  uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || echo "tool-$(date +%s)")
+  duration=$(get_install_duration)
+
+  [[ "$status" == "done" ]] && status="success"
+
+  if [[ "$status" == "failed" ]]; then
+    [[ ! "$exit_code" =~ ^[0-9]+$ ]] && exit_code=1
+    error=$(json_escape "$(build_error_string "$exit_code")")
+    error_category=$(categorize_error "$exit_code")
+  fi
+
+  telemetry_collect_sysinfo
+
+  local JSON_PAYLOAD
+  JSON_PAYLOAD=$(
+    cat <<EOF
+{
+    "random_id": "${uuid}",
+    "execution_id": "${uuid}",
+    "type": "pve",
+    "nsapp": "${tool_name}",
+    "status": "${status}",
+    "exit_code": ${exit_code},
+    "error": "${error}",
+    "error_category": "${error_category}",
+    "install_duration": ${duration:-0},
+    "pve_version": "${TM_PVE_VERSION:-}",
+    "platform": "${TM_PLATFORM:-}",
+    "repo_source": "${REPO_SOURCE}",
+    "repo_slug": "${REPO_SLUG:-}"
+}
+EOF
+  )
+
+  _tm_send "$JSON_PAYLOAD" "$TELEMETRY_TIMEOUT" 1 || true
+}
+
+# ------------------------------------------------------------------------------
+# post_addon_to_api() - Addon installation report (runs inside containers)
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# post_addon_to_api() - Addon installation report (runs inside containers)
+# ------------------------------------------------------------------------------
+post_addon_to_api() {
+  command -v curl &>/dev/null || return 0
+  [[ "${DIAGNOSTICS:-no}" == "no" ]] && return 0
+
+  local addon_name="${1:-unknown}"
+  local status="${2:-success}"
+  local exit_code="${3:-0}"
+  local error="" error_category=""
+  local uuid duration
+
+  uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || echo "addon-$(date +%s)")
+  duration=$(get_install_duration)
+
+  [[ "$status" == "done" ]] && status="success"
+
+  if [[ "$status" == "failed" ]]; then
+    [[ ! "$exit_code" =~ ^[0-9]+$ ]] && exit_code=1
+    error=$(json_escape "$(build_error_string "$exit_code")")
+    error_category=$(categorize_error "$exit_code")
+  fi
+
+  local os_type="" os_version=""
+  if [[ -f /etc/os-release ]]; then
+    os_type=$(grep "^ID=" /etc/os-release | cut -d= -f2 | tr -d '"' || true)
+    os_version=$(grep "^VERSION_ID=" /etc/os-release | cut -d= -f2 | tr -d '"' || true)
+  fi
+
+  local JSON_PAYLOAD
+  JSON_PAYLOAD=$(
+    cat <<EOF
+{
+    "random_id": "${uuid}",
+    "execution_id": "${uuid}",
+    "type": "addon",
+    "nsapp": "${addon_name}",
+    "status": "${status}",
+    "exit_code": ${exit_code},
+    "error": "${error}",
+    "error_category": "${error_category}",
+    "install_duration": ${duration:-0},
+    "os_type": "${os_type}",
+    "os_version": "${os_version}",
+    "platform": "${TELEMETRY_PLATFORM:-}",
+    "repo_source": "${REPO_SOURCE}",
+    "repo_slug": "${REPO_SLUG:-}"
+}
+EOF
+  )
+
+  _tm_send "$JSON_PAYLOAD" "$TELEMETRY_TIMEOUT" 1 || true
+}
+
+# ------------------------------------------------------------------------------
+# telemetry_new_attempt()
+#
+# - Resets telemetry state for a RETRY of the same session (recovery menu:
+#   rebuild, OOM retry, DNS retry, APT repair). Each attempt becomes its own
+#   execution on the server (the previous one keeps its terminal status).
+# ------------------------------------------------------------------------------
+telemetry_new_attempt() {
+  EXECUTION_ID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "${RANDOM_UUID}-r$RANDOM")"
+  POST_TO_API_DONE=false
+  POST_UPDATE_DONE=false
+  unset FAILED_COMMAND FAILED_LINE ERROR_CATEGORY_OVERRIDE TELEMETRY_ERRINFO
+  export EXECUTION_ID
+}
+
+# ==============================================================================
+# SECTION 7: TIMERS
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# _telemetry_report_exit() - EXIT trap handler set by init_tool_telemetry()
+# ------------------------------------------------------------------------------
+_telemetry_report_exit() {
+  local ec="${1:-0}"
+  local status="success"
+  [[ "$ec" -ne 0 ]] && status="failed"
+
+  local name="${TELEMETRY_TOOL_NAME:-${APP:-unknown}}"
+
+  if [[ "${TELEMETRY_TOOL_TYPE:-pve}" == "addon" ]]; then
+    post_addon_to_api "$name" "$status" "$ec"
+  else
+    post_tool_to_api "$name" "$status" "$ec"
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# init_tool_telemetry()
+#
+# - One-line telemetry setup for tools/addon scripts
+# - Arguments:
+#   * $1: tool_name (optional, falls back to $APP at exit time)
+#   * $2: type ("pve" for PVE host scripts, "addon" for container addons)
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# init_tool_telemetry()
+#
+# - One-line telemetry setup for tools/addon scripts
+# - Arguments:
+#   * $1: tool_name (optional, falls back to $APP at exit time)
+#   * $2: type ("pve" for PVE host scripts, "addon" for container addons)
+# ------------------------------------------------------------------------------
+init_tool_telemetry() {
+  local name="${1:-}"
+  local type="${2:-pve}"
+
+  [[ -n "$name" ]] && TELEMETRY_TOOL_NAME="$name"
+  TELEMETRY_TOOL_TYPE="$type"
+
+  if [[ -f /usr/local/community-scripts/diagnostics ]]; then
+    DIAGNOSTICS=$(grep -i "^DIAGNOSTICS=" /usr/local/community-scripts/diagnostics 2>/dev/null | awk -F'=' '{print $2}') || true
+  fi
+
+  start_install_timer
+
+  trap '_telemetry_report_exit "$?"' EXIT
+}
+
+# ------------------------------------------------------------------------------
+# post_tool_to_api() - PVE host tool usage report
+# ------------------------------------------------------------------------------
+
+# ==============================================================================
+# SECTION 7: TIMERS
+# ==============================================================================
+
+start_install_timer() {
+  INSTALL_START_TIME=$(date +%s)
+  export INSTALL_START_TIME
+}
+
+
+get_install_duration() {
+  if [[ -z "${INSTALL_START_TIME:-}" ]]; then
+    echo "0"
+    return
+  fi
+  local now
+  now=$(date +%s)
+  echo $((now - INSTALL_START_TIME))
+}
+
+# ==============================================================================
+# SECTION 8: TOOLS & ADDON TELEMETRY
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# _telemetry_report_exit() - EXIT trap handler set by init_tool_telemetry()
+# ------------------------------------------------------------------------------

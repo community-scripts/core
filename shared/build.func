@@ -209,6 +209,8 @@ _cs_source_func() {
 # work — _cs_local_path falls through to the network — just slower.
 _CS_ENGINE_FILES=(
   shared/alpine-install.func shared/alpine-tools.func shared/api.func
+  shared/api/errorlog.func shared/api/exitcodes.func shared/api/sysinfo.func
+  shared/api/telemetry.func
   shared/build-ui.func shared/build-ui/advanced.func shared/build-ui/defaults.func
   shared/build-ui/menu.func shared/build-ui/validate.func shared/cloud-init.func
   shared/core.func shared/dev-mode.func shared/error_handler.func

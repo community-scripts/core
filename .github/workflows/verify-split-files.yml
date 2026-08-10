@@ -34,7 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for f in shared/tools.func shared/tools/*.func shared/build-ui.func shared/build-ui/*.func; do
+          for f in shared/tools.func shared/tools/*.func shared/build-ui.func shared/build-ui/*.func shared/api.func shared/api/*.func; do
             bash -n "$f" || { echo "::error file=$f::syntax error"; fail=1; }
           done
           exit $fail
@@ -96,7 +96,7 @@ jobs:
               _cs_source_func() { source "$COMMUNITY_SCRIPTS_CORE_DIR/$1"; }
               source "'"$loader"'" >/dev/null 2>&1
               declare -F | awk "{print \$3}" |
-                grep -vE "^(_cs_source_func|_tools_source_part|_build_ui_source)$" | sort
+                grep -vE "^(_cs_source_func|_tools_source_part|_build_ui_source|_api_source_part)$" | sort
             ' > /tmp/actual.txt
             if ! diff -u "$snapshot" /tmp/actual.txt; then
               echo "::error::$loader exports a different set of functions."
@@ -108,4 +108,5 @@ jobs:
           fail=0
           check shared/tools.func    shared/tools/API.txt    || fail=1
           check shared/build-ui.func shared/build-ui/API.txt || fail=1
+          check shared/api.func      shared/api/API.txt      || fail=1
           exit $fail

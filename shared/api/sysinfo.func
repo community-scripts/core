@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+# Copyright (c) 2021-2026 community-scripts ORG
+# License: MIT | https://raw.githubusercontent.com/community-scripts/core/main/LICENSE
+
+# ==============================================================================
+# API/SYSTEM AND ORIGIN DETECTION
+# ==============================================================================
+# Part of the telemetry layer. Load shared/api.func -- it sources every part --
+# rather than this file directly; the split is for maintenance only and no
+# function name or behaviour changed with it.
+#
+# What the host is: repo the script came from, GPU, CPU, RAM, architecture.
+# Read once and cached in TM_* variables.
+# ==============================================================================
+
+[[ -n "${_API_SYSINFO_LOADED:-}" ]] && return 0
+_API_SYSINFO_LOADED=1
+
+# ------------------------------------------------------------------------------
+# detect_repo_source()
+#
+# - Dynamically detects which GitHub/Gitea repo the scripts were loaded from
+# - Inspects /proc/$$/cmdline and $0 to find the source URL
+# - Maps detected repo to one of three canonical values:
+#   * "ProxmoxVE"  — official community-scripts/ProxmoxVE (production)
+#   * "ProxmoxVED" — official community-scripts/ProxmoxVED (development)
+#   * "external"   — any fork or unknown source
+# - Additionally sets REPO_SLUG to the real "owner/repo" string
+# - Fallback: "ProxmoxVED" (CI sed transforms ProxmoxVED → ProxmoxVE on promotion)
+# - Skips detection if REPO_SOURCE is already set (e.g., exported by the host
+#   into the container environment)
+# ------------------------------------------------------------------------------
+detect_repo_source() {
+  # Allow explicit override via environment (also how the container inherits
+  # the host's attribution instead of re-detecting)
+  if [[ -n "${REPO_SOURCE:-}" ]]; then
+    if [[ -z "${REPO_SLUG:-}" ]]; then
+      case "$REPO_SOURCE" in
+      ProxmoxVE) REPO_SLUG="community-scripts/ProxmoxVE" ;;
+      ProxmoxVED) REPO_SLUG="community-scripts/ProxmoxVED" ;;
+      esac
+      export REPO_SLUG
+    fi
+    return 0
+  fi
+
+  local content="" owner_repo=""
+
+  # Method 1: Read from /proc/$$/cmdline
+  # When invoked via: bash -c "$(curl -fsSL https://.../ct/app.sh)"
+  if [[ -r /proc/$$/cmdline ]]; then
+    content=$(tr '\0' ' ' </proc/$$/cmdline 2>/dev/null) || true
+  fi
+
+  # Method 2: Read from the original script file (bash ct/app.sh)
+  if [[ -z "$content" ]] || ! echo "$content" | grep -qE 'githubusercontent\.com|community-scripts\.org' 2>/dev/null; then
+    if [[ -f "$0" ]] && [[ "$0" != *bash* ]]; then
+      content=$(head -10 "$0" 2>/dev/null) || true
+    fi
+  fi
+
+  if [[ -n "$content" ]]; then
+    owner_repo=$(echo "$content" | grep -oE 'raw\.githubusercontent\.com/[^/]+/[^/]+' | head -1 | sed 's|raw\.githubusercontent\.com/||') || true
+    if [[ -z "$owner_repo" ]]; then
+      owner_repo=$(echo "$content" | grep -oE 'git\.community-scripts\.org/[^/]+/[^/]+' | head -1 | sed 's|git\.community-scripts\.org/||') || true
+    fi
+  fi
+
+  case "$owner_repo" in
+  community-scripts/ProxmoxVE)
+    REPO_SOURCE="ProxmoxVE"
+    REPO_SLUG="community-scripts/ProxmoxVE"
+    ;;
+  community-scripts/ProxmoxVED)
+    REPO_SOURCE="ProxmoxVED"
+    REPO_SLUG="community-scripts/ProxmoxVED"
+    ;;
+  "")
+    # No URL detected — hardcoded fallback (CI rewrites VED → VE on promotion)
+    REPO_SOURCE="ProxmoxVED"
+    REPO_SLUG="community-scripts/ProxmoxVED"
+    ;;
+  *)
+    REPO_SOURCE="external"
+    REPO_SLUG="$owner_repo"
+    ;;
+  esac
+
+  export REPO_SOURCE REPO_SLUG
+}
+
+# Run detection immediately when api.func is sourced
+detect_repo_source
+
+# ==============================================================================
+# SECTION 1: ERROR CODE DESCRIPTIONS & CATEGORIES
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# explain_exit_code()
+#
+# - Maps numeric exit codes to human-readable error descriptions
+# - Canonical source of truth for ALL exit code mappings
+# - Used by both api.func (telemetry) and error_handler.func (error display)
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# detect_gpu() - GPU vendor, model, passthrough type
+# ------------------------------------------------------------------------------
+detect_gpu() {
+  GPU_VENDOR="unknown"
+  GPU_MODEL=""
+  GPU_PASSTHROUGH="unknown"
+
+  local gpu_line
+  gpu_line=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display" | head -1 || true)
+
+  if [[ -n "$gpu_line" ]]; then
+    GPU_MODEL=$(echo "$gpu_line" | sed 's/.*: //' | sed 's/ (rev .*)$//' | cut -c1-64)
+
+    if echo "$gpu_line" | grep -qi "Intel"; then
+      GPU_VENDOR="intel"
+      GPU_PASSTHROUGH="igpu"
+    elif echo "$gpu_line" | grep -qi "AMD\|ATI"; then
+      GPU_VENDOR="amd"
+      if echo "$gpu_line" | grep -qi "Radeon RX\|Radeon Pro"; then
+        GPU_PASSTHROUGH="dgpu"
+      else
+        GPU_PASSTHROUGH="igpu"
+      fi
+    elif echo "$gpu_line" | grep -qi "NVIDIA"; then
+      GPU_VENDOR="nvidia"
+      GPU_PASSTHROUGH="dgpu"
+    fi
+  fi
+
+  export GPU_VENDOR GPU_MODEL GPU_PASSTHROUGH
+}
+
+# ------------------------------------------------------------------------------
+# detect_cpu() - CPU vendor and model
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# detect_cpu() - CPU vendor and model
+# ------------------------------------------------------------------------------
+detect_cpu() {
+  CPU_VENDOR="unknown"
+  CPU_MODEL=""
+
+  if [[ -f /proc/cpuinfo ]]; then
+    local vendor_id
+    vendor_id=$(grep -m1 "vendor_id" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | tr -d ' ' || true)
+
+    case "$vendor_id" in
+    GenuineIntel) CPU_VENDOR="intel" ;;
+    AuthenticAMD) CPU_VENDOR="amd" ;;
+    *)
+      if grep -qi "CPU implementer" /proc/cpuinfo 2>/dev/null; then
+        CPU_VENDOR="arm"
+      fi
+      ;;
+    esac
+
+    CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | sed 's/^ *//' | sed 's/(R)//g' | sed 's/(TM)//g' | sed 's/  */ /g' | cut -c1-64 || true)
+  fi
+
+  export CPU_VENDOR CPU_MODEL
+}
+
+# ------------------------------------------------------------------------------
+# detect_ram() - RAM speed via dmidecode (empty in nested VMs)
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# detect_ram() - RAM speed via dmidecode (empty in nested VMs)
+# ------------------------------------------------------------------------------
+detect_ram() {
+  RAM_SPEED=""
+
+  if command -v dmidecode &>/dev/null; then
+    RAM_SPEED=$(dmidecode -t memory 2>/dev/null | grep -m1 "Configured Memory Speed:" | grep -oE "[0-9]+" | head -1) || true
+    if [[ -z "$RAM_SPEED" ]]; then
+      RAM_SPEED=$(dmidecode -t memory 2>/dev/null | grep -m1 "Speed:" | grep -oE "[0-9]+" | head -1) || true
+    fi
+  fi
+
+  export RAM_SPEED
+}
+
+# ------------------------------------------------------------------------------
+# detect_arm() - true when running on arm64 hardware
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# detect_arm() - true when running on arm64 hardware
+# ------------------------------------------------------------------------------
+detect_arm() {
+  HAS_ARM="false"
+  case "$(dpkg --print-architecture 2>/dev/null || uname -m)" in
+  arm64 | aarch64) HAS_ARM="true" ;;
+  esac
+  export HAS_ARM
+}
+
+# ------------------------------------------------------------------------------
+# telemetry_collect_sysinfo()
+#
+# - Collects ALL system metadata exactly once (cached via _TM_SYSINFO_DONE)
+# - Sets: CPU_VENDOR, CPU_MODEL, GPU_VENDOR, GPU_MODEL, GPU_PASSTHROUGH,
+#   RAM_SPEED, HAS_ARM, TM_ARCH, TM_PVE_VERSION
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# telemetry_collect_sysinfo()
+#
+# - Collects ALL system metadata exactly once (cached via _TM_SYSINFO_DONE)
+# - Sets: CPU_VENDOR, CPU_MODEL, GPU_VENDOR, GPU_MODEL, GPU_PASSTHROUGH,
+#   RAM_SPEED, HAS_ARM, TM_ARCH, TM_PVE_VERSION
+# ------------------------------------------------------------------------------
+telemetry_collect_sysinfo() {
+  [[ "${_TM_SYSINFO_DONE:-}" == "true" ]] && return 0
+
+  [[ -z "${GPU_VENDOR:-}" ]] && detect_gpu
+  [[ -z "${CPU_VENDOR:-}" ]] && detect_cpu
+  [[ -z "${RAM_SPEED+x}" ]] && detect_ram
+  [[ -z "${HAS_ARM:-}" ]] && detect_arm
+
+  TM_ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m || echo unknown)"
+
+  # Virtualization platform: pve (Proxmox VE) or incus.
+  # Containers inherit TELEMETRY_PLATFORM from the host environment.
+  TM_PLATFORM="${TELEMETRY_PLATFORM:-}"
+  TM_PVE_VERSION=""
+  if command -v pveversion &>/dev/null; then
+    TM_PVE_VERSION=$(pveversion 2>/dev/null | awk -F'[/ ]' '{print $2}') || true
+    TM_PLATFORM="${TM_PLATFORM:-pve}"
+  elif command -v incus &>/dev/null; then
+    TM_PVE_VERSION="incus-$(incus version 2>/dev/null | head -1 | awk '{print $NF}')" || true
+    TM_PLATFORM="${TM_PLATFORM:-incus}"
+  fi
+
+  _TM_SYSINFO_DONE=true
+  export TM_ARCH TM_PVE_VERSION TM_PLATFORM _TM_SYSINFO_DONE
+}
+
+# ==============================================================================
+# SECTION 5: PAYLOAD BUILDER & SENDER
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# _tm_enabled()
+#
+# - Central gate: curl present, DIAGNOSTICS=yes, RANDOM_UUID set
+# ------------------------------------------------------------------------------
