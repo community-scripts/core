@@ -176,6 +176,86 @@ _cs_source_func() {
   source <(_cs_download "$(_cs_remote_url "$rel")")
 }
 
+# ── Prefetch ─────────────────────────────────────────────────────────────────
+# Without a checkout every engine file is its own HTTPS request — 22 of them on
+# the Proxmox path, ~5.5s before the first prompt. curl fetches them
+# concurrently over one connection instead (~0.4s), into tmpfs, for this run
+# only. No cache, nothing to go stale.
+#
+# The list is checked against the repository by .github/workflows/verify-split-files.yml,
+# so a new .func cannot be forgotten here. A file missing from it would still
+# work — _cs_local_path falls through to the network — just slower.
+_CS_ENGINE_FILES=(
+  shared/alpine-install.func shared/alpine-tools.func shared/api.func
+  shared/build-ui.func shared/build-ui/advanced.func shared/build-ui/defaults.func
+  shared/build-ui/menu.func shared/build-ui/validate.func shared/cloud-init.func
+  shared/core.func shared/dev-mode.func shared/error_handler.func
+  shared/install.func shared/lxc-platform.func shared/preflight.func
+  shared/source-origin.func shared/tools.func shared/tools/db.func
+  shared/tools/forge.func shared/tools/hwaccel.func shared/tools/runtime.func
+  shared/tools/system.func shared/validate.func
+  pve/backend.func pve/vm-app.func pve/vm-core.func
+  incus/backend.func incus/build.func incus/core.func incus/tools.func
+  incus/vm-core.func
+)
+
+_cs_curl_has_parallel() {
+  local ver major minor
+  ver="$(curl --version 2>/dev/null | head -1 | awk '{print $2}')" || return 1
+  major="${ver%%.*}"
+  minor="${ver#*.}"
+  minor="${minor%%.*}"
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 1
+  ((major > 7 || (major == 7 && minor >= 66)))
+}
+
+_cs_prefetch_engine() {
+  [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" ]] && return 0
+  [[ "${COMMUNITY_SCRIPTS_NO_PREFETCH:-0}" == "1" ]] && return 1
+  command -v curl >/dev/null 2>&1 || return 1
+  _cs_curl_has_parallel || return 1
+
+  local base dir=""
+  for base in /dev/shm "${TMPDIR:-/tmp}" /tmp; do
+    [[ -d "$base" && -w "$base" ]] || continue
+    # An EXIT trap would be the obvious cleanup, but core.func and api.func
+    # install their own later and the last one wins. Sweep instead.
+    find "$base" -maxdepth 1 -name 'cs-engine.*' -type d -mmin +60       -exec rm -rf {} + 2>/dev/null || true
+    dir="$(mktemp -d "${base}/cs-engine.XXXXXX" 2>/dev/null)" && break
+    dir=""
+  done
+  [[ -z "$dir" ]] && return 1
+
+  local args=() rel
+  for rel in "${_CS_ENGINE_FILES[@]}"; do
+    mkdir -p "${dir}/${rel%/*}" 2>/dev/null || true
+    args+=(-o "${dir}/${rel}" "${COMMUNITY_SCRIPTS_CORE_URL}/${rel}")
+  done
+
+  # --fail so a 404 leaves no file rather than an error page that would be
+  # sourced as shell.
+  curl -fsSL --parallel --parallel-immediate --parallel-max 16     --connect-timeout 10 --max-time 60 "${args[@]}" 2>/dev/null
+
+  local kept=0
+  for rel in "${_CS_ENGINE_FILES[@]}"; do
+    if [[ -s "${dir}/${rel}" ]]; then
+      kept=$((kept + 1))
+    else
+      rm -f "${dir}/${rel}" 2>/dev/null
+    fi
+  done
+  if ((kept == 0)); then
+    rm -rf "$dir" 2>/dev/null
+    return 1
+  fi
+
+  COMMUNITY_SCRIPTS_CORE_DIR="$dir"
+  export COMMUNITY_SCRIPTS_CORE_DIR
+  return 0
+}
+
+_cs_prefetch_engine || true
+
 _cs_source_func "shared/lxc-platform.func"
 
 if is_incus_lxc_backend; then

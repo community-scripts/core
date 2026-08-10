@@ -45,6 +45,79 @@ _cs_core_url() {
   echo "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/${1:?func name}"
 }
 
+# The engine reaches a container in eight pieces. The host's prefetch cannot
+# help here — a container has its own filesystem — so fetch them concurrently
+# on this side too. verify-split-files.yml checks the list is complete.
+_CS_CT_ENGINE_FILES=(
+  alpine-tools.func core.func error_handler.func tools.func
+  tools/db.func tools/forge.func tools/hwaccel.func
+  tools/runtime.func tools/system.func
+)
+
+_cs_ct_prefetch_engine() {
+  [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" ]] && return 0
+  [[ "${COMMUNITY_SCRIPTS_NO_PREFETCH:-0}" == "1" ]] && return 1
+  command -v curl >/dev/null 2>&1 || return 1
+
+  local ver major minor
+  ver="$(curl --version 2>/dev/null | head -1 | awk '{print $2}')" || return 1
+  major="${ver%%.*}"
+  minor="${ver#*.}"
+  minor="${minor%%.*}"
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 1
+  ((major > 7 || (major == 7 && minor >= 66))) || return 1
+
+  local base dir=""
+  for base in /dev/shm "${TMPDIR:-/tmp}" /tmp; do
+    [[ -d "$base" && -w "$base" ]] || continue
+    dir="$(mktemp -d "${base}/cs-engine.XXXXXX" 2>/dev/null)" && break
+    dir=""
+  done
+  [[ -z "$dir" ]] && return 1
+
+  local args=() rel core_base
+  core_base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
+  mkdir -p "${dir}/shared/tools" 2>/dev/null || true
+  for rel in "${_CS_CT_ENGINE_FILES[@]}"; do
+    args+=(-o "${dir}/shared/${rel}" "${core_base}/shared/${rel}")
+  done
+
+  curl -fsSL --parallel --parallel-immediate --parallel-max 16 \
+    --connect-timeout 10 --max-time 60 "${args[@]}" 2>/dev/null
+
+  local kept=0
+  for rel in "${_CS_CT_ENGINE_FILES[@]}"; do
+    if [[ -s "${dir}/shared/${rel}" ]]; then
+      kept=$((kept + 1))
+    else
+      rm -f "${dir}/shared/${rel}" 2>/dev/null
+    fi
+  done
+  if ((kept == 0)); then
+    rm -rf "$dir" 2>/dev/null
+    return 1
+  fi
+
+  COMMUNITY_SCRIPTS_CORE_DIR="$dir"
+  export COMMUNITY_SCRIPTS_CORE_DIR
+  return 0
+}
+
+# Prefetched copy when there is one, network otherwise.
+_cs_engine_read() {
+  local name="${1:?func name}"
+  local copy="${COMMUNITY_SCRIPTS_CORE_DIR:-}/shared/${name}"
+  if [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -s "$copy" ]]; then
+    cat "$copy"
+    return 0
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$(_cs_core_url "$name")"
+  else
+    wget -qO- "$(_cs_core_url "$name")"
+  fi
+}
+
 OS_TYPE=""     # debian, ubuntu, devuan, alpine, fedora, rocky, alma, centos, opensuse, gentoo, openeuler
 OS_FAMILY=""   # debian, alpine, rhel, suse, gentoo, arch
 OS_VERSION=""  # Version number
@@ -218,8 +291,9 @@ _bootstrap() {
   export TELEMETRY_CONTEXT="container"
 
   # Source core functions
-  source <($_fetch "$(_cs_core_url core.func)")
-  source <($_fetch "$(_cs_core_url error_handler.func)")
+  _cs_ct_prefetch_engine || true
+  source <(_cs_engine_read core.func)
+  source <(_cs_engine_read error_handler.func)
   load_functions
   catch_errors
 
@@ -1166,17 +1240,12 @@ EOF
   # Source appropriate tools.func based on OS. Fetch with curl OR wget: Gentoo
   # stage3 ships wget but not curl (the curl bootstrap can fall back to wget and
   # leave curl absent), so a hard curl call fails with "command not found".
-  local tools_content tools_url tools_name
+  local tools_content tools_name
   case "$OS_FAMILY" in
   alpine) tools_name="alpine-tools.func" ;;
   *) tools_name="tools.func" ;;
   esac
-  tools_url="$(_cs_core_url "${tools_name}")"
-  if command -v curl &>/dev/null; then
-    tools_content=$(curl -fsSL "$tools_url")
-  elif command -v wget &>/dev/null; then
-    tools_content=$(wget -qO- "$tools_url")
-  fi
+  tools_content=$(_cs_engine_read "${tools_name}")
   if [[ -z "$tools_content" ]]; then
     msg_error "Failed to download ${tools_name}"
     exit 115

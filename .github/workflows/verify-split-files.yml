@@ -5,21 +5,23 @@ name: Verify split files
 # function -- most easily by cutting through a heredoc that contains a column-0
 # function definition, which looks like a definition but is payload. That only
 # surfaces on a user's host at install time, so it is checked here instead.
+#
+# The same applies to the prefetch lists in shared/build.func and
+# shared/install.func: a .func missing from one still works, it just costs a
+# round trip nobody would notice. So they are checked, not trusted.
 
 on:
   pull_request:
     paths:
-      - "shared/tools.func"
-      - "shared/tools/**"
-      - "shared/build-ui.func"
-      - "shared/build-ui/**"
+      - "shared/**"
+      - "pve/**"
+      - "incus/**"
   push:
     branches: [main]
     paths:
-      - "shared/tools.func"
-      - "shared/tools/**"
-      - "shared/build-ui.func"
-      - "shared/build-ui/**"
+      - "shared/**"
+      - "pve/**"
+      - "incus/**"
   workflow_dispatch:
 
 jobs:
@@ -35,6 +37,53 @@ jobs:
           for f in shared/tools.func shared/tools/*.func shared/build-ui.func shared/build-ui/*.func; do
             bash -n "$f" || { echo "::error file=$f::syntax error"; fail=1; }
           done
+          exit $fail
+
+      - name: Prefetch lists cover every engine file
+        run: |
+          set -euo pipefail
+          fail=0
+
+          mapfile -t on_disk < <(find shared pve incus -name '*.func' -type f | sort)
+          mapfile -t listed < <(
+            sed -n '/^_CS_ENGINE_FILES=(/,/^)/p' shared/build.func |
+              tr -s '[:space:]' '\n' | grep -E '^(shared|pve|incus)/.*\.func$' | sort
+          )
+
+          for f in "${on_disk[@]}"; do
+            # build.func is the file doing the fetching; it is already loaded.
+            [[ "$f" == "shared/build.func" ]] && continue
+            printf '%s\n' "${listed[@]}" | grep -qxF "$f" || {
+              echo "::error file=shared/build.func::$f is missing from _CS_ENGINE_FILES"
+              fail=1
+            }
+          done
+          for f in "${listed[@]}"; do
+            [[ -f "$f" ]] || {
+              echo "::error file=shared/build.func::_CS_ENGINE_FILES lists $f, which does not exist"
+              fail=1
+            }
+          done
+
+          # install.func fetches the subset a container needs, by bare name.
+          mapfile -t ct_listed < <(
+            sed -n '/^_CS_CT_ENGINE_FILES=(/,/^)/p' shared/install.func |
+              tr -s '[:space:]' '\n' | grep -E '\.func$' | sort
+          )
+          for f in "${ct_listed[@]}"; do
+            [[ -f "shared/$f" ]] || {
+              echo "::error file=shared/install.func::_CS_CT_ENGINE_FILES lists $f, which does not exist"
+              fail=1
+            }
+          done
+          for f in shared/tools/*.func; do
+            printf '%s\n' "${ct_listed[@]}" | grep -qxF "${f#shared/}" || {
+              echo "::error file=shared/install.func::${f#shared/} is missing from _CS_CT_ENGINE_FILES"
+              fail=1
+            }
+          done
+
+          echo "engine: ${#listed[@]} of ${#on_disk[@]} listed, container: ${#ct_listed[@]}"
           exit $fail
 
       - name: Each loader still defines its whole API
