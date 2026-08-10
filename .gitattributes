@@ -1,0 +1,24 @@
+# Every file here is sourced by bash on Linux. A CRLF line ending makes the
+# shell read `\r` as part of the token, which turns `load_functions() {` into a
+# syntax error and takes the whole engine with it — nothing would install.
+#
+# Without this, whether a Windows contributor commits CRLF depends on their
+# core.autocrlf setting. With it, git normalises on the way in regardless.
+
+*.func    text eol=lf
+*.sh      text eol=lf
+*.bash    text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.md      text eol=lf
+*.json    text eol=lf
+*.txt     text eol=lf
+
+# Headers are ASCII art read verbatim; leave them exactly as committed.
+headers/**  -text
+
+*.png     binary
+*.jpg     binary
+*.webp    binary
+*.gz      binary
+*.zst     binary
