@@ -1030,139 +1030,220 @@ fetch_and_deploy_gh_branch() {
   msg_ok "Deployed ${app} ($(<"$HOME/.${app_lc}"))"
 }
 
-check_for_gh_release() {
-  local app="$1"
-  local source="$2"
-  local pinned_version_in="${3:-}" # optional
-  local pin_reason="${4:-}"        # optional reason shown to user
-  local tag_prefix="${5:-}"        # optional tag prefix filter (e.g. web-v2)
-  local app_lc=""
+# ==============================================================================
+# UNIFIED RELEASE CHECK
+# ==============================================================================
+# One implementation for GitHub, GitLab and Codeberg. What differs between the
+# three is data -- an endpoint, a header, a jq filter -- so that is what the
+# descriptor holds; the comparison, migration, pinning and messaging below are
+# shared.
+#
+# check_for_gh_release / _gl_ / _codeberg_ stay as wrappers, so no call site has
+# to change. None of them inspects the return code either: every call across
+# ProxmoxVE, ProxmoxVED and Incus is `if check_for_...; then`, which is why the
+# previously divergent code sets can safely become one union.
+# ==============================================================================
+
+# Strip a leading v only when a digit follows, so vault-1.0 keeps its name.
+_forge_strip_v() {
+  local v="${1:-}"
+  if [[ "$v" =~ ^v[0-9] ]]; then
+    printf '%s' "${v:1}"
+  else
+    printf '%s' "$v"
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# _forge_descriptor()
+#
+# - Emits one field of a forge's API description, or returns 1 for an unknown
+#   forge so the caller can fail with a name instead of an empty URL
+# ------------------------------------------------------------------------------
+_forge_descriptor() {
+  local forge="${1:?forge}" field="${2:?field}"
+  local u
+  case "${forge}:${field}" in
+  github:host) echo "api.github.com" ;;
+  github:base) echo "https://api.github.com/repos" ;;
+  github:encode) echo "raw" ;;
+  github:list) echo "/releases?per_page=100" ;;
+  github:one) echo "/releases/tags" ;;
+  github:accept) echo "application/vnd.github+json" ;;
+  github:auth) [[ -n "${GITHUB_TOKEN:-}" ]] && echo "Authorization: Bearer ${GITHUB_TOKEN}" ;;
+  github:ratelimit) echo "403" ;;
+  github:hint) echo "export GITHUB_TOKEN=ghp_your_token" ;;
+
+  gitlab:host)
+    u="${GITLAB_URL:-https://gitlab.com}"
+    u="${u#*://}"
+    echo "${u%%/*}"
+    ;;
+  gitlab:base) echo "${GITLAB_URL:-https://gitlab.com}/api/v4/projects" ;;
+  gitlab:encode) echo "path" ;;
+  gitlab:list) echo "/releases?per_page=100&order_by=released_at&sort=desc" ;;
+  gitlab:one) echo "/releases" ;;
+  gitlab:accept) echo "" ;;
+  gitlab:auth) [[ -n "${GITLAB_TOKEN:-}" ]] && echo "PRIVATE-TOKEN: ${GITLAB_TOKEN}" ;;
+  gitlab:ratelimit) echo "429" ;;
+  gitlab:hint) echo "export GITLAB_TOKEN=glpat-your_token" ;;
+
+  codeberg:host) echo "codeberg.org" ;;
+  codeberg:base) echo "https://codeberg.org/api/v1/repos" ;;
+  codeberg:encode) echo "raw" ;;
+  codeberg:list) echo "/releases?limit=100" ;;
+  codeberg:one) echo "/releases/tags" ;;
+  codeberg:accept) echo "application/json" ;;
+  codeberg:auth) [[ -n "${CODEBERG_TOKEN:-}" ]] && echo "Authorization: token ${CODEBERG_TOKEN}" ;;
+  codeberg:ratelimit) echo "429" ;;
+  codeberg:hint) echo "export CODEBERG_TOKEN=your_token" ;;
+
+  *) return 1 ;;
+  esac
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# _forge_stable_filter()
+#
+# - The jq predicate deciding whether a release counts. GitLab has no
+#   draft/prerelease pair; its equivalent is upcoming_release, which nothing
+#   checked before, so a published RC pushed every container into an update.
+# ------------------------------------------------------------------------------
+_forge_stable_filter() {
+  case "${1:?forge}" in
+  gitlab) echo 'select($pre or ((.upcoming_release // false) == false))' ;;
+  *) echo 'select(.draft != true) | select($pre or (.prerelease != true))' ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------
+# _forge_http_get()
+#
+# - GET into a file, mapping the status onto the codes callers already see:
+#   0 ok, 7 no connection, 22 everything else
+# - Codeberg used to fetch with -f, which makes curl exit before any status is
+#   seen, leaving its whole error branch unreachable
+# ------------------------------------------------------------------------------
+_forge_http_get() {
+  local forge="${1:?forge}" url="${2:?url}" out="${3:?outfile}"
+  local -a headers=()
+  local accept auth code
+  accept="$(_forge_descriptor "$forge" accept)"
+  [[ -n "$accept" ]] && headers+=(-H "Accept: ${accept}")
+  [[ "$forge" == "github" ]] && headers+=(-H "X-GitHub-Api-Version: 2022-11-28")
+  auth="$(_forge_descriptor "$forge" auth)"
+  [[ -n "$auth" ]] && headers+=(-H "$auth")
+
+  code="$(curl -sSL --max-time 20 -w "%{http_code}" -o "$out" \
+    "${headers[@]}" "$url" 2>/dev/null)" || true
+
+  case "$code" in
+  200) return 0 ;;
+  000)
+    msg_error "Connection failed while querying ${forge}"
+    return 7
+    ;;
+  401)
+    msg_error "${forge}: authentication failed - check your token"
+    return 22
+    ;;
+  404) return 22 ;;
+  esac
+
+  if [[ "$code" == "$(_forge_descriptor "$forge" ratelimit)" ]]; then
+    msg_error "${forge}: rate limit reached. Raise it with: $(_forge_descriptor "$forge" hint)"
+    return 22
+  fi
+  msg_error "${forge}: unexpected HTTP ${code}"
+  return 22
+}
+
+# ------------------------------------------------------------------------------
+# check_for_release()
+#
+#   check_for_release <forge> <app> <repo> [pinned] [pin_reason] [tag_prefix]
+#
+# - Returns 0 when an update is available, non-zero otherwise
+# - Sets CHECK_UPDATE_RELEASE to the RAW tag; callers strip the v themselves
+# - The comparison stays a string comparison, as before: a retag or a downgrade
+#   still reads as an update. Version-aware ordering would change what every
+#   app sees and belongs in its own change
+# ------------------------------------------------------------------------------
+check_for_release() {
+  local forge="${1:?forge}" app="${2:?app}" source="${3:?repo}"
+  local pinned_version_in="${4:-}" pin_reason="${5:-}" tag_prefix="${6:-}"
+
+  if ! _forge_descriptor "$forge" host >/dev/null 2>&1; then
+    msg_error "Unknown forge '${forge}' - expected github, gitlab or codeberg"
+    return 22
+  fi
+
+  local app_lc current_file
   app_lc="$(echo "${app,,}" | tr -d ' ')"
-  local current_file="$HOME/.${app_lc}"
+  current_file="$HOME/.${app_lc}"
 
   msg_info "Checking for update: ${app}"
 
-  # DNS check
-  if ! getent hosts api.github.com >/dev/null 2>&1; then
-    msg_error "Network error: cannot resolve api.github.com"
+  local host
+  host="$(_forge_descriptor "$forge" host)"
+  if ! getent hosts "$host" >/dev/null 2>&1; then
+    msg_error "Network error: cannot resolve ${host}"
     return 6
   fi
 
   ensure_dependencies jq
 
-  local gh_check_json=""
-  gh_check_json=$(mktemp /tmp/tools-gh-check-XXXXXX) || return 73
-  trap 'rm -f "${gh_check_json:-}"; trap - RETURN' RETURN
+  local json_file rc
+  json_file="$(mktemp /tmp/tools-forge-check-XXXXXX)" || return 73
+  trap 'rm -f "${json_file:-}"; trap - RETURN' RETURN
 
-  # Build auth header if token is available
-  local header_args=()
-  [[ -n "${GITHUB_TOKEN:-}" ]] && header_args=(-H "Authorization: Bearer $GITHUB_TOKEN")
+  local base repo_path
+  base="$(_forge_descriptor "$forge" base)"
+  repo_path="$source"
+  [[ "$(_forge_descriptor "$forge" encode)" == "path" ]] && repo_path="${source//\//%2F}"
 
-  # Try /latest endpoint for non-pinned versions (most efficient)
-  local releases_json="" http_code=""
-
-  # For pinned versions, query the specific release tag directly
+  local releases_json=""
   if [[ -n "$pinned_version_in" ]]; then
-    local pinned_version_encoded="${pinned_version_in//\//%2F}"
-    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$gh_check_json" \
-      -H 'Accept: application/vnd.github+json' \
-      -H 'X-GitHub-Api-Version: 2022-11-28' \
-      "${header_args[@]}" \
-      "https://api.github.com/repos/${source}/releases/tags/${pinned_version_encoded}" 2>/dev/null) || true
-
-    if [[ "$http_code" == "200" ]] && [[ -s "$gh_check_json" ]]; then
-      releases_json="[$(<"$gh_check_json")]"
-    elif [[ "$http_code" == "401" ]]; then
-      msg_error "GitHub API authentication failed (HTTP 401)."
-      if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        msg_error "Your GITHUB_TOKEN appears to be invalid or expired."
-      else
-        msg_error "The repository may require authentication. Try: export GITHUB_TOKEN=\"ghp_your_token\""
-      fi
-      rm -f "$gh_check_json"
-      return 22
-    elif [[ "$http_code" == "403" ]]; then
-      msg_error "GitHub API rate limit exceeded (HTTP 403)."
-      msg_error "To increase the limit, export a GitHub token before running the script:"
-      msg_error "  export GITHUB_TOKEN=\"ghp_your_token_here\""
-      rm -f "$gh_check_json"
-      return 22
+    # A pin names one release, so ask for that one instead of paging the list.
+    local one enc
+    one="$(_forge_descriptor "$forge" one)"
+    enc="${pinned_version_in//\//%2F}"
+    if _forge_http_get "$forge" "${base}/${repo_path}${one}/${enc}" "$json_file"; then
+      [[ -s "$json_file" ]] && releases_json="[$(<"$json_file")]"
     fi
-    rm -f "$gh_check_json"
   fi
 
-  if [[ -z "$pinned_version_in" && -z "$tag_prefix" && "${GH_INCLUDE_PRERELEASE:-0}" != "1" ]]; then
-    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$gh_check_json" \
-      -H 'Accept: application/vnd.github+json' \
-      -H 'X-GitHub-Api-Version: 2022-11-28' \
-      "${header_args[@]}" \
-      "https://api.github.com/repos/${source}/releases/latest" 2>/dev/null) || true
-
-    if [[ "$http_code" == "200" ]] && [[ -s "$gh_check_json" ]]; then
-      releases_json="[$(<"$gh_check_json")]"
-    elif [[ "$http_code" == "401" ]]; then
-      msg_error "GitHub API authentication failed (HTTP 401)."
-      if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        msg_error "Your GITHUB_TOKEN appears to be invalid or expired."
-      else
-        msg_error "The repository may require authentication. Try: export GITHUB_TOKEN=\"ghp_your_token\""
-      fi
-      rm -f "$gh_check_json"
-      return 22
-    elif [[ "$http_code" == "403" ]]; then
-      msg_error "GitHub API rate limit exceeded (HTTP 403)."
-      msg_error "To increase the limit, export a GitHub token before running the script:"
-      msg_error "  export GITHUB_TOKEN=\"ghp_your_token_here\""
-      rm -f "$gh_check_json"
-      return 22
-    fi
-    rm -f "$gh_check_json"
-  fi
-
-  # If no releases yet (pinned version, tag prefix, OR /latest failed), fetch up to 100
   if [[ -z "$releases_json" ]]; then
-    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$gh_check_json" \
-      -H 'Accept: application/vnd.github+json' \
-      -H 'X-GitHub-Api-Version: 2022-11-28' \
-      "${header_args[@]}" \
-      "https://api.github.com/repos/${source}/releases?per_page=100" 2>/dev/null) || true
-
-    if [[ "$http_code" == "200" ]] && [[ -s "$gh_check_json" ]]; then
-      releases_json=$(<"$gh_check_json")
-    elif [[ "$http_code" == "401" ]]; then
-      msg_error "GitHub API authentication failed (HTTP 401)."
-      if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        msg_error "Your GITHUB_TOKEN appears to be invalid or expired."
-      else
-        msg_error "The repository may require authentication. Try: export GITHUB_TOKEN=\"ghp_your_token\""
-      fi
-      rm -f "$gh_check_json"
-      return 22
-    elif [[ "$http_code" == "403" ]]; then
-      msg_error "GitHub API rate limit exceeded (HTTP 403)."
-      msg_error "To increase the limit, export a GitHub token before running the script:"
-      msg_error "  export GITHUB_TOKEN=\"ghp_your_token_here\""
-      rm -f "$gh_check_json"
-      return 22
-    elif [[ "$http_code" == "000" || -z "$http_code" ]]; then
-      msg_error "GitHub API connection failed (no response)."
-      msg_error "Check your network/DNS: curl -sSL https://api.github.com/rate_limit"
-      rm -f "$gh_check_json"
-      return 7
-    else
-      msg_error "Unable to fetch releases for ${app} (HTTP ${http_code})"
-      rm -f "$gh_check_json"
+    local list
+    list="$(_forge_descriptor "$forge" list)"
+    _forge_http_get "$forge" "${base}/${repo_path}${list}" "$json_file"
+    rc=$?
+    ((rc != 0)) && return "$rc"
+    if [[ ! -s "$json_file" ]]; then
+      msg_error "Empty response from ${forge} for ${app}"
       return 22
     fi
-    rm -f "$gh_check_json"
+    releases_json="$(<"$json_file")"
   fi
 
+  # GH_INCLUDE_PRERELEASE was honoured by the deploy path and ignored here, so
+  # a betas-only project reported "no update" and then deployed one anyway.
+  local pre="false"
+  [[ "${GH_INCLUDE_PRERELEASE:-0}" == "1" ]] && pre="true"
+
+  local filter
+  filter="$(_forge_stable_filter "$forge")"
+
+  local raw_tags=()
   if [[ -n "$tag_prefix" ]]; then
-    mapfile -t raw_tags < <(jq -r --arg p "$tag_prefix" \
-      '.[] | select(.draft==false and .prerelease==false) | select(.tag_name | startswith($p)) | .tag_name' <<<"$releases_json")
+    mapfile -t raw_tags < <(jq -r --argjson pre "$pre" --arg p "$tag_prefix" \
+      ".[] | ${filter} | select(.tag_name | startswith(\$p)) | .tag_name" <<<"$releases_json")
   else
-    mapfile -t raw_tags < <(jq -r '.[] | select(.draft==false and .prerelease==false) | .tag_name' <<<"$releases_json")
+    mapfile -t raw_tags < <(jq -r --argjson pre "$pre" \
+      ".[] | ${filter} | .tag_name" <<<"$releases_json")
   fi
+
   if ((${#raw_tags[@]} == 0)); then
     if [[ -n "$tag_prefix" ]]; then
       msg_error "No stable releases matching prefix '${tag_prefix}' found for ${app}"
@@ -1172,46 +1253,33 @@ check_for_gh_release() {
     return 250
   fi
 
-  local clean_tags=()
+  # One strip rule for every value. Codeberg used a guarded strip for upstream
+  # tags and an unguarded one for the installed version, so any tag whose v is
+  # not followed by a digit -- vault-1.0, version-3 -- never matched and the
+  # app offered the same update on every single run.
+  local clean_tags=() t
   for t in "${raw_tags[@]}"; do
-    # Only strip leading 'v' when followed by a digit (e.g. v1.2.3)
-    if [[ "$t" =~ ^v[0-9] ]]; then
-      clean_tags+=("${t:1}")
-    else
-      clean_tags+=("$t")
-    fi
+    clean_tags+=("$(_forge_strip_v "$t")")
   done
 
-  local latest_raw="${raw_tags[0]}"
-  local latest_clean="${clean_tags[0]}"
+  local latest_raw="${raw_tags[0]}" latest_clean="${clean_tags[0]}"
 
-  # current installed (stored without v)
-  local current=""
+  local current="" legacy_files=()
   if [[ -f "$current_file" ]]; then
     current="$(<"$current_file")"
   else
-    # Migration: search for any /opt/*_version.txt
-    local legacy_files
     mapfile -t legacy_files < <(find /opt -maxdepth 1 -type f -name "*_version.txt" 2>/dev/null)
     if ((${#legacy_files[@]} == 1)); then
-      current="$(<"${legacy_files[0]}")"
-      echo "${current#v}" >"$current_file"
+      current="$(_forge_strip_v "$(<"${legacy_files[0]}")")"
+      echo "$current" >"$current_file"
       rm -f "${legacy_files[0]}"
     fi
   fi
-  if [[ "$current" =~ ^v[0-9] ]]; then
-    current="${current:1}"
-  fi
+  current="$(_forge_strip_v "$current")"
 
-  # Pinned version handling
   if [[ -n "$pinned_version_in" ]]; then
-    local pin_clean
-    if [[ "$pinned_version_in" =~ ^v[0-9] ]]; then
-      pin_clean="${pinned_version_in:1}"
-    else
-      pin_clean="$pinned_version_in"
-    fi
-    local match_raw=""
+    local pin_clean match_raw="" i
+    pin_clean="$(_forge_strip_v "$pinned_version_in")"
     for i in "${!clean_tags[@]}"; do
       if [[ "${clean_tags[$i]}" == "$pin_clean" ]]; then
         match_raw="${raw_tags[$i]}"
@@ -1226,7 +1294,7 @@ check_for_gh_release() {
 
     if [[ "$current" != "$pin_clean" ]]; then
       CHECK_UPDATE_RELEASE="$match_raw"
-      msg_ok "Update available: ${app} ${current:-not installed} → ${pin_clean}"
+      msg_ok "Update available: ${app} ${current:-not installed} -> ${pin_clean}"
       return 0
     fi
 
@@ -1238,15 +1306,20 @@ check_for_gh_release() {
     return 1
   fi
 
-  # No pinning → use latest
-  if [[ -z "$current" || "$current" != "$latest_clean" ]]; then
+  if [[ "$current" != "$latest_clean" ]]; then
     CHECK_UPDATE_RELEASE="$latest_raw"
-    msg_ok "Update available: ${app} ${current:-not installed} → ${latest_clean}"
+    msg_ok "Update available: ${app} ${current:-not installed} -> ${latest_clean}"
     return 0
   fi
 
   msg_ok "No update available: ${app} (${latest_clean})"
   return 1
+}
+
+# Wrapper: the implementation is check_for_release. Kept so the 82 call
+# sites in ProxmoxVED and the ~900 in ProxmoxVE keep working unchanged.
+check_for_gh_release() {
+  check_for_release github "$1" "$2" "${3:-}" "${4:-}" "${5:-}"
 }
 # ------------------------------------------------------------------------------
 # Checks for new Codeberg release (latest tag).
@@ -1268,107 +1341,11 @@ check_for_gh_release() {
 #   - Does not modify anything, only checks version state
 #   - Does not support pre-releases
 # ------------------------------------------------------------------------------
+# Wrapper around check_for_release. The old body stripped the installed
+# version's leading v unconditionally while guarding the upstream tags,
+# so tags like vault-1.0 reported an update forever; that is gone with it.
 check_for_codeberg_release() {
-  local app="$1"
-  local source="$2"
-  local pinned_version_in="${3:-}" # optional
-  local pin_reason="${4:-}"        # optional reason shown to user
-  local app_lc="${app,,}"
-  local current_file="$HOME/.${app_lc}"
-
-  msg_info "Checking for update: ${app}"
-
-  # DNS check
-  if ! getent hosts codeberg.org >/dev/null 2>&1; then
-    msg_error "Network error: cannot resolve codeberg.org"
-    return 6
-  fi
-
-  ensure_dependencies jq
-
-  # Fetch releases from Codeberg API
-  local releases_json=""
-  releases_json=$(curl -fsSL --max-time 20 \
-    -H 'Accept: application/json' \
-    "https://codeberg.org/api/v1/repos/${source}/releases" 2>/dev/null) || {
-    msg_error "Unable to fetch releases for ${app} (codeberg.org/api/v1/repos/${source}/releases)"
-    return 22
-  }
-
-  mapfile -t raw_tags < <(jq -r '.[] | select(.draft==false and .prerelease==false) | .tag_name' <<<"$releases_json")
-  if ((${#raw_tags[@]} == 0)); then
-    msg_error "No stable releases found for ${app}"
-    return 250
-  fi
-
-  local clean_tags=()
-  for t in "${raw_tags[@]}"; do
-    # Only strip leading 'v' when followed by a digit (e.g. v1.2.3)
-    if [[ "$t" =~ ^v[0-9] ]]; then
-      clean_tags+=("${t:1}")
-    else
-      clean_tags+=("$t")
-    fi
-  done
-
-  local latest_raw="${raw_tags[0]}"
-  local latest_clean="${clean_tags[0]}"
-
-  # current installed (stored without v)
-  local current=""
-  if [[ -f "$current_file" ]]; then
-    current="$(<"$current_file")"
-  else
-    # Migration: search for any /opt/*_version.txt
-    local legacy_files
-    mapfile -t legacy_files < <(find /opt -maxdepth 1 -type f -name "*_version.txt" 2>/dev/null)
-    if ((${#legacy_files[@]} == 1)); then
-      current="$(<"${legacy_files[0]}")"
-      echo "${current#v}" >"$current_file"
-      rm -f "${legacy_files[0]}"
-    fi
-  fi
-  current="${current#v}"
-
-  # Pinned version handling
-  if [[ -n "$pinned_version_in" ]]; then
-    local pin_clean="${pinned_version_in#v}"
-    local match_raw=""
-    for i in "${!clean_tags[@]}"; do
-      if [[ "${clean_tags[$i]}" == "$pin_clean" ]]; then
-        match_raw="${raw_tags[$i]}"
-        break
-      fi
-    done
-
-    if [[ -z "$match_raw" ]]; then
-      msg_error "Pinned version ${pinned_version_in} not found upstream"
-      return 250
-    fi
-
-    if [[ "$current" != "$pin_clean" ]]; then
-      CHECK_UPDATE_RELEASE="$match_raw"
-      msg_ok "Update available: ${app} ${current:-not installed} → ${pin_clean}"
-      return 0
-    fi
-
-    if [[ -n "$pin_reason" ]]; then
-      msg_ok "No update available: ${app} (${current}) - update held back: ${pin_reason}"
-    else
-      msg_ok "No update available: ${app} (${current}) - update temporarily held back due to issues with newer releases"
-    fi
-    return 1
-  fi
-
-  # No pinning → use latest
-  if [[ -z "$current" || "$current" != "$latest_clean" ]]; then
-    CHECK_UPDATE_RELEASE="$latest_raw"
-    msg_ok "Update available: ${app} ${current:-not installed} → ${latest_clean}"
-    return 0
-  fi
-
-  msg_ok "No update available: ${app} (${latest_clean})"
-  return 1
+  check_for_release codeberg "$1" "$2" "${3:-}" "${4:-}" "${5:-}"
 }
 
 fetch_and_deploy_codeberg_release() {
@@ -2420,182 +2397,9 @@ get_latest_gitlab_release() {
 #   - Supports GITLAB_URL for self-hosted GitLab (default: https://gitlab.com)
 #   - Does not modify anything, only checks version state
 # ------------------------------------------------------------------------------
+# Wrapper around check_for_release; GITLAB_URL still selects the host.
 check_for_gl_release() {
-  local app="$1"
-  local source="$2"
-  local pinned_version_in="${3:-}" # optional
-  local pin_reason="${4:-}"        # optional reason shown to user
-  local tag_prefix="${5:-}"        # optional tag prefix filter (e.g. web-v2)
-  local app_lc="${app,,}"
-  local current_file="$HOME/.${app_lc}"
-
-  local gitlab_url="${GITLAB_URL:-https://gitlab.com}"
-  local gitlab_hostname="${gitlab_url#*://}"
-  gitlab_hostname="${gitlab_hostname%%/*}"
-
-  msg_info "Checking for update: ${app}"
-
-  # DNS check
-  if ! getent hosts "$gitlab_hostname" >/dev/null 2>&1; then
-    msg_error "Network error: cannot resolve $gitlab_hostname"
-    return 6
-  fi
-
-  ensure_dependencies jq
-
-  local gl_check_json
-  gl_check_json=$(mktemp /tmp/tools-gl-check-XXXXXX) || return 73
-  trap 'rm -f "$gl_check_json"; trap - RETURN' RETURN
-
-  local repo_encoded
-  repo_encoded=$(printf '%s' "$source" | sed 's|/|%2F|g')
-
-  local header=()
-  [[ -n "${GITLAB_TOKEN:-}" ]] && header=(-H "PRIVATE-TOKEN: $GITLAB_TOKEN")
-
-  local releases_json="" http_code=""
-
-  # For pinned versions, try to fetch the specific release tag first
-  if [[ -n "$pinned_version_in" ]]; then
-    local pinned_encoded="${pinned_version_in//\//%2F}"
-    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$gl_check_json" \
-      "${header[@]}" \
-      "${gitlab_url}/api/v4/projects/$repo_encoded/releases/$pinned_encoded" 2>/dev/null) || true
-    if [[ "$http_code" == "200" ]] && [[ -s "$gl_check_json" ]]; then
-      releases_json="[$(<"$gl_check_json")]"
-    fi
-    rm -f "$gl_check_json"
-  fi
-
-  # Fetch full releases list if needed
-  if [[ -z "$releases_json" ]]; then
-    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$gl_check_json" \
-      "${header[@]}" \
-      "${gitlab_url}/api/v4/projects/$repo_encoded/releases?per_page=100&order_by=released_at&sort=desc" 2>/dev/null) || true
-
-    if [[ "$http_code" == "200" ]] && [[ -s "$gl_check_json" ]]; then
-      releases_json=$(<"$gl_check_json")
-    elif [[ "$http_code" == "401" ]]; then
-      msg_error "GitLab API authentication failed (HTTP 401)."
-      if [[ -n "${GITLAB_TOKEN:-}" ]]; then
-        msg_error "Your GITLAB_TOKEN appears to be invalid or expired."
-      else
-        msg_error "The repository may require authentication. Try: export GITLAB_TOKEN=\"glpat-your_token\""
-      fi
-      rm -f "$gl_check_json"
-      return 22
-    elif [[ "$http_code" == "404" ]]; then
-      msg_error "GitLab project not found (HTTP 404). Ensure '${source}' is correct and publicly accessible."
-      rm -f "$gl_check_json"
-      return 22
-    elif [[ "$http_code" == "429" ]]; then
-      msg_error "GitLab API rate limit exceeded (HTTP 429)."
-      msg_error "To increase the limit, export a GitLab token: export GITLAB_TOKEN=\"glpat-your_token_here\""
-      rm -f "$gl_check_json"
-      return 22
-    elif [[ "$http_code" == "000" || -z "$http_code" ]]; then
-      msg_error "GitLab API connection failed (no response)."
-      msg_error "Check your network/DNS: curl -sSL ${gitlab_url}/api/v4/version"
-      rm -f "$gl_check_json"
-      return 7
-    else
-      msg_error "Unable to fetch releases for ${app} (HTTP ${http_code})"
-      rm -f "$gl_check_json"
-      return 22
-    fi
-    rm -f "$gl_check_json"
-  fi
-
-  if [[ -n "$tag_prefix" ]]; then
-    mapfile -t raw_tags < <(jq -r --arg p "$tag_prefix" \
-      '.[] | select(.tag_name | startswith($p)) | .tag_name' <<<"$releases_json")
-  else
-    mapfile -t raw_tags < <(jq -r '.[] | .tag_name' <<<"$releases_json")
-  fi
-  if ((${#raw_tags[@]} == 0)); then
-    if [[ -n "$tag_prefix" ]]; then
-      msg_error "No releases matching prefix '${tag_prefix}' found for ${app} on GitLab"
-    else
-      msg_error "No releases found for ${app} on GitLab"
-    fi
-    return 250
-  fi
-
-  local clean_tags=()
-  for t in "${raw_tags[@]}"; do
-    # Only strip leading 'v' when followed by a digit (e.g. v1.2.3)
-    if [[ "$t" =~ ^v[0-9] ]]; then
-      clean_tags+=("${t:1}")
-    else
-      clean_tags+=("$t")
-    fi
-  done
-
-  local latest_raw="${raw_tags[0]}"
-  local latest_clean="${clean_tags[0]}"
-
-  # current installed (stored without v)
-  local current=""
-  if [[ -f "$current_file" ]]; then
-    current="$(<"$current_file")"
-  else
-    # Migration: search for any /opt/*_version.txt
-    local legacy_files
-    mapfile -t legacy_files < <(find /opt -maxdepth 1 -type f -name "*_version.txt" 2>/dev/null)
-    if ((${#legacy_files[@]} == 1)); then
-      current="$(<"${legacy_files[0]}")"
-      echo "${current#v}" >"$current_file"
-      rm -f "${legacy_files[0]}"
-    fi
-  fi
-  if [[ "$current" =~ ^v[0-9] ]]; then
-    current="${current:1}"
-  fi
-
-  # Pinned version handling
-  if [[ -n "$pinned_version_in" ]]; then
-    local pin_clean
-    if [[ "$pinned_version_in" =~ ^v[0-9] ]]; then
-      pin_clean="${pinned_version_in:1}"
-    else
-      pin_clean="$pinned_version_in"
-    fi
-    local match_raw=""
-    for i in "${!clean_tags[@]}"; do
-      if [[ "${clean_tags[$i]}" == "$pin_clean" ]]; then
-        match_raw="${raw_tags[$i]}"
-        break
-      fi
-    done
-
-    if [[ -z "$match_raw" ]]; then
-      msg_error "Pinned version ${pinned_version_in} not found upstream"
-      return 250
-    fi
-
-    if [[ "$current" != "$pin_clean" ]]; then
-      CHECK_UPDATE_RELEASE="$match_raw"
-      msg_ok "Update available: ${app} ${current:-not installed} → ${pin_clean}"
-      return 0
-    fi
-
-    if [[ -n "$pin_reason" ]]; then
-      msg_ok "No update available: ${app} (${current}) - update held back: ${pin_reason}"
-    else
-      msg_ok "No update available: ${app} (${current}) - update temporarily held back due to issues with newer releases"
-    fi
-    return 1
-  fi
-
-  # No pinning → use latest
-  if [[ -z "$current" || "$current" != "$latest_clean" ]]; then
-    CHECK_UPDATE_RELEASE="$latest_raw"
-    msg_ok "Update available: ${app} ${current:-not installed} → ${latest_clean}"
-    return 0
-  fi
-
-  msg_ok "No update available: ${app} (${latest_clean})"
-  return 1
+  check_for_release gitlab "$1" "$2" "${3:-}" "${4:-}" "${5:-}"
 }
 
 # ------------------------------------------------------------------------------
