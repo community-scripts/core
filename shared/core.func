@@ -887,7 +887,11 @@ get_header() {
   # from the script repos, so a script repo carries none of its own.
   local core_url="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
   local rel
-  for rel in "${app_type}/${platform}/${app_name}" "${app_type}/${app_name}"; do
+  # Generic first. The platform folders hold five headers between them, all for
+  # apps with no generic one, so the two sets are disjoint and the order cannot
+  # change which header wins — only how often the first lookup 404s. Platform
+  # first made that 673 of 673 ct runs.
+  for rel in "${app_type}/${app_name}" "${app_type}/${platform}/${app_name}"; do
     # Local core checkout wins, so a fork or branch renders its own headers.
     if [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -s "${COMMUNITY_SCRIPTS_CORE_DIR}/headers/${rel}" ]]; then
       cat "${COMMUNITY_SCRIPTS_CORE_DIR}/headers/${rel}" 2>/dev/null || true

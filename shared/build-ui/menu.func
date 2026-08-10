@@ -172,6 +172,18 @@ echo_default() {
 # - Applies chosen settings and triggers container build
 # ------------------------------------------------------------------------------
 install_script() {
+  # pvesh spawns a Perl client and waits on pvedaemon — the slowest thing here
+  # by far, and it needs nothing the checks below produce. Start it now and
+  # collect it when it is actually needed, so it runs while they do.
+  local _nextid_file="" _nextid_pid=""
+  if ! declare -f get_next_container_identifier &>/dev/null && command -v pvesh &>/dev/null; then
+    _nextid_file="$(mktemp 2>/dev/null)" || _nextid_file=""
+    if [[ -n "$_nextid_file" ]]; then
+      pvesh get /cluster/nextid >"$_nextid_file" 2>/dev/null &
+      _nextid_pid=$!
+    fi
+  fi
+
   pve_check
   shell_check
   root_check
@@ -188,6 +200,13 @@ install_script() {
 
   if declare -f get_next_container_identifier &>/dev/null; then
     NEXTID="$(get_next_container_identifier)"
+  elif [[ -n "$_nextid_pid" ]]; then
+    wait "$_nextid_pid" 2>/dev/null || true
+    NEXTID="$(tr -d '[:space:]' <"$_nextid_file" 2>/dev/null)"
+    rm -f "$_nextid_file"
+    # A backgrounded call that came back empty is not a reason to continue with
+    # an empty CTID; ask again in the foreground so the error is the real one.
+    [[ -z "$NEXTID" ]] && NEXTID=$(pvesh get /cluster/nextid)
   else
     NEXTID=$(pvesh get /cluster/nextid)
   fi
