@@ -44,6 +44,20 @@ parse_dev_mode() {
     export "DEV_MODE_${flag^^}=false"
   done
 
+  # dev_mode set without naming flags means "ask me": the picker opens before
+  # the install menu. dev_mode=net,timing skips it and goes straight in.
+  _DEV_MODE_ASK=0
+  if [[ -n "${dev_mode+x}" ]]; then
+    case "${dev_mode,,}" in
+    "" | 1 | yes | true | ask | menu)
+      _DEV_MODE_ASK=1
+      export _DEV_MODE_ASK
+      return 0
+      ;;
+    esac
+  fi
+  export _DEV_MODE_ASK
+
   [[ -z "${dev_mode:-}" ]] && return 0
 
   local active=()
