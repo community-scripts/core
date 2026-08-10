@@ -1957,11 +1957,18 @@ _forge_scan_older() {
     printf '%s' "$j" >"$out"
     return 0
     ;;
+  gitlab)
+    declare -f _gl_scan_older_releases >/dev/null 2>&1 || return 1
+    local j
+    j="$(_gl_scan_older_releases "$repo" "${repo//\//%2F}"       "${GITLAB_URL:-https://gitlab.com}" "$mode" "$pattern" "$skip_tag")" || return 1
+    [[ -n "$j" ]] || return 1
+    printf '%s' "$j" >"$out"
+    return 0
+    ;;
   *)
-    # GitLab's variant took a different argument list and Codeberg had none.
-    # Rather than keep one forge-specific scanner alive, this is left to the
-    # caller's error path until there is a call site that needs it: neither
-    # forge has one today.
+    # Codeberg has no scanner. Its /releases list is the same shape as the
+    # others, so one could be written -- but nothing calls it today, and an
+    # untested fallback is worse than a clean failure.
     return 1
     ;;
   esac
