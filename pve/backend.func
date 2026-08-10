@@ -1951,13 +1951,9 @@ create_lxc_container() {
     )
     all_versions+=("${_local_vers[@]}")
 
-    if command -v timeout &>/dev/null; then
-      timeout 30 pveam update >/dev/null 2>&1 || true
-    else
-      pveam update >/dev/null 2>&1 || true
-    fi
+    _pveam_update || true
     mapfile -t _online_vers < <(
-      pveam available -section system 2>/dev/null |
+      _pveam_available |
         awk '{print $2}' |
         grep -E "^${os_type}-[0-9]" |
         { [[ -n "$tpl_pattern" ]] && grep "$tpl_pattern" || cat; } |
@@ -1991,7 +1987,7 @@ create_lxc_container() {
       fallback_template="${_fb_local[-1]}"
     else
       mapfile -t _fb_online < <(
-        pveam available -section system 2>/dev/null |
+        _pveam_available |
           awk '{print $2}' |
           grep -E "^${fallback_search}.*${tpl_pattern}" |
           sort -t - -k 2 -V 2>/dev/null || true
@@ -2065,13 +2061,9 @@ create_lxc_container() {
       )
       all_versions+=("${_local_vers[@]}")
 
-      if command -v timeout &>/dev/null; then
-        timeout 30 pveam update >/dev/null 2>&1 || true
-      else
-        pveam update >/dev/null 2>&1 || true
-      fi
+      _pveam_update || true
       mapfile -t _online_vers < <(
-        pveam available -section system 2>/dev/null |
+        _pveam_available |
           awk '{print $2}' |
           grep -E "^${os_type}-[0-9]" |
           { [[ -n "$tpl_pattern" ]] && grep "$tpl_pattern" || cat; } |
@@ -2516,11 +2508,11 @@ create_lxc_container() {
 
       # Update catalog with timeout to prevent long hangs
       if command -v timeout &>/dev/null; then
-        if ! timeout 30 pveam update >/dev/null 2>&1; then
+        if ! _pveam_update; then
           msg_warn "Template catalog update timed out (possible network/DNS issue). Run 'pveam update' manually to diagnose."
         fi
       else
-        pveam update >/dev/null 2>&1 || msg_warn "Could not update template catalog (pveam update failed)"
+        _pveam_update || msg_warn "Could not update template catalog (pveam update failed)"
       fi
 
       ONLINE_TEMPLATES=()
@@ -2548,7 +2540,7 @@ create_lxc_container() {
 
       AVAILABLE_VERSIONS=()
       mapfile -t AVAILABLE_VERSIONS < <(
-        pveam available -section system 2>/dev/null |
+        _pveam_available |
           grep -E '\.(tar\.zst|tar\.xz|tar\.gz)$' |
           awk -F'\t' '{print $1}' |
           grep "^${PCT_OSTYPE}-" |
@@ -2579,7 +2571,7 @@ create_lxc_container() {
               sed 's|.*/||' | sort -t - -k 2 -V
           )
           mapfile -t ONLINE_TEMPLATES < <(
-            pveam available -section system 2>/dev/null |
+            _pveam_available |
               grep -E '\.(tar\.zst|tar\.xz|tar\.gz)$' |
               awk '{print $2}' |
               grep -E "^${TEMPLATE_SEARCH}-.*${TEMPLATE_PATTERN}" |

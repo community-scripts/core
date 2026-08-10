@@ -303,13 +303,66 @@ require_debian_like() {
 # - Supported: PVE 8.0-8.9 and PVE 9.0-9.2
 # - Exits with error message if unsupported version detected
 # ------------------------------------------------------------------------------
+# pveversion and `pveam available` are Perl programs answering the same thing
+# all run: the host version and the template catalog. They were invoked 4 and 9
+# times, each a fresh process.
+#
+# The cache is a file, not a variable. Every call site reads these through a
+# pipe or $( ), which is a subshell — a variable assigned in there is gone the
+# moment it returns, so a shell-variable memo would never hit. $$ stays the
+# parent's pid inside a subshell, which makes the path the same for all of them.
+_cs_runtime_cache_dir() {
+  local base
+  for base in /dev/shm "${TMPDIR:-/tmp}" /tmp; do
+    [[ -d "$base" && -w "$base" ]] && { printf '%s' "$base"; return 0; }
+  done
+  return 1
+}
+
+_pve_version() {
+  [[ -n "${PVEVERSION:-}" ]] && { printf '%s' "$PVEVERSION"; return 0; }
+  local dir cache
+  dir="$(_cs_runtime_cache_dir)" || {
+    pveversion 2>/dev/null | awk -F'/' '{print $2}' | awk -F'-' '{print $1}'
+    return
+  }
+  cache="${dir}/cs-pveversion.$$"
+  [[ -s "$cache" ]] ||
+    pveversion 2>/dev/null | awk -F'/' '{print $2}' | awk -F'-' '{print $1}' >"$cache"
+  cat "$cache" 2>/dev/null
+}
+
+_pveam_available() {
+  local dir cache
+  dir="$(_cs_runtime_cache_dir)" || {
+    pveam available -section system 2>/dev/null
+    return
+  }
+  cache="${dir}/cs-pveam.$$"
+  [[ -s "$cache" ]] || pveam available -section system 2>/dev/null >"$cache"
+  cat "$cache" 2>/dev/null
+}
+
+# `pveam update` exists so the next read sees something new, so it drops the
+# cache. Every update site goes through here for that reason.
+_pveam_update() {
+  local dir
+  dir="$(_cs_runtime_cache_dir)" && rm -f "${dir}/cs-pveam.$$"
+  if command -v timeout &>/dev/null; then
+    timeout 30 pveam update >/dev/null 2>&1 || return 1
+  else
+    pveam update >/dev/null 2>&1 || return 1
+  fi
+  return 0
+}
+
 pve_check() {
   local PVE_VER
   if ! on_pve_host; then
     msg_error "${APP:-This script} must be run on the Proxmox VE host."
     exit 232
   fi
-  PVE_VER="$(pveversion | awk -F'/' '{print $2}' | awk -F'-' '{print $1}')"
+  PVE_VER="$(_pve_version)"
 
   # Check for Proxmox VE 8.x: allow 8.0–8.9
   if [[ "$PVE_VER" =~ ^8\.([0-9]+) ]]; then

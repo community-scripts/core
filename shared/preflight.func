@@ -468,7 +468,7 @@ preflight_template_available() {
 
   # Check online catalog
   local online_match=0
-  if pveam available -section system 2>/dev/null | awk '{print $2}' | grep -qE "^${search_pattern}[._-]"; then
+  if _pveam_available | awk '{print $2}' | grep -qE "^${search_pattern}[._-]"; then
     online_match=1
   fi
 
@@ -480,7 +480,7 @@ preflight_template_available() {
   # Gather available versions for the hint
   local available_versions
   available_versions=$(
-    pveam available -section system 2>/dev/null |
+    _pveam_available |
       awk '{print $2}' |
       grep -oE "^${os}-[0-9]+(\.[0-9]+)?" |
       sed "s/^${os}-//" |

@@ -646,7 +646,7 @@ check_root() {
 
 pve_check() {
   local pve_ver
-  pve_ver="$(pveversion | awk -F'/' '{print $2}' | awk -F'-' '{print $1}')"
+  pve_ver="$(declare -f _pve_version >/dev/null 2>&1 && _pve_version || pveversion | awk -F'/' '{print $2}' | awk -F'-' '{print $1}')"
 
   if [[ "$pve_ver" =~ ^8\.([0-9]+) ]]; then
     local minor="${BASH_REMATCH[1]}"

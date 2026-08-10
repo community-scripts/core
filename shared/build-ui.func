@@ -80,7 +80,7 @@ variables() {
 
   # Get Proxmox VE version and kernel version
   if command -v pveversion >/dev/null 2>&1; then
-    PVEVERSION="$(pveversion | awk -F'/' '{print $2}' | awk -F'-' '{print $1}')"
+    PVEVERSION="$(_pve_version)"
   else
     PVEVERSION="N/A"
   fi
