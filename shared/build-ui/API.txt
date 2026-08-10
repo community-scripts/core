@@ -1,12 +1,16 @@
 _build_current_app_vars_tmp
 _build_vars_diff
 _container_write_failure
+_cs_runtime_cache_dir
 _get_current_ip
 _is_container_context
 _is_whitelisted_key
 _list_os_versions
 _list_templates
 _load_vars_file_to_map
+_pve_version
+_pveam_available
+_pveam_update
 _sanitize_value
 _send_abort_telemetry
 _stop_container_if_installing

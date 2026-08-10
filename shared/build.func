@@ -220,7 +220,7 @@ _cs_prefetch_engine() {
     [[ -d "$base" && -w "$base" ]] || continue
     # An EXIT trap would be the obvious cleanup, but core.func and api.func
     # install their own later and the last one wins. Sweep instead.
-    find "$base" -maxdepth 1 -name 'cs-engine.*' -type d -mmin +60       -exec rm -rf {} + 2>/dev/null || true
+    find "$base" -maxdepth 1 \( -name 'cs-engine.*' -o -name 'cs-pveam.*'       -o -name 'cs-pveversion.*' \) -mmin +60 -exec rm -rf {} + 2>/dev/null || true
     dir="$(mktemp -d "${base}/cs-engine.XXXXXX" 2>/dev/null)" && break
     dir=""
   done
