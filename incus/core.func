@@ -72,6 +72,13 @@ incus_color() {
   GN=$(echo "\033[1;92m")
   DGN=$(echo "\033[32m")
   CL=$(echo "\033[m")
+
+  # Same as shared/core.func: a dev run is red, so it never reads as a normal one.
+  if [[ -n "${dev_mode:-}" ]]; then
+    BGN=$(echo "\033[4;91m")
+    GN=$(echo "\033[1;91m")
+    DGN=$(echo "\033[31m")
+  fi
 }
 
 # ------------------------------------------------------------------------------
