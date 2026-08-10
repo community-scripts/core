@@ -2,6 +2,10 @@ _build_current_app_vars_tmp
 _build_vars_diff
 _container_write_failure
 _cs_runtime_cache_dir
+_dev_step_end
+_dev_step_key
+_dev_step_start
+_dev_timing_dir
 _get_current_ip
 _is_container_context
 _is_whitelisted_key
@@ -50,7 +54,9 @@ detect_cpu
 detect_gpu
 detect_ram
 detect_repo_source
+dev_mode_context
 dev_mode_menu
+dev_mode_timing_summary
 diagnostics_check
 diagnostics_menu
 echo_default
