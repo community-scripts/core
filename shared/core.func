@@ -196,7 +196,10 @@ set_std_mode() {
   # Enable bash tracing if trace mode active
   if [[ "${DEV_MODE_TRACE:-false}" == "true" ]]; then
     set -x
-    export PS4='+(${BASH_SOURCE}:${LINENO}): ${FUNCNAME[0]:+${FUNCNAME[0]}(): }'
+    # BASH_SOURCE is empty at the top level of `bash -c` and inside a
+    # `source /dev/stdin`, which is exactly how the install script runs in the
+    # container. Unguarded, set -u aborts the run the moment PS4 is expanded.
+    export PS4='+(${BASH_SOURCE:-?}:${LINENO}): ${FUNCNAME[0]:+${FUNCNAME[0]}(): }'
   fi
 }
 
