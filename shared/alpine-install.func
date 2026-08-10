@@ -39,6 +39,11 @@ _bootstrap_source() {
 
 _bootstrap_source "$(_cs_core_url core.func)" load_functions
 _bootstrap_source "$(_cs_core_url error_handler.func)" catch_errors
+# Same as install.func: only fetched when a dev flag is set, since core.func's
+# timing hooks no-op without it and the host exports the parsed flags.
+if [[ -n "${dev_mode:-}" ]]; then
+  _bootstrap_source "$(_cs_core_url dev-mode.func)" parse_dev_mode
+fi
 load_functions
 catch_errors
 

@@ -294,6 +294,13 @@ _bootstrap() {
   _cs_ct_prefetch_engine || true
   source <(_cs_engine_read core.func)
   source <(_cs_engine_read error_handler.func)
+  # The dev helpers are worth a round trip only when a flag is set: core.func's
+  # timing hooks no-op without them, and error_handler's exit path asks for the
+  # summary with declare -f. The host exports the parsed DEV_MODE_* flags, so
+  # there is nothing to re-parse on this side.
+  if [[ -n "${dev_mode:-}" ]]; then
+    source <(_cs_engine_read dev-mode.func)
+  fi
   load_functions
   catch_errors
 

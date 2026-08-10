@@ -1160,6 +1160,180 @@ _forge_http_get() {
 }
 
 # ------------------------------------------------------------------------------
+# _forge_asset_urls()
+#
+# - One download URL per line from a release object. This is the single jq
+#   difference that kept the binary/prebuild/singlefile blocks from being shared:
+#   GitLab hangs its files off .assets.links, the other two off .assets.
+# ------------------------------------------------------------------------------
+_forge_asset_urls() {
+  local forge="${1:?forge}"
+  case "$forge" in
+  gitlab) jq -r '(.assets.links // [])[] | .direct_asset_url // .url' ;;
+  *) jq -r '.assets[]?.browser_download_url // empty' ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------
+# _forge_source_url()
+#
+#   _forge_source_url <forge> <repo> <tag_name> <app_lc> <version_safe>
+#
+# - GitHub deliberately uses refs/tags/: the API's tarball_url answers HTTP 300
+#   when a branch and a tag share a name.
+# ------------------------------------------------------------------------------
+_forge_source_url() {
+  local forge="${1:?forge}" repo="${2:?repo}" tag="${3:?tag}"
+  local app_lc="${4:-}" version_safe="${5:-}"
+  case "$forge" in
+  github) echo "https://github.com/${repo}/archive/refs/tags/${tag}.tar.gz" ;;
+  codeberg) echo "https://codeberg.org/${repo}/archive/${tag}.tar.gz" ;;
+  gitlab) echo "${GITLAB_URL:-https://gitlab.com}/${repo}/-/archive/${tag}/${app_lc}-${version_safe}.tar.gz" ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------
+# _forge_release_json()
+#
+#   _forge_release_json <forge> <repo> <version> <tag_prefix> <outfile>
+#
+# - Fetches release metadata with the retry schedule the GitHub path has always
+#   used, and writes the SELECTED release object to <outfile>
+# - GitHub keeps its interactive token recovery: on 401 or an exhausted 403 it
+#   offers prompt_for_github_token and retries with the counters reset
+# ------------------------------------------------------------------------------
+_forge_release_json() {
+  local forge="${1:?forge}" repo="${2:?repo}" version="${3:-latest}"
+  local tag_prefix="${4:-}" out="${5:?outfile}"
+
+  local base repo_path list one
+  base="$(_forge_descriptor "$forge" base)"
+  repo_path="$repo"
+  [[ "$(_forge_descriptor "$forge" encode)" == "path" ]] && repo_path="${repo//\//%2F}"
+  list="$(_forge_descriptor "$forge" list)"
+  one="$(_forge_descriptor "$forge" one)"
+
+  local api_url single="false"
+  if [[ "$version" != "latest" ]]; then
+    api_url="${base}/${repo_path}${one}/${version//\//%2F}"
+    single="true"
+  else
+    api_url="${base}/${repo_path}${list}"
+  fi
+
+  local host
+  host="$(_forge_descriptor "$forge" host)"
+  if ! getent hosts "$host" &>/dev/null; then
+    msg_error "DNS resolution failed for $host - check /etc/resolv.conf or networking"
+    return 6
+  fi
+
+  local -a timeouts=(60 120 240)
+  local raw attempt=1 delay=2 code ok=false
+  raw="$(mktemp /tmp/tools-forge-rel-XXXXXX)" || return 73
+
+  local -a headers=()
+  local accept auth
+  accept="$(_forge_descriptor "$forge" accept)"
+  [[ -n "$accept" ]] && headers+=(-H "Accept: ${accept}")
+  [[ "$forge" == "github" ]] && headers+=(-H "X-GitHub-Api-Version: 2022-11-28")
+  auth="$(_forge_descriptor "$forge" auth)"
+  [[ -n "$auth" ]] && headers+=(-H "$auth")
+
+  while ((attempt <= ${#timeouts[@]})); do
+    code="$(curl -sSL -w "%{http_code}" -o "$raw" \
+      --max-time "${timeouts[$((attempt - 1))]}" \
+      "${headers[@]}" "$api_url" 2>/dev/null)" || true
+
+    if [[ "$code" == "200" ]]; then
+      ok=true
+      break
+    fi
+
+    if [[ "$forge" == "github" && "$code" == "401" ]]; then
+      msg_error "GitHub API authentication failed (HTTP 401)."
+      if declare -f prompt_for_github_token >/dev/null 2>&1 && prompt_for_github_token; then
+        headers=()
+        [[ -n "$accept" ]] && headers+=(-H "Accept: ${accept}")
+        headers+=(-H "X-GitHub-Api-Version: 2022-11-28")
+        auth="$(_forge_descriptor github auth)"
+        [[ -n "$auth" ]] && headers+=(-H "$auth")
+        attempt=1
+        continue
+      fi
+      rm -f "$raw"
+      return 22
+    fi
+
+    if [[ "$code" == "$(_forge_descriptor "$forge" ratelimit)" ]]; then
+      if ((attempt < ${#timeouts[@]})); then
+        msg_warn "${forge} rate limit hit, retrying in ${delay}s... (attempt ${attempt}/${#timeouts[@]})"
+        sleep "$delay"
+        delay=$((delay * 2))
+        attempt=$((attempt + 1))
+        continue
+      fi
+      if [[ "$forge" == "github" ]] && declare -f prompt_for_github_token >/dev/null 2>&1 && prompt_for_github_token; then
+        headers=()
+        [[ -n "$accept" ]] && headers+=(-H "Accept: ${accept}")
+        headers+=(-H "X-GitHub-Api-Version: 2022-11-28")
+        auth="$(_forge_descriptor github auth)"
+        [[ -n "$auth" ]] && headers+=(-H "$auth")
+        attempt=1
+        delay=2
+        continue
+      fi
+      msg_error "${forge} rate limit exceeded. Raise it with: $(_forge_descriptor "$forge" hint)"
+      rm -f "$raw"
+      return 22
+    fi
+
+    attempt=$((attempt + 1))
+  done
+
+  if [[ "$ok" != "true" ]]; then
+    if [[ "$code" == "000" ]]; then
+      msg_error "Connection to ${forge} failed"
+      rm -f "$raw"
+      return 7
+    fi
+    msg_error "${forge} API returned HTTP ${code} for ${repo}"
+    rm -f "$raw"
+    return 22
+  fi
+
+  local pre="false"
+  [[ "${GH_INCLUDE_PRERELEASE:-0}" == "1" ]] && pre="true"
+  local filter
+  filter="$(_forge_stable_filter "$forge")"
+
+  if [[ "$single" == "true" ]]; then
+    jq -c '.' "$raw" >"$out" 2>/dev/null
+  elif [[ -n "$tag_prefix" ]]; then
+    jq -c --argjson pre "$pre" --arg p "$tag_prefix" \
+      "[.[] | ${filter} | select(.tag_name | startswith(\$p))] | .[0] // empty" "$raw" >"$out" 2>/dev/null
+  else
+    jq -c --argjson pre "$pre" \
+      "[.[] | ${filter}] | .[0] // empty" "$raw" >"$out" 2>/dev/null
+  fi
+
+  # GitHub keeps the raw payload around on purpose: hwaccel.func reads .body
+  # from TOOLS_GH_REL_JSON after this call returns.
+  if [[ "$forge" == "github" ]]; then
+    TOOLS_GH_REL_JSON="$raw"
+    export TOOLS_GH_REL_JSON
+  else
+    rm -f "$raw"
+  fi
+
+  [[ -s "$out" ]] || {
+    msg_error "No matching release found for ${repo}"
+    return 250
+  }
+  return 0
+}
+
+# ------------------------------------------------------------------------------
 # check_for_release()
 #
 #   check_for_release <forge> <app> <repo> [pinned] [pin_reason] [tag_prefix]

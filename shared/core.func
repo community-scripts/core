@@ -735,6 +735,19 @@ stop_spinner() {
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
+# _dev_step_start() / _dev_step_end()
+#
+# - No-op stand-ins for the timing hooks msg_info and msg_ok call
+# - dev-mode.func owns the real ones, but it is only loaded on the host build
+#   path: inside a container, and in the standalone tools/ and vm/ scripts,
+#   core.func is the whole engine. Without these the first msg_info dies with
+#   "command not found".
+# - Guarded, so dev-mode.func wins whichever order the two are sourced in
+# ------------------------------------------------------------------------------
+declare -f _dev_step_start >/dev/null 2>&1 || _dev_step_start() { :; }
+declare -f _dev_step_end >/dev/null 2>&1 || _dev_step_end() { :; }
+
+# ------------------------------------------------------------------------------
 # msg_info()
 #
 # - Displays informational message with spinner animation
