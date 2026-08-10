@@ -10,6 +10,7 @@ _forge_asset_urls
 _forge_descriptor
 _forge_http_get
 _forge_release_json
+_forge_scan_older
 _forge_source_url
 _forge_stable_filter
 _forge_strip_v
@@ -65,6 +66,7 @@ fetch_and_deploy_gh_release
 fetch_and_deploy_gh_tag
 fetch_and_deploy_gl_release
 fetch_and_deploy_gl_tag
+fetch_and_deploy_release
 get_cached_version
 get_default_nodejs_version
 get_default_php_version
