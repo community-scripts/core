@@ -1320,6 +1320,11 @@ _forge_release_json() {
   # GitHub keeps the raw payload around on purpose: hwaccel.func reads .body
   # from TOOLS_GH_REL_JSON after this call returns.
   if [[ "$forge" == "github" ]]; then
+    # Drop the previous one first, or every call leaves a file behind and only
+    # the newest is ever read.
+    if [[ -n "${TOOLS_GH_REL_JSON:-}" && "$TOOLS_GH_REL_JSON" != "$raw" ]]; then
+      rm -f "$TOOLS_GH_REL_JSON"
+    fi
     TOOLS_GH_REL_JSON="$raw"
     export TOOLS_GH_REL_JSON
   else

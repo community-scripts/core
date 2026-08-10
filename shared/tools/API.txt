@@ -6,8 +6,11 @@ _deploy_unpacked_archive
 _diagnose_deb_failure
 _docker_is_noninteractive
 _download_source_tarball
+_forge_asset_urls
 _forge_descriptor
 _forge_http_get
+_forge_release_json
+_forge_source_url
 _forge_stable_filter
 _forge_strip_v
 _gh_scan_older_releases
