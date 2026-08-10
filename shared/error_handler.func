@@ -290,15 +290,276 @@ _container_write_failure() {
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
+# Message helpers
+#
+# core.func normally supplies msg_*, but this file is also sourced on its own,
+# so every call needs a fallback. Previously each site carried its own
+# `declare -f msg_warn` guard -- and most of the hint sites had no else branch,
+# which meant the hint vanished without a trace whenever core.func was absent.
+# One helper per level, each with a fallback, so nothing is silently dropped.
+# ------------------------------------------------------------------------------
+_eh_warn() {
+  if declare -f msg_warn >/dev/null 2>&1; then
+    msg_warn "$1"
+  else
+    echo -e "${YW:-}$1${CL:-}"
+  fi
+}
+
+_eh_info() {
+  if declare -f msg_info >/dev/null 2>&1; then
+    msg_info "$1"
+  else
+    echo -e "${YW:-}$1${CL:-}"
+  fi
+}
+
+_eh_ok() {
+  if declare -f msg_ok >/dev/null 2>&1; then
+    msg_ok "$1"
+  else
+    echo -e "${GN:-}✔${CL:-} $1"
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# _eh_explanation() - human-readable cause, printed on stdout
+#
+# explain_exit_code borrows curl's numbering for a large block of codes. Those
+# readings are only right if curl is what actually ran, so they are dropped when
+# the failing command was something else.
+# ------------------------------------------------------------------------------
+_eh_explanation() {
+  local exit_code="$1" command="$2" explanation
+  explanation="$(explain_exit_code "$exit_code")"
+  if [[ "$explanation" == curl:* && ! "$command" =~ (^|[[:space:]])([^[:space:]]*/)?curl([[:space:]]|$) ]]; then
+    explanation="Command failed with exit status ${exit_code}"
+  fi
+  printf '%s' "$explanation"
+}
+
+# ------------------------------------------------------------------------------
+# _eh_report() - the one terminal event for this execution
+#
+# Host reports to the API; container only leaves artifacts behind, so the server
+# sees the host's complete event rather than two partial ones.
+# Arguments: exit_code, command, line
+# ------------------------------------------------------------------------------
+_eh_report() {
+  if _is_container_context; then
+    _container_write_failure "$1" "$2" "$3"
+  elif declare -f post_update_to_api &>/dev/null; then
+    post_update_to_api "failed" "$1" 2>/dev/null || true
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# _eh_write_debug_log() - append the failure to DEBUG_LOGFILE when one is set
+# Arguments: exit_code, command, line, explanation
+# ------------------------------------------------------------------------------
+_eh_write_debug_log() {
+  [[ -n "${DEBUG_LOGFILE:-}" ]] || return 0
+  {
+    echo "------ ERROR ------"
+    echo "Timestamp : $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "Exit Code : $1 ($4)"
+    echo "Line      : $3"
+    echo "Command   : $2"
+    echo "-------------------"
+  } >>"$DEBUG_LOGFILE"
+}
+
+# ------------------------------------------------------------------------------
+# _eh_resolve_log() - pick the log that describes this failure
+#
+# Sets _EH_ACTIVE_LOG rather than echoing: the _SILENT_FAILED_LOG unset has to
+# take effect in the caller's shell, which a $(...) subshell would discard.
+# ------------------------------------------------------------------------------
+_eh_resolve_log() {
+  _EH_ACTIVE_LOG=""
+  if [[ -n "${_SILENT_FAILED_LOG:-}" && -s "${_SILENT_FAILED_LOG}" ]]; then
+    _EH_ACTIVE_LOG="$_SILENT_FAILED_LOG"
+    unset _SILENT_FAILED_LOG
+  elif declare -f get_active_logfile >/dev/null 2>&1; then
+    _EH_ACTIVE_LOG="$(get_active_logfile)"
+  elif [[ -n "${SILENT_LOGFILE:-}" ]]; then
+    _EH_ACTIVE_LOG="$SILENT_LOGFILE"
+  fi
+
+  if [[ -n "$_EH_ACTIVE_LOG" && ! -s "$_EH_ACTIVE_LOG" && -n "${BUILD_LOG:-}" && -s "${BUILD_LOG}" ]]; then
+    _EH_ACTIVE_LOG="$BUILD_LOG"
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# _eh_print_log_tail() - the last 20 lines of the log
+#
+# stderr on purpose: the ERR trap can fire inside a $(...) capture, which would
+# otherwise swallow this as the captured value.
+# ------------------------------------------------------------------------------
+_eh_print_log_tail() {
+  local log="$1"
+  [[ -n "$log" && -s "$log" ]] || return 0
+  echo -e "\n${TAB}--- Last 20 lines of log ---" >&2
+  tail -n 20 "$log" >&2
+  echo -e "${TAB}-----------------------------------\n" >&2
+}
+
+# ------------------------------------------------------------------------------
+# _eh_hint_node_oom() - suggest a heap size when the build died of OOM
+#
+# The suggestion is 75% of whatever we can find out about available memory,
+# clamped to 1-12 GB. Arguments: exit_code, command, log
+# ------------------------------------------------------------------------------
+_eh_hint_node_oom() {
+  local exit_code="$1" command="$2" log="$3"
+
+  local oom="false"
+  if [[ "$exit_code" == "243" ]]; then
+    oom="true"
+  elif [[ -n "$log" && -s "$log" ]] &&
+    tail -n 200 "$log" 2>/dev/null |
+    grep -Eqi 'Reached heap limit|JavaScript heap out of memory|Allocation failed - JavaScript heap out of memory|FATAL ERROR: Reached heap limit'; then
+    oom="true"
+  fi
+
+  # A bare 134/137 is only a heap OOM guess if a JS toolchain was running.
+  local node_build="false"
+  [[ "$command" =~ (npm|pnpm|yarn|node|vite|turbo) ]] && node_build="true"
+
+  [[ "$oom" == "true" ]] ||
+    { [[ "$node_build" == "true" ]] && [[ "$exit_code" =~ ^(134|137)$ ]]; } ||
+    return 0
+
+  local mb=""
+  if [[ "${NODE_OPTIONS:-}" =~ max-old-space-size=([0-9]+) ]]; then
+    mb="${BASH_REMATCH[1]}"
+  elif [[ "${var_ram:-}" =~ ^[0-9]+$ ]]; then
+    mb=$((var_ram * 75 / 100))
+  else
+    local kb
+    kb=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo "")
+    [[ "$kb" =~ ^[0-9]+$ ]] && mb=$((kb / 1024 * 75 / 100))
+  fi
+
+  if [[ -z "$mb" ]] || ((mb < 1024)); then
+    mb=1024
+  elif ((mb > 12288)); then
+    mb=12288
+  fi
+
+  _eh_warn "Possible Node.js heap OOM. Try: export NODE_OPTIONS=\"--max-old-space-size=${mb}\" and rerun the build."
+}
+
+# ------------------------------------------------------------------------------
+# _eh_hint_from_log() - name the likely cause from what the log looks like
+#
+# First match wins, so the more specific patterns come first. Arguments: log
+# ------------------------------------------------------------------------------
+_eh_hint_from_log() {
+  local log="$1" tail_txt
+  [[ -n "$log" && -s "$log" ]] || return 0
+  tail_txt=$(tail -n 60 "$log" 2>/dev/null || true)
+
+  if grep -qE "Depends:|depends on.*but.*not installed|broken packages|unmet dep|dependency problems" <<<"$tail_txt"; then
+    local pg_conflict
+    pg_conflict=$(grep -oE 'postgresql-[0-9]+ but.*installed' <<<"$tail_txt" | head -1 || true)
+    if [[ -n "$pg_conflict" ]]; then
+      _eh_warn "PostgreSQL version conflict: ${pg_conflict}"
+      _eh_warn "Hint: A package requires a specific PostgreSQL version that is not installed. Your distribution may have installed a different PG version than expected."
+    else
+      _eh_warn "APT dependency conflict detected. A required package is not available or is the wrong version for this system."
+      _eh_warn "Hint: Run 'apt-get install -f' inside the container or check that all required repositories are configured for your distribution."
+    fi
+
+  elif grep -qE "sqv|KEYEXPIRED|NO_PUBKEY|key is not certified|signature verification failed|is not signed|Sub-process.*sqv" <<<"$tail_txt"; then
+    _eh_warn "APT repository signature error detected."
+    _eh_warn "Hint: A repository GPG key may be missing, expired, or the keyring file is not yet present (/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc etc.)."
+    _eh_warn "Hint: Install the 'postgresql-common' package first, or re-add the repository with its correct signing key."
+
+  elif grep -qE "Could not resolve|Failed to fetch|Unable to connect|Name or service not known|Network is unreachable|curl.*resolve" <<<"$tail_txt"; then
+    _eh_warn "Network or DNS failure detected."
+    _eh_warn "Hint: Check the container's network connectivity, DNS settings, and whether any firewall or ad-blocker is intercepting traffic."
+
+  elif grep -qE "Could not get lock|dpkg frontend lock|waiting for it to exit|E: Unable to lock" <<<"$tail_txt"; then
+    _eh_warn "APT or dpkg lock conflict detected."
+    _eh_warn "Hint: Another package manager process may be running. Try 'rm /var/lib/dpkg/lock-frontend && dpkg --configure -a' inside the container."
+
+  elif grep -qE "No space left on device|disk quota exceeded|ENOSPC" <<<"$tail_txt"; then
+    _eh_warn "Disk space exhausted during installation."
+    _eh_warn "Hint: Increase the container's disk size (pct resize <ctid> rootfs +2G) or clean up space first."
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# _eh_destroy_container() - stop and destroy, announcing why
+# Arguments: ctid, reason
+# ------------------------------------------------------------------------------
+_eh_destroy_container() {
+  echo ""
+  _eh_info "$2"
+  pct stop "$1" &>/dev/null || true
+  pct destroy "$1" &>/dev/null || true
+  _eh_ok "Container $1 removed"
+}
+
+# ------------------------------------------------------------------------------
+# _eh_offer_container_removal() - host-only prompt for a half-built container
+#
+# Defaults to removing after 60s of silence, because the usual case is a build
+# that failed and left a container nobody wants. A read that *errors* is treated
+# differently from one that times out: we keep the container, since that is the
+# reversible choice when we cannot tell what the user wanted.
+# ------------------------------------------------------------------------------
+_eh_offer_container_removal() {
+  [[ -n "${CTID:-}" ]] || return 0
+  command -v pct &>/dev/null || return 0
+  pct status "$CTID" &>/dev/null || return 0
+
+  echo ""
+  if declare -f msg_custom >/dev/null 2>&1; then
+    echo -en "${TAB}❓${TAB}${YW}Remove broken container ${CTID}? (Y/n) [auto-remove in 60s]: ${CL}"
+  else
+    echo -en "${YW}Remove broken container ${CTID}? (Y/n) [auto-remove in 60s]: ${CL}"
+  fi
+
+  local response="" read_rc
+  declare -f reclaim_tty >/dev/null 2>&1 && reclaim_tty
+  read -t 60 -r response </dev/tty
+  read_rc=$?
+
+  if [[ $read_rc -eq 0 ]]; then
+    if [[ -z "$response" || "$response" =~ ^[Yy]$ ]]; then
+      _eh_destroy_container "$CTID" "Removing container ${CTID}"
+    elif [[ "$response" =~ ^[Nn]$ ]]; then
+      echo ""
+      _eh_warn "Container ${CTID} kept for debugging"
+    fi
+  elif [[ $read_rc -gt 128 ]]; then
+    _eh_destroy_container "$CTID" "No response - removing container ${CTID}"
+  else
+    # Drain whatever is stuck in the tty, then keep the container.
+    while read -r -t 0.1 -n 1 _ </dev/tty 2>/dev/null; do :; done
+    echo ""
+    if declare -f msg_error >/dev/null 2>&1; then
+      msg_error "Could not read your response (stdin error) - keeping container ${CTID} for safety."
+      msg_error "Remove it manually if not needed: pct destroy ${CTID}"
+    else
+      echo -e "${YW}Could not read your response (stdin error) - keeping container ${CTID} for safety.${CL}"
+      echo -e "${YW}Remove it manually if not needed: pct destroy ${CTID}${CL}"
+    fi
+  fi
+}
+
+# ------------------------------------------------------------------------------
 # error_handler()
 #
-# - Main error handler triggered by ERR trap
-# - Displays error message with line number, exit code, explanation, command
-# - Shows last 20 lines of the active log
-# - Emits actionable hints for common failure patterns (OOM, APT, network...)
-# - HOST: reports "failed" to telemetry (full payload via api.func)
-# - CONTAINER: writes failure artifacts, sends nothing
-# - Exits with original exit code
+# ERR trap handler: report the failure once, explain it as well as we can, and
+# exit with the original code. The steps are in _eh_* above; this is the order
+# they run in.
+#
+# The first three locals stay here rather than moving into a helper:
+# BASH_LINENO[0] is the caller's line only at this stack depth.
 # ------------------------------------------------------------------------------
 error_handler() {
   local exit_code=${1:-$?}
@@ -307,7 +568,7 @@ error_handler() {
 
   command="${command//\$STD/}"
 
-  # If error originated from silent(), use its captured metadata
+  # silent() knows the real failing command; the trap only sees the wrapper.
   if [[ -n "${_SILENT_FAILED_RC:-}" ]]; then
     exit_code="$_SILENT_FAILED_RC"
     command="$_SILENT_FAILED_CMD"
@@ -315,246 +576,45 @@ error_handler() {
     unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE
   fi
 
-  if [[ "$exit_code" -eq 0 ]]; then
-    return 0
-  fi
+  [[ "$exit_code" -eq 0 ]] && return 0
 
-  # Export the failure location so telemetry can include the "where"
+  # Telemetry reads these for the "where"
   FAILED_COMMAND="$command"
   FAILED_LINE="$line_number"
   export FAILED_COMMAND FAILED_LINE
 
-  # Stop spinner and restore cursor FIRST - before any output
-  if declare -f stop_spinner >/dev/null 2>&1; then
-    stop_spinner 2>/dev/null || true
-  fi
+  # Before any output, or the spinner overwrites it
+  declare -f stop_spinner >/dev/null 2>&1 && { stop_spinner 2>/dev/null || true; }
   printf "\e[?25h"
 
   local explanation
-  explanation="$(explain_exit_code "$exit_code")"
-  if [[ "$explanation" == curl:* && ! "$command" =~ (^|[[:space:]])([^[:space:]]*/)?curl([[:space:]]|$) ]]; then
-    explanation="Command failed with exit status ${exit_code}"
-  fi
+  explanation="$(_eh_explanation "$exit_code" "$command")"
 
-  # ── Telemetry / failure artifacts ──
-  if _is_container_context; then
-    _container_write_failure "$exit_code" "$command" "$line_number"
-  elif declare -f post_update_to_api &>/dev/null; then
-    post_update_to_api "failed" "$exit_code" 2>/dev/null || true
-  fi
+  _eh_report "$exit_code" "$command" "$line_number"
 
-  # ── Display ──
   if declare -f msg_error >/dev/null 2>&1; then
     msg_error "in line ${line_number}: exit code ${exit_code} (${explanation}): while executing command ${command}"
   else
     echo -e "\n${RD}[ERROR]${CL} in line ${RD}${line_number}${CL}: exit code ${RD}${exit_code}${CL} (${explanation}): while executing command ${YWB}${command}${CL}\n"
   fi
 
-  if [[ -n "${DEBUG_LOGFILE:-}" ]]; then
-    {
-      echo "------ ERROR ------"
-      echo "Timestamp : $(date '+%Y-%m-%d %H:%M:%S')"
-      echo "Exit Code : $exit_code ($explanation)"
-      echo "Line      : $line_number"
-      echo "Command   : $command"
-      echo "-------------------"
-    } >>"$DEBUG_LOGFILE"
-  fi
+  _eh_write_debug_log "$exit_code" "$command" "$line_number" "$explanation"
 
-  # Get active log file (prefer silent()'s logfile when available)
-  local active_log=""
-  if [[ -n "${_SILENT_FAILED_LOG:-}" && -s "${_SILENT_FAILED_LOG}" ]]; then
-    active_log="$_SILENT_FAILED_LOG"
-    unset _SILENT_FAILED_LOG
-  elif declare -f get_active_logfile >/dev/null 2>&1; then
-    active_log="$(get_active_logfile)"
-  elif [[ -n "${SILENT_LOGFILE:-}" ]]; then
-    active_log="$SILENT_LOGFILE"
-  fi
+  _eh_resolve_log
+  _eh_print_log_tail "$_EH_ACTIVE_LOG"
+  _eh_hint_node_oom "$exit_code" "$command" "$_EH_ACTIVE_LOG"
+  _eh_hint_from_log "$_EH_ACTIVE_LOG"
 
-  if [[ -n "$active_log" && ! -s "$active_log" && -n "${BUILD_LOG:-}" && -s "${BUILD_LOG}" ]]; then
-    active_log="$BUILD_LOG"
-  fi
-
-  # stderr: the trap can fire inside a $(...) capture that would eat this as data
-  if [[ -n "$active_log" && -s "$active_log" ]]; then
-    echo -e "\n${TAB}--- Last 20 lines of log ---" >&2
-    tail -n 20 "$active_log" >&2
-    echo -e "${TAB}-----------------------------------\n" >&2
-  fi
-
-  # ── Node.js heap OOM detection with actionable guidance ──
-  local node_oom_detected="false"
-  local node_build_context="false"
-  if [[ "$command" =~ (npm|pnpm|yarn|node|vite|turbo) ]]; then
-    node_build_context="true"
-  fi
-  if [[ "$exit_code" == "243" ]]; then
-    node_oom_detected="true"
-  elif [[ -n "$active_log" && -s "$active_log" ]]; then
-    if tail -n 200 "$active_log" 2>/dev/null | grep -Eqi 'Reached heap limit|JavaScript heap out of memory|Allocation failed - JavaScript heap out of memory|FATAL ERROR: Reached heap limit'; then
-      node_oom_detected="true"
-    fi
-  fi
-
-  if [[ "$node_oom_detected" == "true" ]] || { [[ "$node_build_context" == "true" ]] && [[ "$exit_code" =~ ^(134|137)$ ]]; }; then
-    local heap_hint_mb=""
-
-    if [[ -n "${NODE_OPTIONS:-}" ]] && [[ "${NODE_OPTIONS}" =~ max-old-space-size=([0-9]+) ]]; then
-      heap_hint_mb="${BASH_REMATCH[1]}"
-    elif [[ -n "${var_ram:-}" ]] && [[ "${var_ram}" =~ ^[0-9]+$ ]]; then
-      heap_hint_mb=$((var_ram * 75 / 100))
-    else
-      local mem_kb=""
-      mem_kb=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo "")
-      if [[ "$mem_kb" =~ ^[0-9]+$ ]]; then
-        local mem_mb=$((mem_kb / 1024))
-        heap_hint_mb=$((mem_mb * 75 / 100))
-      fi
-    fi
-
-    if [[ -z "$heap_hint_mb" ]] || ((heap_hint_mb < 1024)); then
-      heap_hint_mb=1024
-    elif ((heap_hint_mb > 12288)); then
-      heap_hint_mb=12288
-    fi
-
-    if declare -f msg_warn >/dev/null 2>&1; then
-      msg_warn "Possible Node.js heap OOM. Try: export NODE_OPTIONS=\"--max-old-space-size=${heap_hint_mb}\" and rerun the build."
-    else
-      echo -e "${YW}Possible Node.js heap OOM. Try: export NODE_OPTIONS=\"--max-old-space-size=${heap_hint_mb}\" and rerun the build.${CL}"
-    fi
-  fi
-
-  # ── Log-pattern analysis: actionable hints for common failure causes ──
-  if [[ -n "$active_log" && -s "$active_log" ]]; then
-    local _log_tail
-    _log_tail=$(tail -n 60 "$active_log" 2>/dev/null || true)
-
-    # 1. APT/dpkg dependency conflict
-    if echo "$_log_tail" | grep -qE "Depends:|depends on.*but.*not installed|broken packages|unmet dep|dependency problems"; then
-      local _pg_conflict
-      _pg_conflict=$(echo "$_log_tail" | grep -oE 'postgresql-[0-9]+ but.*installed' | head -1 || true)
-      if [[ -n "$_pg_conflict" ]]; then
-        if declare -f msg_warn >/dev/null 2>&1; then
-          msg_warn "PostgreSQL version conflict: ${_pg_conflict}"
-          msg_warn "Hint: A package requires a specific PostgreSQL version that is not installed. Your distribution may have installed a different PG version than expected."
-        fi
-      else
-        if declare -f msg_warn >/dev/null 2>&1; then
-          msg_warn "APT dependency conflict detected. A required package is not available or is the wrong version for this system."
-          msg_warn "Hint: Run 'apt-get install -f' inside the container or check that all required repositories are configured for your distribution."
-        fi
-      fi
-    # 2. APT/GPG signature verification failure
-    elif echo "$_log_tail" | grep -qE "sqv|KEYEXPIRED|NO_PUBKEY|key is not certified|signature verification failed|is not signed|Sub-process.*sqv"; then
-      if declare -f msg_warn >/dev/null 2>&1; then
-        msg_warn "APT repository signature error detected."
-        msg_warn "Hint: A repository GPG key may be missing, expired, or the keyring file is not yet present (/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc etc.)."
-        msg_warn "Hint: Install the 'postgresql-common' package first, or re-add the repository with its correct signing key."
-      fi
-    # 3. Network / DNS failure
-    elif echo "$_log_tail" | grep -qE "Could not resolve|Failed to fetch|Unable to connect|Name or service not known|Network is unreachable|curl.*resolve"; then
-      if declare -f msg_warn >/dev/null 2>&1; then
-        msg_warn "Network or DNS failure detected."
-        msg_warn "Hint: Check the container's network connectivity, DNS settings, and whether any firewall or ad-blocker is intercepting traffic."
-      fi
-    # 4. APT lock held by another process
-    elif echo "$_log_tail" | grep -qE "Could not get lock|dpkg frontend lock|waiting for it to exit|E: Unable to lock"; then
-      if declare -f msg_warn >/dev/null 2>&1; then
-        msg_warn "APT or dpkg lock conflict detected."
-        msg_warn "Hint: Another package manager process may be running. Try 'rm /var/lib/dpkg/lock-frontend && dpkg --configure -a' inside the container."
-      fi
-    # 5. Disk space exhaustion
-    elif echo "$_log_tail" | grep -qE "No space left on device|disk quota exceeded|ENOSPC"; then
-      if declare -f msg_warn >/dev/null 2>&1; then
-        msg_warn "Disk space exhausted during installation."
-        msg_warn "Hint: Increase the container's disk size (pct resize <ctid> rootfs +2G) or clean up space first."
-      fi
-    fi
-  fi
-
-  # ── Context-specific cleanup ──
-  if _is_container_context; then
-    # Container: artifacts already written above; nothing more to do
-    :
-  else
-    # HOST: show log path and offer container cleanup
-    if [[ -n "$active_log" && -s "$active_log" ]]; then
+  # Container artifacts are already written; the rest is host-only.
+  if ! _is_container_context; then
+    if [[ -n "$_EH_ACTIVE_LOG" && -s "$_EH_ACTIVE_LOG" ]]; then
       if declare -f msg_custom >/dev/null 2>&1; then
-        msg_custom "📋" "${YW}" "Full log: ${active_log}"
+        msg_custom "📋" "${YW}" "Full log: ${_EH_ACTIVE_LOG}"
       else
-        echo -e "${YW}Full log:${CL} ${BL}${active_log}${CL}"
+        echo -e "${YW}Full log:${CL} ${BL}${_EH_ACTIVE_LOG}${CL}"
       fi
     fi
-
-    # Offer to remove container if it exists (build errors after container creation)
-    if [[ -n "${CTID:-}" ]] && command -v pct &>/dev/null && pct status "$CTID" &>/dev/null; then
-      echo ""
-      if declare -f msg_custom >/dev/null 2>&1; then
-        echo -en "${TAB}❓${TAB}${YW}Remove broken container ${CTID}? (Y/n) [auto-remove in 60s]: ${CL}"
-      else
-        echo -en "${YW}Remove broken container ${CTID}? (Y/n) [auto-remove in 60s]: ${CL}"
-      fi
-
-      local response=""
-      local read_rc
-      declare -f reclaim_tty >/dev/null 2>&1 && reclaim_tty
-      read -t 60 -r response </dev/tty
-      read_rc=$?
-      if [[ $read_rc -eq 0 ]]; then
-        if [[ -z "$response" || "$response" =~ ^[Yy]$ ]]; then
-          echo ""
-          if declare -f msg_info >/dev/null 2>&1; then
-            msg_info "Removing container ${CTID}"
-          else
-            echo -e "${YW}Removing container ${CTID}${CL}"
-          fi
-          pct stop "$CTID" &>/dev/null || true
-          pct destroy "$CTID" &>/dev/null || true
-          if declare -f msg_ok >/dev/null 2>&1; then
-            msg_ok "Container ${CTID} removed"
-          else
-            echo -e "${GN}✔${CL} Container ${CTID} removed"
-          fi
-        elif [[ "$response" =~ ^[Nn]$ ]]; then
-          echo ""
-          if declare -f msg_warn >/dev/null 2>&1; then
-            msg_warn "Container ${CTID} kept for debugging"
-          else
-            echo -e "${YW}Container ${CTID} kept for debugging${CL}"
-          fi
-        fi
-      elif [[ $read_rc -gt 128 ]]; then
-        # Timeout - auto-remove
-        echo ""
-        if declare -f msg_info >/dev/null 2>&1; then
-          msg_info "No response - removing container ${CTID}"
-        else
-          echo -e "${YW}No response - removing container ${CTID}${CL}"
-        fi
-        pct stop "$CTID" &>/dev/null || true
-        pct destroy "$CTID" &>/dev/null || true
-        if declare -f msg_ok >/dev/null 2>&1; then
-          msg_ok "Container ${CTID} removed"
-        else
-          echo -e "${GN}✔${CL} Container ${CTID} removed"
-        fi
-      else
-        # read itself failed (e.g. broken/closed stdin, I/O error) rather than
-        # timing out - don't guess and destroy the container on a read we
-        # couldn't actually capture; keep it since that's the reversible choice.
-        while read -r -t 0.1 -n 1 _ </dev/tty 2>/dev/null; do :; done
-        echo ""
-        if declare -f msg_error >/dev/null 2>&1; then
-          msg_error "Could not read your response (stdin error) - keeping container ${CTID} for safety."
-          msg_error "Remove it manually if not needed: pct destroy ${CTID}"
-        else
-          echo -e "${YW}Could not read your response (stdin error) - keeping container ${CTID} for safety.${CL}"
-          echo -e "${YW}Remove it manually if not needed: pct destroy ${CTID}${CL}"
-        fi
-      fi
-    fi
+    _eh_offer_container_removal
   fi
 
   exit "$exit_code"
@@ -563,25 +623,6 @@ error_handler() {
 # ==============================================================================
 # SECTION 4: TELEMETRY & CLEANUP HELPERS FOR SIGNAL HANDLERS
 # ==============================================================================
-
-# ------------------------------------------------------------------------------
-# _send_abort_telemetry()  (compatibility name)
-#
-# - HOST: reports via post_update_to_api (signals map to "aborted" there)
-# - CONTAINER: writes failure artifacts instead of sending anything
-# - Arguments: $1 = exit_code
-# ------------------------------------------------------------------------------
-_send_abort_telemetry() {
-  local exit_code="${1:-1}"
-  if _is_container_context; then
-    _container_write_failure "$exit_code"
-    return 0
-  fi
-  if declare -f post_update_to_api &>/dev/null; then
-    post_update_to_api "failed" "$exit_code" 2>/dev/null || true
-  fi
-  return 0
-}
 
 # ------------------------------------------------------------------------------
 # _stop_container_if_installing()
@@ -648,66 +689,61 @@ on_exit() {
 }
 
 # ------------------------------------------------------------------------------
+# _eh_signal_exit() - the part all three signal handlers share
+#
+# Report the abort once (host: API, container: artifacts), stop a container
+# still mid-install, say what happened, exit with the signal's code.
+# Arguments: exit_code, message (omit to print nothing)
+# ------------------------------------------------------------------------------
+_eh_signal_exit() {
+  local code="$1" message="${2:-}"
+
+  if _is_container_context; then
+    _container_write_failure "$code"
+  elif declare -f post_update_to_api &>/dev/null; then
+    post_update_to_api "aborted" "$code" 2>/dev/null || true
+  fi
+  _stop_container_if_installing
+
+  if [[ -n "$message" ]]; then
+    if declare -f msg_error >/dev/null 2>&1; then
+      msg_error "$message" 2>/dev/null || true
+    else
+      echo -e "\n${RD}${message}${CL}" 2>/dev/null || true
+    fi
+  fi
+  exit "$code"
+}
+
+_eh_quiet_spinner() {
+  declare -f stop_spinner >/dev/null 2>&1 && { stop_spinner 2>/dev/null || true; }
+  printf "\e[?25h" 2>/dev/null || true
+}
+
+# ------------------------------------------------------------------------------
 # on_interrupt() - SIGINT (Ctrl+C)
 # ------------------------------------------------------------------------------
 on_interrupt() {
-  if declare -f stop_spinner >/dev/null 2>&1; then
-    stop_spinner 2>/dev/null || true
-  fi
-  printf "\e[?25h" 2>/dev/null || true
-
-  if _is_container_context; then
-    _container_write_failure "130"
-  elif declare -f post_update_to_api &>/dev/null; then
-    post_update_to_api "aborted" "130" 2>/dev/null || true
-  fi
-  _stop_container_if_installing
-  if declare -f msg_error >/dev/null 2>&1; then
-    msg_error "Interrupted by user (SIGINT)" 2>/dev/null || true
-  else
-    echo -e "\n${RD}Interrupted by user (SIGINT)${CL}" 2>/dev/null || true
-  fi
-  exit 130
+  _eh_quiet_spinner
+  _eh_signal_exit 130 "Interrupted by user (SIGINT)"
 }
 
 # ------------------------------------------------------------------------------
 # on_terminate() - SIGTERM
 # ------------------------------------------------------------------------------
 on_terminate() {
-  if declare -f stop_spinner >/dev/null 2>&1; then
-    stop_spinner 2>/dev/null || true
-  fi
-  printf "\e[?25h" 2>/dev/null || true
-
-  if _is_container_context; then
-    _container_write_failure "143"
-  elif declare -f post_update_to_api &>/dev/null; then
-    post_update_to_api "aborted" "143" 2>/dev/null || true
-  fi
-  _stop_container_if_installing
-  if declare -f msg_error >/dev/null 2>&1; then
-    msg_error "Terminated by signal (SIGTERM)" 2>/dev/null || true
-  else
-    echo -e "\n${RD}Terminated by signal (SIGTERM)${CL}" 2>/dev/null || true
-  fi
-  exit 143
+  _eh_quiet_spinner
+  _eh_signal_exit 143 "Terminated by signal (SIGTERM)"
 }
 
 # ------------------------------------------------------------------------------
 # on_hangup() - SIGHUP (SSH disconnect, terminal closed)
+#
+# No cursor restore and no message: the terminal that would read them is gone.
 # ------------------------------------------------------------------------------
 on_hangup() {
-  if declare -f stop_spinner >/dev/null 2>&1; then
-    stop_spinner 2>/dev/null || true
-  fi
-
-  if _is_container_context; then
-    _container_write_failure "129"
-  elif declare -f post_update_to_api &>/dev/null; then
-    post_update_to_api "aborted" "129" 2>/dev/null || true
-  fi
-  _stop_container_if_installing
-  exit 129
+  declare -f stop_spinner >/dev/null 2>&1 && { stop_spinner 2>/dev/null || true; }
+  _eh_signal_exit 129
 }
 
 # ==============================================================================
