@@ -338,15 +338,6 @@ incus_silent() {
   local caller_line="${BASH_LINENO[0]:-unknown}"
   local logfile="$(get_active_incus_logfile)"
 
-  if [[ "${DEV_MODE_DRYRUN:-false}" == "true" ]]; then
-    if declare -f incus_msg_custom >/dev/null 2>&1; then
-      incus_msg_custom "🔍" "${BL}" "[DRYRUN] $cmd"
-    else
-      echo "[DRYRUN] $cmd" >&2
-    fi
-    return 0
-  fi
-
   set +Eeuo pipefail
   trap - ERR
 

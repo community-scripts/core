@@ -300,7 +300,8 @@ build_container() {
   export DEV_MODE_PAUSE="${DEV_MODE_PAUSE:-false}"
   export DEV_MODE_BREAKPOINT="${DEV_MODE_BREAKPOINT:-false}"
   export DEV_MODE_LOGS="${DEV_MODE_LOGS:-false}"
-  export DEV_MODE_DRYRUN="${DEV_MODE_DRYRUN:-false}"
+  export DEV_MODE_NET="${DEV_MODE_NET:-false}"
+  export DEV_MODE_TIMING="${DEV_MODE_TIMING:-false}"
 
   # MODE export for unattended detection in install scripts
   # This tells install scripts whether to prompt for input or use defaults

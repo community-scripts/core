@@ -596,16 +596,6 @@ silent() {
   local logfile="$(get_active_logfile)"
   local errinfo="${logfile}.errinfo"
 
-  # Dryrun mode: Show command without executing
-  if [[ "${DEV_MODE_DRYRUN:-false}" == "true" ]]; then
-    if declare -f msg_custom >/dev/null 2>&1; then
-      msg_custom "🔍" "${BL}" "[DRYRUN] $cmd"
-    else
-      echo "[DRYRUN] $cmd" >&2
-    fi
-    return 0
-  fi
-
   # Save current error handling state before disabling.
   # This prevents re-enabling error handling when the caller intentionally
   # disabled it.
