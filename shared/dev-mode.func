@@ -115,37 +115,45 @@ dev_mode_context() {
 # - State goes in a file: msg_ok is often reached inside $( ), where a variable
 #   assignment would be discarded on return
 # ------------------------------------------------------------------------------
-_dev_timing_file() {
-  local base
+_dev_timing_dir() {
+  local base d
   for base in /dev/shm "${TMPDIR:-/tmp}" /tmp; do
-    [[ -d "$base" && -w "$base" ]] && {
-      printf '%s/cs-timing.%s' "$base" "$$"
-      return 0
-    }
+    [[ -d "$base" ]] || continue
+    d="${base}/cs-timing.$$"
+    # -w can pass where the write still fails, so probe for real.
+    mkdir -p "$d" 2>/dev/null || continue
+    { : >"${d}/.probe"; } 2>/dev/null || continue
+    printf '%s' "$d"
+    return 0
   done
   return 1
 }
 
+# Pure bash, no subshell: a timer that forks sed and awk on every step reports
+# its own overhead as the step's cost. Measured, that was ~180 ms per step.
 _dev_step_key() {
-  printf '%s' "$1" | sed 's/\x1b\[[0-9;]*m//g; s/[^a-zA-Z0-9]/_/g'
+  local k="${1//[^a-zA-Z0-9]/_}"
+  printf '%s' "${k:0:60}"
 }
 
 _dev_step_start() {
   [[ "${DEV_MODE_TIMING:-false}" == "true" ]] || return 0
-  local f
-  f="$(_dev_timing_file)" || return 0
-  printf 'S %s %s\n' "${EPOCHREALTIME/./}" "$(_dev_step_key "$1")" >>"$f"
+  local d
+  d="$(_dev_timing_dir)" || return 0
+  printf '%s' "${EPOCHREALTIME/./}" >"${d}/s.$(_dev_step_key "$1")" 2>/dev/null
 }
 
 _dev_step_end() {
   [[ "${DEV_MODE_TIMING:-false}" == "true" ]] || return 0
-  local f key start ms
-  f="$(_dev_timing_file)" || return 0
+  local d key start ms
+  d="$(_dev_timing_dir)" || return 0
   key="$(_dev_step_key "$1")"
-  start="$(awk -v k="$key" '$1=="S" && $3==k {t=$2} END {print t}' "$f" 2>/dev/null)"
-  [[ -z "$start" ]] && return 0
+  [[ -s "${d}/s.${key}" ]] || return 0
+  read -r start <"${d}/s.${key}"
+  rm -f "${d}/s.${key}"
   ms=$(((${EPOCHREALTIME/./} - start) / 1000))
-  printf 'E %s %s\n' "$ms" "$key" >>"$f"
+  printf '%s %s
+' "$ms" "$key" >>"${d}/done"
   printf ' %s(%s ms)%s' "${DGN:-}" "$ms" "${CL:-}"
 }
 
@@ -156,15 +164,21 @@ _dev_step_end() {
 # ------------------------------------------------------------------------------
 dev_mode_timing_summary() {
   [[ "${DEV_MODE_TIMING:-false}" == "true" ]] || return 0
-  local f
-  f="$(_dev_timing_file)" || return 0
-  [[ -s "$f" ]] || return 0
+  local d
+  d="$(_dev_timing_dir)" || return 0
+  if [[ ! -s "${d}/done" ]]; then
+    rm -rf "$d" 2>/dev/null
+    return 0
+  fi
   {
     echo "  ── slowest steps ───────────────────────────────────────────"
-    awk '$1=="E" {printf "  %8s ms  %s\n", $2, $3}' "$f" | sort -rn | head -10
+    sort -rn "${d}/done" | head -10 | while read -r ms key; do
+      printf '  %8s ms  %s
+' "$ms" "$key"
+    done
     echo "  ────────────────────────────────────────────────────────────"
   } >&2
-  rm -f "$f"
+  rm -rf "$d" 2>/dev/null
 }
 
 # ------------------------------------------------------------------------------

@@ -312,9 +312,15 @@ require_debian_like() {
 # moment it returns, so a shell-variable memo would never hit. $$ stays the
 # parent's pid inside a subshell, which makes the path the same for all of them.
 _cs_runtime_cache_dir() {
-  local base
+  local base probe
   for base in /dev/shm "${TMPDIR:-/tmp}" /tmp; do
-    [[ -d "$base" && -w "$base" ]] && { printf '%s' "$base"; return 0; }
+    [[ -d "$base" ]] || continue
+    probe="${base}/.cs-probe.$$"
+    # -w can pass where the write still fails, so probe for real.
+    { : >"$probe"; } 2>/dev/null || continue
+    rm -f "$probe" 2>/dev/null
+    printf '%s' "$base"
+    return 0
   done
   return 1
 }
