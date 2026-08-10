@@ -759,6 +759,8 @@ msg_info() {
   [[ -n "${MSG_INFO_SHOWN["$sanitized_key"]+x}" ]] && return
   MSG_INFO_SHOWN["$sanitized_key"]=1
 
+  _dev_step_start "$msg"
+
   # Log to file
   log_msg "[INFO] $msg"
 
@@ -804,7 +806,7 @@ msg_ok() {
   [[ -z "$msg" ]] && return
   stop_spinner
   clear_line
-  echo -e "$CM${GN}${msg}${CL}"
+  echo -e "$CM${GN}${msg}${CL}$(_dev_step_end "$msg")"
   log_msg "[OK] $msg"
   local sanitized_key
   sanitized_key=$(printf '%s' "$msg" | sed 's/\x1b\[[0-9;]*m//g; s/[^a-zA-Z0-9_]/_/g')
