@@ -21,7 +21,7 @@ INCUS_COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercont
 
 # Load Incus core first so msg_*/silent/catch_errors aliases are available.
 if [[ -z "${_INCUS_CORE_FUNC_LOADED:-}" ]]; then
-  source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/incus/core.func")
+  _cs_source_func "incus/core.func"
   load_incus_functions
   incus_install_compat_aliases
 fi
@@ -29,7 +29,7 @@ fi
 # Import upstream misc tools for maximum function parity.
 # Keep this before Incus overrides so Incus implementations win by re-definition.
 if [[ -z "${_INCUS_IMPORTED_MISC_TOOLS:-}" ]]; then
-  source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/tools.func")
+  _cs_source_func "shared/tools.func"
   _INCUS_IMPORTED_MISC_TOOLS=1
 fi
 
