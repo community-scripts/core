@@ -212,23 +212,16 @@ post_to_api() {
 post_to_api_vm() {
   [[ "${POST_TO_API_DONE:-}" == "true" ]] && return 0
 
+  # A VM script runs before any container exists, so nothing has read the
+  # diagnostics opt-in into the environment yet.
   if [[ -f /usr/local/community-scripts/diagnostics ]]; then
     DIAGNOSTICS=$(grep -i "^DIAGNOSTICS=" /usr/local/community-scripts/diagnostics 2>/dev/null | awk -F'=' '{print $2}') || true
   fi
 
-  _tm_enabled || return 0
-
+  # post_to_api defaults TELEMETRY_TYPE with :-, so setting it here wins.
   TELEMETRY_TYPE="vm"
   CT_TYPE=2
-
-  local payload
-  payload=$(_tm_payload "installing")
-
-  if _tm_send "$payload" "$TELEMETRY_TIMEOUT" 3; then
-    POST_TO_API_DONE=true
-  else
-    POST_TO_API_DONE=false
-  fi
+  post_to_api
 }
 
 # ------------------------------------------------------------------------------
