@@ -243,6 +243,7 @@ dev_mode_menu() {
   )"
   export dev_mode
 
+  _DEV_MODE_ASK=0
   parse_dev_mode
   if [[ "${DEV_MODE_LOGS:-false}" == "true" ]]; then
     mkdir -p /var/log/community-scripts

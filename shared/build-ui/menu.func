@@ -222,6 +222,14 @@ install_script() {
   fi
   [[ "${timezone:-}" == Etc/* ]] && timezone="host" # pct doesn't accept Etc/* zones
 
+  # dev_mode set without naming flags means "ask": the picker comes before the
+  # install menu rather than being buried in Settings, and the palette turns
+  # red as soon as something is selected.
+  if [[ "${_DEV_MODE_ASK:-0}" == "1" ]] && declare -f dev_mode_menu >/dev/null 2>&1; then
+    dev_mode_menu
+    color
+  fi
+
   # Show APP Header + run preflight checks
   header_info
   run_preflight
