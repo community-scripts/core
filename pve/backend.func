@@ -6,7 +6,7 @@
 # PVE-BACKEND.FUNC - PROXMOX VE LXC CREATE / DEPLOY BACKEND
 # ==============================================================================
 # build_container, create_lxc_container, storage helpers, description, traps.
-# Loaded by misc/build.func after build-ui.func on Proxmox hosts only.
+# Loaded by core/build.func after ui/build-ui.func on Proxmox hosts only.
 # ==============================================================================
 
 [[ -n "${_PVE_BACKEND_FUNC_LOADED:-}" ]] && return

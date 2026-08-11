@@ -5,7 +5,7 @@
 # ==============================================================================
 # INCUS-BACKEND.FUNC - FULL PARITY BACKEND FOR INCUS CONTAINER CREATION
 # ==============================================================================
-# Mirrors misc/build.func build_container / create_lxc_container flow for Incus.
+# Mirrors core/build.func build_container / create_lxc_container flow for Incus.
 # Requires incus/build.func hooks and UI functions to be loaded first.
 # ==============================================================================
 

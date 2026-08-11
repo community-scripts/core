@@ -6,8 +6,8 @@
 # ==============================================================================
 # INCUS-BUILD.FUNC - INCUS ENTRY + HOOKS OVER SHARED BUILD UI
 # ==============================================================================
-# Loaded automatically by misc/build.func on Incus hosts and Incus containers.
-# CT scripts always source misc/build.func — no separate Incus/ct copies needed.
+# Loaded automatically by core/build.func on Incus hosts and Incus containers.
+# CT scripts always source core/build.func — no separate Incus/ct copies needed.
 # ==============================================================================
 
 [[ -n "${_INCUS_BUILD_FUNC_LOADED:-}" ]] && return

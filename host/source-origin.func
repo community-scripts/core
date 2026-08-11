@@ -5,7 +5,7 @@
 # ==============================================================================
 # SOURCE-ORIGIN.FUNC — Git remote → COMMUNITY_SCRIPTS_URL helpers
 # ==============================================================================
-# Loaded by misc/build.func when running from a local checkout.
+# Loaded by core/build.func when running from a local checkout.
 # CT scripts do NOT source this directly — they use a one-liner to build.func.
 #
 # Explicit COMMUNITY_SCRIPTS_URL / COMMUNITY_SCRIPTS_DIR overrides always win.
