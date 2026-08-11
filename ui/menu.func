@@ -5,7 +5,7 @@
 # ==============================================================================
 # BUILD-UI/MENU.FUNC - MENUS, DIAGNOSTICS AND ENTRY POINTS
 # ==============================================================================
-# Part of the build UI. Load shared/build-ui.func -- it sources every part --
+# Part of the build UI. Load ui/build-ui.func -- it sources every part --
 # rather than this file directly; the split is for maintenance only and no
 # function name or behaviour changed with it.
 # ==============================================================================
@@ -58,7 +58,7 @@ DIAGNOSTICS=yes
 #"method"
 #"pve_version"
 #"status"
-#If you have any concerns, please review the source code at core/shared/build.func
+#If you have any concerns, please review the source code at core/core/build.func
 EOF
       DIAGNOSTICS="yes"
     else
@@ -83,7 +83,7 @@ DIAGNOSTICS=no
 #"method"
 #"pve_version"
 #"status"
-#If you have any concerns, please review the source code at core/shared/build.func
+#If you have any concerns, please review the source code at core/core/build.func
 EOF
       DIAGNOSTICS="no"
     fi
@@ -898,7 +898,7 @@ start() {
   # prefetched copy are used. Hardcoding the URL here meant tools.func and its
   # five parts were six network requests between the header and the menu,
   # every run, whatever else had already been fetched.
-  _cs_source_func "shared/tools.func"
+  _cs_source_func "lib/tools.func"
   if command -v pveversion >/dev/null 2>&1; then
     runtime_script_status_guard install || return 0
     install_script || return 0

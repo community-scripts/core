@@ -57,7 +57,7 @@ ported before it can move.
 
 | Repository | Contains |
 | ---------- | -------- |
-| **core** (this repo) | The engine — `shared/`, `pve/`, `incus/` |
+| **core** (this repo) | The engine — `core/`, `ui/`, `lib/`, `lxc/`, `host/`, `api/`, `vm/`, `pve/`, `incus/` |
 | [ProxmoxVE](https://github.com/community-scripts/ProxmoxVE) | Application scripts — `ct/`, `install/`, `vm/`, `json/`, and `tools/pve/` |
 | [ProxmoxVED](https://github.com/community-scripts/ProxmoxVED) | Where new scripts are tested before they move to ProxmoxVE |
 | [Incus](https://github.com/community-scripts/Incus) | Incus host tooling and documentation |
@@ -67,29 +67,48 @@ ported before it can move.
 ## Layout
 
 ```
-shared/     platform-agnostic engine
+core/       the engine itself
   build.func           entry point, origin resolution, platform dispatch
-  build-ui.func        whiptail wizard entry point (loader)
-  build-ui/validate.func   container id, hostname, network, IP range validators
-  build-ui/defaults.func   storage selection, .vars files, app defaults
-  build-ui/advanced.func   the advanced settings wizard
-  build-ui/menu.func       settings and diagnostics menus, install_script, start
   core.func            colors, spinners, messaging, silent()
-  tools.func           helper library used by install scripts (loader)
-  tools/system.func      packages, repositories, OS probes, services
-  tools/forge.func       GitHub, GitLab and Codeberg releases
-  tools/runtime.func     language runtimes and application installers
-  tools/db.func          databases and search engines
-  tools/hwaccel.func     GPU detection and hardware acceleration
+  error_handler.func   traps, diagnostics, exit codes
+  dev-mode.func        developer flags, timing, tracing
+
+ui/         the whiptail wizard
+  build-ui.func        entry point (loader)
+  validate.func        container id, hostname, network, IP range validators
+  defaults.func        storage selection, .vars files, app defaults
+  advanced.func        the advanced settings wizard
+  menu.func            settings and diagnostics menus, install_script, start
+
+lib/        helper library used by install scripts
+  tools.func           entry point (loader)
+  system.func          packages, repositories, OS probes, services
+  forge.func           GitHub, GitLab and Codeberg releases
+  runtime.func         language runtimes and application installers
+  db.func              databases and search engines
+  hwaccel.func         GPU detection and hardware acceleration
+  alpine.func          the Alpine equivalent, loaded instead of the above
+
+lxc/        what runs inside the container
   install.func         in-container bootstrap (multi-distro)
   alpine-install.func  in-container bootstrap for Alpine
-  alpine-tools.func    helper library for Alpine
-  api.func             telemetry reporting
-  error_handler.func   traps, diagnostics, exit codes
+  platform.func        host detection (Proxmox VE / Incus / in-container)
+
+host/       what runs before anything is created
   preflight.func       host readiness checks
-  cloud-init.func      cloud-init generation for VMs
-  lxc-platform.func    host detection (Proxmox VE / Incus / in-container)
+  validate.func        shell, root and version guards
   source-origin.func   git remote → raw content base
+
+api/        telemetry reporting
+  api.func             entry point (loader)
+  exitcodes.func       the exit code table
+  errorlog.func        error capture and log selection
+  sysinfo.func         host and container facts
+  telemetry.func       payload assembly and delivery
+
+vm/         cloud-init.func — cloud-init generation for VMs
+
+shared/     forwarding shims only, see below
 
 pve/        Proxmox VE backend
   backend.func         container creation via pct
@@ -111,6 +130,30 @@ headers/    figlet banners, generated from the script repos
 tools/      developer helpers (run.sh)
 images/     logos used in container MOTD and VM output
 ```
+
+### Why `shared/` is only shims
+
+Everything used to live in `shared/`. The engine was split into the folders
+above, but six of those files were entry points that published scripts fetch by
+raw URL — and those scripts keep running on other people's machines long after
+this repository is rearranged. Moving them would have 404'd every one of them.
+
+So `shared/` keeps those six paths as forwarding shims:
+
+| Old path | Now at |
+| -------- | ------ |
+| `shared/build.func` | `core/build.func` |
+| `shared/core.func` | `core/core.func` |
+| `shared/error_handler.func` | `core/error_handler.func` |
+| `shared/api.func` | `api/api.func` |
+| `shared/tools.func` | `lib/tools.func` |
+| `shared/cloud-init.func` | `vm/cloud-init.func` |
+
+A shim resolves a local checkout first (including one entered through the old
+path, so a developer's edits are never silently skipped in favour of
+production), and forwards over the network otherwise. It costs one extra round
+trip, which is why new code should use the real path. CI checks that every shim
+still points at a file that exists.
 
 ### Why headers live here
 
@@ -142,16 +185,16 @@ has run; `header_info()` prints nothing in that case rather than failing.
 
 The engine and the scripts live in different repositories, so both are resolved
 independently. A CT script bootstraps the engine, and everything after that
-goes through the resolver in `shared/build.func`:
+goes through the resolver in `core/build.func`:
 
 | Path prefix | Resolves against | Example |
 | ----------- | ---------------- | ------- |
-| `shared/`, `pve/`, `incus/` | **engine root** | `pve/backend.func` → `core/pve/backend.func` |
+| `core/`, `ui/`, `lib/`, `lxc/`, `host/`, `api/`, `vm/`, `pve/`, `incus/` | **engine root** | `pve/backend.func` → `core/pve/backend.func` |
 | everything else | **scripts root** | `install/debian-install.sh` → `ProxmoxVE/install/debian-install.sh` |
 
 Paths are folder-qualified, so the prefix alone decides the root and there is no
 name-to-folder map to keep in sync. It is also what lets the backend files drop
-their platform prefix: `incus/build.func` and `shared/build.func` can coexist
+their platform prefix: `incus/build.func` and `core/build.func` can coexist
 because nothing resolves by basename.
 
 ### Resolution order
@@ -238,16 +281,17 @@ scrutiny than an application script.
 
 Before opening a PR:
 
-- Test on **both** backends when you touch `shared/`. A change that only works
+- Test on **both** backends when you touch anything outside `pve/` or `incus/`. A change that only works
   on Proxmox VE belongs in `pve/`.
-- Never hardcode a raw URL. Use `_cs_source_func "shared/<name>.func"` (or
+- Never hardcode a raw URL. Use `_cs_source_func "<folder>/<name>.func"` (or
   `pve/…`, `incus/…`) so both roots keep resolving and forks keep working.
-- `shared/tools.func` and `shared/build-ui.func` are loaders. Source those, not
-  the parts under `shared/tools/` or `shared/build-ui/`. If you add or rename a
-  function, regenerate the matching `API.txt` in the same PR — CI compares
-  against it.
+- `lib/tools.func`, `ui/build-ui.func` and `api/api.func` are loaders. Source
+  those, not the parts beside them. If you add or rename a function, regenerate
+  the matching `API.txt` in the same PR — CI compares against it.
+- Do not add files to `shared/`. It holds nothing but forwarding shims for the
+  URLs that published scripts still fetch.
 - New files go in the folder that matches their root. Nothing resolves by
-  basename, so `incus/tools.func` and `shared/tools.func` are both fine.
+  basename, so `incus/tools.func` and `lib/tools.func` are both fine.
 - `shellcheck` and `shfmt` the files you touched.
 
 ---

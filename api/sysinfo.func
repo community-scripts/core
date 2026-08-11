@@ -5,7 +5,7 @@
 # ==============================================================================
 # API/SYSTEM AND ORIGIN DETECTION
 # ==============================================================================
-# Part of the telemetry layer. Load shared/api.func -- it sources every part --
+# Part of the telemetry layer. Load api/api.func -- it sources every part --
 # rather than this file directly; the split is for maintenance only and no
 # function name or behaviour changed with it.
 #

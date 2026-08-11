@@ -1,28 +1,49 @@
 name: Verify split files
 
-# shared/tools.func and shared/build-ui.func are loaders whose implementations
-# sit in shared/tools/ and shared/build-ui/. A split can silently lose a
-# function -- most easily by cutting through a heredoc that contains a column-0
-# function definition, which looks like a definition but is payload. That only
-# surfaces on a user's host at install time, so it is checked here instead.
+# lib/tools.func, ui/build-ui.func and api/api.func are loaders whose
+# implementations sit beside them. A split can silently lose a function -- most
+# easily by cutting through a heredoc that contains a column-0 function
+# definition, which looks like a definition but is payload. That only surfaces
+# on a user's host at install time, so it is checked here instead.
 #
-# The same applies to the prefetch lists in shared/build.func and
-# shared/install.func: a .func missing from one still works, it just costs a
-# round trip nobody would notice. So they are checked, not trusted.
+# The same applies to the prefetch lists in core/build.func and
+# lxc/install.func: a .func missing from one still works, it just costs a round
+# trip nobody would notice. So they are checked, not trusted.
+#
+# And shared/ now holds forwarding shims for the paths published scripts still
+# fetch. A shim pointing at a file that moved again would 404 for every one of
+# those scripts, so the targets are checked too.
 
 on:
   pull_request:
     paths:
+      - "core/**"
+      - "lxc/**"
+      - "host/**"
+      - "api/**"
+      - "lib/**"
+      - "ui/**"
+      - "vm/**"
       - "shared/**"
       - "pve/**"
       - "incus/**"
   push:
     branches: [main]
     paths:
+      - "core/**"
+      - "lxc/**"
+      - "host/**"
+      - "api/**"
+      - "lib/**"
+      - "ui/**"
+      - "vm/**"
       - "shared/**"
       - "pve/**"
       - "incus/**"
   workflow_dispatch:
+
+env:
+  ENGINE_DIRS: core lxc host api lib ui vm pve incus
 
 jobs:
   verify:
@@ -34,8 +55,26 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for f in shared/tools.func shared/tools/*.func shared/build-ui.func shared/build-ui/*.func shared/api.func shared/api/*.func; do
+          while IFS= read -r f; do
             bash -n "$f" || { echo "::error file=$f::syntax error"; fail=1; }
+          done < <(find $ENGINE_DIRS shared -name '*.func' -type f)
+          exit $fail
+
+      - name: Every shim points at a file that exists
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in shared/*.func; do
+            target=$(sed -n 's/^_CS_FWD="\(.*\)"$/\1/p' "$f")
+            if [[ -z "$target" ]]; then
+              echo "::error file=$f::not a shim, or _CS_FWD is not parseable"
+              fail=1
+            elif [[ ! -f "$target" ]]; then
+              echo "::error file=$f::forwards to $target, which does not exist"
+              fail=1
+            else
+              echo "$f -> $target"
+            fi
           done
           exit $fail
 
@@ -44,41 +83,41 @@ jobs:
           set -euo pipefail
           fail=0
 
-          mapfile -t on_disk < <(find shared pve incus -name '*.func' -type f | sort)
+          mapfile -t on_disk < <(find $ENGINE_DIRS -name '*.func' -type f | sort)
           mapfile -t listed < <(
-            sed -n '/^_CS_ENGINE_FILES=(/,/^)/p' shared/build.func |
-              tr -s '[:space:]' '\n' | grep -E '^(shared|pve|incus)/.*\.func$' | sort
+            sed -n '/^_CS_ENGINE_FILES=(/,/^)/p' core/build.func |
+              tr -s '[:space:]' '\n' | grep -E '\.func$' | sort
           )
 
           for f in "${on_disk[@]}"; do
             # build.func is the file doing the fetching; it is already loaded.
-            [[ "$f" == "shared/build.func" ]] && continue
+            [[ "$f" == "core/build.func" ]] && continue
             printf '%s\n' "${listed[@]}" | grep -qxF "$f" || {
-              echo "::error file=shared/build.func::$f is missing from _CS_ENGINE_FILES"
+              echo "::error file=core/build.func::$f is missing from _CS_ENGINE_FILES"
               fail=1
             }
           done
           for f in "${listed[@]}"; do
             [[ -f "$f" ]] || {
-              echo "::error file=shared/build.func::_CS_ENGINE_FILES lists $f, which does not exist"
+              echo "::error file=core/build.func::_CS_ENGINE_FILES lists $f, which does not exist"
               fail=1
             }
           done
 
-          # install.func fetches the subset a container needs, by bare name.
+          # install.func fetches the subset a container needs.
           mapfile -t ct_listed < <(
-            sed -n '/^_CS_CT_ENGINE_FILES=(/,/^)/p' shared/install.func |
+            sed -n '/^_CS_CT_ENGINE_FILES=(/,/^)/p' lxc/install.func |
               tr -s '[:space:]' '\n' | grep -E '\.func$' | sort
           )
           for f in "${ct_listed[@]}"; do
-            [[ -f "shared/$f" ]] || {
-              echo "::error file=shared/install.func::_CS_CT_ENGINE_FILES lists $f, which does not exist"
+            [[ -f "$f" ]] || {
+              echo "::error file=lxc/install.func::_CS_CT_ENGINE_FILES lists $f, which does not exist"
               fail=1
             }
           done
-          for f in shared/tools/*.func; do
-            printf '%s\n' "${ct_listed[@]}" | grep -qxF "${f#shared/}" || {
-              echo "::error file=shared/install.func::${f#shared/} is missing from _CS_CT_ENGINE_FILES"
+          for f in lib/*.func; do
+            printf '%s\n' "${ct_listed[@]}" | grep -qxF "$f" || {
+              echo "::error file=lxc/install.func::$f is missing from _CS_CT_ENGINE_FILES"
               fail=1
             }
           done
@@ -106,7 +145,7 @@ jobs:
             echo "$loader: $(wc -l < /tmp/actual.txt) functions, unchanged"
           }
           fail=0
-          check shared/tools.func    shared/tools/API.txt    || fail=1
-          check shared/build-ui.func shared/build-ui/API.txt || fail=1
-          check shared/api.func      shared/api/API.txt      || fail=1
+          check lib/tools.func    lib/API.txt    || fail=1
+          check ui/build-ui.func  ui/API.txt     || fail=1
+          check api/api.func      api/API.txt    || fail=1
           exit $fail

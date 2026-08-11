@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Copyright (c) 2021-2026 community-scripts ORG
+# Author: michelroegl-brunner | MickLesk
+# License: MIT | https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/LICENSE
+
+# ==============================================================================
+# API.FUNC - TELEMETRY & DIAGNOSTICS API (v3 - single-reporter rewrite)
+# ==============================================================================
+#
+# Provides functions for sending anonymous telemetry data via the community
+# telemetry ingest service at telemetry.community-scripts.org.
+#
+# DESIGN PRINCIPLES (v3):
+#   1. SINGLE REPORTER: only the HOST sends terminal statuses (success/failed/
+#      aborted). Containers never curl the telemetry endpoint for terminal
+#      events - they write local artifact files (.failed flag + .errinfo) that
+#      the host picks up. This prevents the "first terminal event wins" race
+#      on the server from persisting a metadata-less container payload and
+#      discarding the full host payload.
+#   2. FULL PAYLOAD, ALWAYS: every send includes the complete system metadata
+#      (os, pve version, arch, cpu, gpu, ram, repo attribution). No more
+#      minimal payloads that create empty records.
+#   3. FOCUSED ERROR TRACE: the error field contains exactly the output of the
+#      command that failed (captured by silent() via byte offset), prefixed
+#      with "exit_code=N | <explanation> | at line L: <command>". Not a 120KB
+#      log dump, not the wrong phase of the log.
+#   4. IDEMPOTENT FINALIZE: post_update_to_api() sends exactly one terminal
+#      status per execution, no matter how many traps fire.
+#
+# Usage:
+#   source <(curl -fsSL .../api.func)
+#   post_to_api            # Report LXC container creation ("installing")
+#   post_to_api_vm         # Report VM creation ("installing")
+#   post_progress_to_api   # Progress ping ("validation"/"configuring")
+#   post_update_to_api     # Final status ("done"/"failed"/"aborted")
+#
+# Privacy:
+#   - Only anonymous statistics (no personal data, IPs are anonymized)
+#   - User can opt-out via DIAGNOSTICS=no
+#   - Random UUID for session tracking only
+#
+# ==============================================================================
+
+# ==============================================================================
+# Telemetry Configuration
+# ==============================================================================
+TELEMETRY_URL="${TELEMETRY_URL:-https://telemetry.community-scripts.org/telemetry}"
+
+# Timeout for progress pings (seconds)
+TELEMETRY_TIMEOUT=5
+# Timeout for final status updates (they carry the error trace)
+STATUS_TIMEOUT=10
+
+# Max size of the error trace sent to the API (bytes) and max line count.
+# Keep this SMALL and FOCUSED - the goal is "exactly the messages from the
+# moment of failure", not the whole installation log.
+TELEMETRY_ERROR_MAX_LINES=60
+TELEMETRY_ERROR_MAX_BYTES=10240
+
+# ==============================================================================
+# SECTION 0: REPOSITORY SOURCE DETECTION
+# ==============================================================================
+
+# ==============================================================================
+# The implementations live in api/. Splitting them was a maintenance
+# change only -- every function kept its name, its body and its behaviour, and
+# this file stays the single thing to source.
+#
+#   exitcodes.func  numeric status -> sentence and category
+#   errorlog.func   finding, trimming and formatting the failing log
+#   sysinfo.func    repo origin, GPU, CPU, RAM, architecture
+#   telemetry.func  payload, transport and the senders
+# ==============================================================================
+
+_api_source_part() {
+  local part="$1"
+
+  if declare -f _cs_source_func >/dev/null 2>&1; then
+    _cs_source_func "api/${part}.func"
+    return
+  fi
+
+  # Inside a container there is no resolver: fall back to the engine base.
+  local base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
+  if command -v curl >/dev/null 2>&1; then
+    # shellcheck disable=SC1090
+    source <(curl -fsSL "${base}/api/${part}.func")
+  else
+    # shellcheck disable=SC1090
+    source <(wget -qO- "${base}/api/${part}.func")
+  fi
+}
+
+_api_source_part exitcodes
+_api_source_part errorlog
+_api_source_part sysinfo
+_api_source_part telemetry

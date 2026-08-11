@@ -238,9 +238,9 @@ build_container() {
   TEMP_DIR=$(mktemp -d)
   pushd "$TEMP_DIR" >/dev/null
   if [ "$var_os" == "alpine" ]; then
-    export FUNCTIONS_FILE_PATH="$(_cs_fetch_text "shared/alpine-install.func")"
+    export FUNCTIONS_FILE_PATH="$(_cs_fetch_text "lxc/alpine-install.func")"
   else
-    export FUNCTIONS_FILE_PATH="$(_cs_fetch_text "shared/install.func")"
+    export FUNCTIONS_FILE_PATH="$(_cs_fetch_text "lxc/install.func")"
   fi
 
   # Core exports for install.func

@@ -35,12 +35,12 @@ _incus_vm_source() {
   source <(curl -fsSL "${_CORE_BASE}/${rel}")
 }
 
-# shared/core.func first: it owns prompt_confirm/prompt_input/prompt_select,
+# core/core.func first: it owns prompt_confirm/prompt_input/prompt_select,
 # which every prompt below needs and which incus/core.func does not provide.
-_incus_vm_source "shared/core.func"
+_incus_vm_source "core/core.func"
 # Value checks that do not depend on the platform — the Proxmox VE VM path
 # loads the same file, so an MTU means the same thing on both.
-_incus_vm_source "shared/validate.func"
+_incus_vm_source "host/validate.func"
 _incus_vm_source "incus/core.func"
 load_incus_functions
 incus_install_compat_aliases
@@ -110,7 +110,7 @@ sanitize_vm_hostname() {
 # ==============================================================================
 # SECTION 1: PROMPTS
 # ==============================================================================
-# Containers on Incus get whiptail through shared/build-ui.func; the VM path
+# Containers on Incus get whiptail through ui/build-ui.func; the VM path
 # does not go through it and fell back to plain read prompts. Overriding the
 # three primitives here lifts every vm_prompt_* below onto whiptail at once,
 # with the text versions kept for non-TTY, missing whiptail, or VM_UI=text.

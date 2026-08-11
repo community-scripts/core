@@ -39,20 +39,19 @@
 # Global variables for OS detection
 
 # ── Engine URL (container side) ───────────────────────────────────────────────
-# Inside the container there is no _cs_source_func resolver, and the engine now
-# lives in a separate repo. Every .func loaded in here is a shared/ one, so the
-# mapping collapses to a single prefix — no folder table needed.
+# Inside the container there is no _cs_source_func resolver, so names are
+# folder-qualified paths relative to the repo root, same as on the host.
 _cs_core_url() {
-  echo "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/${1:?func name}"
+  echo "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/${1:?func path}"
 }
 
-# The engine reaches a container in eight pieces. The host's prefetch cannot
+# The engine reaches a container in nine pieces. The host's prefetch cannot
 # help here — a container has its own filesystem — so fetch them concurrently
 # on this side too. verify-split-files.yml checks the list is complete.
 _CS_CT_ENGINE_FILES=(
-  alpine-tools.func core.func error_handler.func tools.func
-  tools/db.func tools/forge.func tools/hwaccel.func
-  tools/runtime.func tools/system.func
+  core/core.func core/error_handler.func
+  lib/tools.func lib/alpine.func lib/db.func lib/forge.func
+  lib/hwaccel.func lib/runtime.func lib/system.func
 )
 
 _cs_ct_prefetch_engine() {
@@ -78,9 +77,9 @@ _cs_ct_prefetch_engine() {
 
   local args=() rel core_base
   core_base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
-  mkdir -p "${dir}/shared/tools" 2>/dev/null || true
+  mkdir -p "${dir}/core" "${dir}/lib" 2>/dev/null || true
   for rel in "${_CS_CT_ENGINE_FILES[@]}"; do
-    args+=(-o "${dir}/shared/${rel}" "${core_base}/shared/${rel}")
+    args+=(-o "${dir}/${rel}" "${core_base}/${rel}")
   done
 
   curl -fsSL --parallel --parallel-immediate --parallel-max 16 \
@@ -88,10 +87,10 @@ _cs_ct_prefetch_engine() {
 
   local kept=0
   for rel in "${_CS_CT_ENGINE_FILES[@]}"; do
-    if [[ -s "${dir}/shared/${rel}" ]]; then
+    if [[ -s "${dir}/${rel}" ]]; then
       kept=$((kept + 1))
     else
-      rm -f "${dir}/shared/${rel}" 2>/dev/null
+      rm -f "${dir}/${rel}" 2>/dev/null
     fi
   done
   if ((kept == 0)); then
@@ -106,8 +105,8 @@ _cs_ct_prefetch_engine() {
 
 # Prefetched copy when there is one, network otherwise.
 _cs_engine_read() {
-  local name="${1:?func name}"
-  local copy="${COMMUNITY_SCRIPTS_CORE_DIR:-}/shared/${name}"
+  local name="${1:?func path}"
+  local copy="${COMMUNITY_SCRIPTS_CORE_DIR:-}/${name}"
   if [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -s "$copy" ]]; then
     cat "$copy"
     return 0
@@ -293,14 +292,14 @@ _bootstrap() {
 
   # Source core functions
   _cs_ct_prefetch_engine || true
-  source <(_cs_engine_read core.func)
-  source <(_cs_engine_read error_handler.func)
+  source <(_cs_engine_read core/core.func)
+  source <(_cs_engine_read core/error_handler.func)
   # The dev helpers are worth a round trip only when a flag is set: core.func's
   # timing hooks no-op without them, and error_handler's exit path asks for the
   # summary with declare -f. The host exports the parsed DEV_MODE_* flags, so
   # there is nothing to re-parse on this side.
   if [[ -n "${dev_mode:-}" ]]; then
-    source <(_cs_engine_read dev-mode.func)
+    source <(_cs_engine_read core/dev-mode.func)
   fi
   load_functions
   catch_errors
@@ -1250,8 +1249,8 @@ EOF
   # leave curl absent), so a hard curl call fails with "command not found".
   local tools_content tools_name
   case "$OS_FAMILY" in
-  alpine) tools_name="alpine-tools.func" ;;
-  *) tools_name="tools.func" ;;
+  alpine) tools_name="lib/alpine.func" ;;
+  *) tools_name="lib/tools.func" ;;
   esac
   tools_content=$(_cs_engine_read "${tools_name}")
   if [[ -z "$tools_content" ]]; then

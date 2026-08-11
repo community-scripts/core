@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+
+# ==============================================================================
+# HELPER FUNCTIONS FOR PACKAGE MANAGEMENT
+# ==============================================================================
+#
+# This file provides unified helper functions for robust package installation
+# and repository management across Debian/Ubuntu OS upgrades.
+#
+# Key Features:
+#   - Automatic retry logic for transient APT/network failures
+#   - Unified keyring cleanup from all 3 locations
+#   - Legacy installation cleanup (nvm, rbenv, rustup)
+#   - OS-upgrade-safe repository preparation
+#   - Service pattern matching for multi-version tools
+#   - Debug mode for troubleshooting (TOOLS_DEBUG=true)
+#
+# Usage in install scripts:
+#   source /dev/stdin <<< "$FUNCTIONS"  # Load from build.func
+#   prepare_repository_setup "mysql"
+#   install_packages_with_retry "mysql-server" "mysql-client"
+#
+# Quick Reference (Core Helpers):
+#   cleanup_tool_keyrings()          - Remove keyrings from all 3 locations
+#   stop_all_services()              - Stop services by pattern (e.g. "php*-fpm")
+#   verify_tool_version()            - Validate installed version matches expected
+#   version_matches_spec()           - Compare installed semver against spec (8.0 matches 8.0.40)
+#   cleanup_legacy_install()         - Remove nvm, rbenv, rustup, etc.
+#   prepare_repository_setup()       - Cleanup repos + keyrings + validate APT
+#   install_packages_with_retry()    - Install with 3 retries and APT refresh
+#   upgrade_packages_with_retry()    - Upgrade with 3 retries and APT refresh
+#   curl_with_retry()                - Curl with retry logic and timeouts
+#
+# Debug Mode:
+#   TOOLS_DEBUG=true ./script.sh     - Enable verbose output for troubleshooting
+#
+# ==============================================================================
+
+# Guard against double-sourcing (core.func uses the same pattern)
+[[ -n "${_TOOLS_FUNC_LOADED:-}" ]] && return 0
+_TOOLS_FUNC_LOADED=1
+
+# ==============================================================================
+# The implementations live in lib/. Splitting them was a maintenance
+# change only -- every function kept its name, its body and its behaviour, and
+# this file stays the single thing to source.
+#
+#   system.func   packages, repositories, OS probes, services, temp files
+#   forge.func    GitHub, GitLab and Codeberg releases, tags and branches
+#   runtime.func  language runtimes and application installers
+#   db.func       databases and search engines
+#   hwaccel.func  GPU detection and hardware acceleration
+# ==============================================================================
+
+_tools_source_part() {
+  local part="$1"
+
+  # On the host the dispatcher's resolver honours a local checkout and forks.
+  if declare -f _cs_source_func >/dev/null 2>&1; then
+    _cs_source_func "lib/${part}.func"
+    return
+  fi
+
+  # Inside the container there is no resolver: fall back to the engine base,
+  # which the backends export alongside the scripts base.
+  local base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
+  if command -v curl >/dev/null 2>&1; then
+    # shellcheck disable=SC1090
+    source <(curl -fsSL "${base}/lib/${part}.func")
+  else
+    # shellcheck disable=SC1090
+    source <(wget -qO- "${base}/lib/${part}.func")
+  fi
+}
+
+_tools_source_part system
+_tools_source_part forge
+_tools_source_part runtime
+_tools_source_part db
+_tools_source_part hwaccel

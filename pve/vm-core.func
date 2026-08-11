@@ -32,15 +32,15 @@ set -euo pipefail
 # Value checks shared with the Incus VM path; the formatting below stays
 # Proxmox-specific (",mtu=" / ",tag=" are pve-net syntax).
 if declare -f _cs_source_func >/dev/null 2>&1; then
-  _cs_source_func "shared/validate.func"
-elif [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -f "${COMMUNITY_SCRIPTS_CORE_DIR}/shared/validate.func" ]]; then
+  _cs_source_func "host/validate.func"
+elif [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -f "${COMMUNITY_SCRIPTS_CORE_DIR}/host/validate.func" ]]; then
   # shellcheck disable=SC1090
-  source "${COMMUNITY_SCRIPTS_CORE_DIR}/shared/validate.func"
+  source "${COMMUNITY_SCRIPTS_CORE_DIR}/host/validate.func"
 else
   _vm_validate_base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
   # shellcheck disable=SC1090
-  source <(curl -fsSL "${_vm_validate_base}/shared/validate.func" 2>/dev/null ||
-    wget -qO- "${_vm_validate_base}/shared/validate.func")
+  source <(curl -fsSL "${_vm_validate_base}/host/validate.func" 2>/dev/null ||
+    wget -qO- "${_vm_validate_base}/host/validate.func")
 fi
 
 SPINNER_PID=""
@@ -59,7 +59,7 @@ COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://git.community-scripts.or
 
 load_api_functions() {
   if ! declare -f post_to_api_vm >/dev/null 2>&1; then
-    source /dev/stdin <<<$(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/api.func")
+    source /dev/stdin <<<$(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/api/api.func")
   fi
 }
 
@@ -84,10 +84,10 @@ load_functions() {
 load_cloud_init_functions() {
   if ! declare -f setup_cloud_init >/dev/null 2>&1; then
     if declare -f _cs_source_func >/dev/null 2>&1; then
-      _cs_source_func "shared/cloud-init.func" 2>/dev/null || true
+      _cs_source_func "vm/cloud-init.func" 2>/dev/null || true
     else
       # shellcheck disable=SC1090
-      source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/cloud-init.func") 2>/dev/null || true
+      source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/vm/cloud-init.func") 2>/dev/null || true
     fi
   fi
 }
@@ -255,10 +255,10 @@ silent() {
     # Source explain_exit_code if needed
     if ! declare -f explain_exit_code >/dev/null 2>&1; then
       if declare -f _cs_source_func >/dev/null 2>&1; then
-        _cs_source_func "shared/error_handler.func" 2>/dev/null || true
+        _cs_source_func "core/error_handler.func" 2>/dev/null || true
       else
         # shellcheck disable=SC1090
-        source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/error_handler.func") 2>/dev/null || true
+        source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/core/error_handler.func") 2>/dev/null || true
       fi
     fi
 

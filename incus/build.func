@@ -273,7 +273,7 @@ _incus_sync_from_pve_settings() {
 }
 
 # Shared Proxmox UI (menus / wizard / validators / install_script / start)
-_incus_source "shared/build-ui.func"
+_incus_source "ui/build-ui.func"
 
 # Keep UI update checks under stable names before any later tools.func reload.
 eval "$(declare -f check_container_storage | sed '1s/check_container_storage/_shared_check_container_storage/')"
@@ -556,7 +556,7 @@ header_info() {
 # On Incus hosts, run install_script (same as Proxmox).
 eval "$(declare -f start | sed '1s/start/_shared_start/')"
 start() {
-  _incus_source "shared/tools.func"
+  _incus_source "lib/tools.func"
   # Ensure cleanup_lxc exists for update_script footer (tools.func may not define it).
   if ! declare -f cleanup_lxc >/dev/null 2>&1; then
     cleanup_lxc() {

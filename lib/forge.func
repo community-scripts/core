@@ -5,7 +5,7 @@
 # ==============================================================================
 # TOOLS/FORGE.FUNC - GITHUB, GITLAB AND CODEBERG RELEASES
 # ==============================================================================
-# Part of the shared helper library. Load shared/tools.func -- it sources every
+# Part of the shared helper library. Load lib/tools.func -- it sources every
 # part -- rather than this file directly; the split is for maintenance only and
 # no function name or behaviour changed with it.
 # ==============================================================================

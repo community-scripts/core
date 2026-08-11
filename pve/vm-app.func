@@ -374,8 +374,8 @@ customize_vm_image() {
   local tmp_install_func tmp_tools_func
   tmp_install_func=$(mktemp)
   tmp_tools_func=$(mktemp)
-  curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/install.func" >"$tmp_install_func"
-  curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/tools.func" >"$tmp_tools_func"
+  curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/lxc/install.func" >"$tmp_install_func"
+  curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/lib/tools.func" >"$tmp_tools_func"
 
   virt-customize -q -a "$WORK_FILE" \
     --mkdir /opt/community-scripts \

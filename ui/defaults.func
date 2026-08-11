@@ -5,7 +5,7 @@
 # ==============================================================================
 # BUILD-UI/DEFAULTS.FUNC - STORAGE, CONFIGURATION AND DEFAULTS
 # ==============================================================================
-# Part of the build UI. Load shared/build-ui.func -- it sources every part --
+# Part of the build UI. Load ui/build-ui.func -- it sources every part --
 # rather than this file directly; the split is for maintenance only and no
 # function name or behaviour changed with it.
 # ==============================================================================

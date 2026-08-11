@@ -7,7 +7,7 @@
 # ==============================================================================
 # Whiptail menus, advanced wizard, validators, preflight helpers, install_script
 # and start(). Platform backends override storage/network/create hooks.
-# Loaded by shared/build.func (PVE) and incus/build.func (Incus).
+# Loaded by core/build.func (PVE) and incus/build.func (Incus).
 # ==============================================================================
 
 [[ -n "${_BUILD_UI_FUNC_LOADED:-}" ]] && return
@@ -122,15 +122,15 @@ _build_ui_source() {
   fi
 }
 
-_build_ui_source "shared/api.func"
-_build_ui_source "shared/core.func"
-_build_ui_source "shared/error_handler.func"
-_build_ui_source "shared/dev-mode.func"
+_build_ui_source "api/api.func"
+_build_ui_source "core/core.func"
+_build_ui_source "core/error_handler.func"
+_build_ui_source "core/dev-mode.func"
 load_functions
 catch_errors
 
 # ==============================================================================
-# SECTION 2: PRE-FLIGHT (disabled — full implementation in shared/preflight.func)
+# SECTION 2: PRE-FLIGHT (disabled — full implementation in host/preflight.func)
 # ==============================================================================
 # To re-enable: ENABLE_PREFLIGHT=1
 # ------------------------------------------------------------------------------
@@ -139,12 +139,12 @@ run_preflight() {
     return 0
   fi
   if declare -f _cs_source_func >/dev/null 2>&1; then
-    _cs_source_func "shared/preflight.func"
+    _cs_source_func "host/preflight.func"
   elif declare -f _build_ui_source >/dev/null 2>&1; then
-    _build_ui_source "shared/preflight.func"
+    _build_ui_source "host/preflight.func"
   else
     # shellcheck disable=SC1090
-    source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/preflight.func")
+    source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/host/preflight.func")
   fi
   if declare -f run_preflight_full >/dev/null 2>&1; then
     run_preflight_full
@@ -200,7 +200,7 @@ maxkeys_check() {
 }
 
 # ==============================================================================
-# The rest of the build UI lives in shared/build-ui/. Splitting it was a
+# The rest of the build UI lives in ui/. Splitting it was a
 # maintenance change only -- every function kept its name, body and behaviour.
 #
 #   validate.func  container id, hostname, network and IP range validators
@@ -210,8 +210,8 @@ maxkeys_check() {
 # ==============================================================================
 
 # Platform-independent value checks; the VM paths load the same file.
-_build_ui_source "shared/validate.func"
-_build_ui_source "shared/build-ui/validate.func"
-_build_ui_source "shared/build-ui/defaults.func"
-_build_ui_source "shared/build-ui/advanced.func"
-_build_ui_source "shared/build-ui/menu.func"
+_build_ui_source "host/validate.func"
+_build_ui_source "ui/validate.func"
+_build_ui_source "ui/defaults.func"
+_build_ui_source "ui/advanced.func"
+_build_ui_source "ui/menu.func"

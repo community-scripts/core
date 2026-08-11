@@ -29,7 +29,7 @@ fi
 # Import upstream misc tools for maximum function parity.
 # Keep this before Incus overrides so Incus implementations win by re-definition.
 if [[ -z "${_INCUS_IMPORTED_MISC_TOOLS:-}" ]]; then
-  _cs_source_func "shared/tools.func"
+  _cs_source_func "lib/tools.func"
   _INCUS_IMPORTED_MISC_TOOLS=1
 fi
 

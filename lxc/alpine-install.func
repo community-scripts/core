@@ -10,11 +10,10 @@ fi
 COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
 COMMUNITY_SCRIPTS_CORE_URL="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
 # ── Engine URL (container side) ───────────────────────────────────────────────
-# Inside the container there is no _cs_source_func resolver, and the engine now
-# lives in a separate repo. Every .func loaded in here is a shared/ one, so the
-# mapping collapses to a single prefix — no folder table needed.
+# Inside the container there is no _cs_source_func resolver, so names are
+# folder-qualified paths relative to the repo root, same as on the host.
 _cs_core_url() {
-  echo "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/shared/${1:?func name}"
+  echo "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/${1:?func path}"
 }
 # Container context: failure artifacts only, never talk to the telemetry API
 export TELEMETRY_CONTEXT="container"
@@ -38,12 +37,12 @@ _bootstrap_source() {
     _bootstrap_die "${url##*/} loaded but incomplete (missing ${probe})"
 }
 
-_bootstrap_source "$(_cs_core_url core.func)" load_functions
-_bootstrap_source "$(_cs_core_url error_handler.func)" catch_errors
+_bootstrap_source "$(_cs_core_url core/core.func)" load_functions
+_bootstrap_source "$(_cs_core_url core/error_handler.func)" catch_errors
 # Same as install.func: only fetched when a dev flag is set, since core.func's
 # timing hooks no-op without it and the host exports the parsed flags.
 if [[ -n "${dev_mode:-}" ]]; then
-  _bootstrap_source "$(_cs_core_url dev-mode.func)" parse_dev_mode
+  _bootstrap_source "$(_cs_core_url core/dev-mode.func)" parse_dev_mode
 fi
 load_functions
 catch_errors
@@ -213,7 +212,7 @@ EOF
       exit 1
     fi
   fi
-  source <(curl -fsSL "$(_cs_core_url alpine-tools.func)")
+  source <(curl -fsSL "$(_cs_core_url lib/alpine.func)")
   msg_ok "Updated Container OS"
 }
 

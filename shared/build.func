@@ -1,294 +1,49 @@
 #!/usr/bin/env bash
-# Copyright (c) 2021-2026 community-scripts ORG
-# Author: tteck (tteckster) | MickLesk | michelroegl-brunner
-# License: MIT | https://raw.githubusercontent.com/community-scripts/core/main/LICENSE
-
-# ==============================================================================
-# BUILD.FUNC — TWO-ROOT ENTRY POINT
-# ==============================================================================
-# The engine (this repo, community-scripts/core) and the scripts (ProxmoxVE,
-# ProxmoxVED, Incus) live in SEPARATE repositories, so a single origin can no
-# longer address both. Everything below distinguishes two roots:
+# ------------------------------------------------------------------------------
+# Compatibility path -- the host-side entry point moved to core/build.func.
 #
-#   ENGINE  — shared/ pve/ incus/     → core
-#   SCRIPTS — ct/ install/ vm/        → whichever script repo invoked us
+# Scripts published before the move fetch this exact URL, and they keep running
+# on other people's machines long after this repository was rearranged, so this
+# path forwards instead of 404ing. Point new code at core/build.func.
 #
-# Each root resolves independently, so a fork/branch of core can be tested
-# against production scripts and vice versa:
-#
-#   COMMUNITY_SCRIPTS_CORE_URL / COMMUNITY_SCRIPTS_CORE_DIR   → engine
-#   COMMUNITY_SCRIPTS_URL      / COMMUNITY_SCRIPTS_ROOT       → scripts
-#
-# Paths are folder-qualified: "shared/core.func", "pve/backend.func",
-# "incus/build.func" for the engine, "ct/…" and "install/…" for the scripts.
-# ==============================================================================
+# Sourced inline rather than through a function on purpose: `declare` inside a
+# function is local, so a wrapper would quietly scope away every top-level
+# declaration the forwarded file makes.
+# ------------------------------------------------------------------------------
 
-[[ -n "${_LXC_BUILD_DISPATCHED:-}" ]] && return
-_LXC_BUILD_DISPATCHED=1
+_CS_FWD="core/build.func"
+_CS_FWD_BASE="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
 
-_CS_DEFAULT_URL="${_CS_DEFAULT_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
-_CS_CORE_DEFAULT_URL="${_CS_CORE_DEFAULT_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
-
-# ── Engine layout ─────────────────────────────────────────────────────────────
-# Paths are folder-qualified ("incus/backend.func"), so the folder itself says
-# which root a path belongs to and no name→folder map is needed. That is also
-# what lets the files drop their platform prefix: incus/build.func and
-# shared/build.func can coexist because nothing resolves by basename.
-_cs_is_engine_path() {
-  case "${1:-}" in
-  shared/* | pve/* | incus/*) return 0 ;;
-  *) return 1 ;;
-  esac
-}
-
-# ── Engine root ───────────────────────────────────────────────────────────────
-# This file lives at <core>/shared/build.func, so the engine root is its parent.
-if [[ -z "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
-  _cs_this_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-  if [[ "${_cs_this_dir##*/}" == "shared" && -d "${_cs_this_dir}/../pve" ]]; then
-    COMMUNITY_SCRIPTS_CORE_DIR="$(cd "${_cs_this_dir}/.." >/dev/null 2>&1 && pwd)"
-  fi
-  unset _cs_this_dir
+# A checkout entered through this old path still has to resolve locally, or a
+# developer's edits would be silently ignored in favour of production.
+_CS_FWD_DIR="${COMMUNITY_SCRIPTS_CORE_DIR:-}"
+if [[ -z "${_CS_FWD_DIR}" && -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+  _CS_FWD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
 fi
 
-# Back-compat: callers that still set COMMUNITY_SCRIPTS_DIR meant the engine.
-if [[ -z "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -n "${COMMUNITY_SCRIPTS_DIR:-}" ]]; then
-  COMMUNITY_SCRIPTS_CORE_DIR="${COMMUNITY_SCRIPTS_DIR}"
-fi
-[[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" ]] && export COMMUNITY_SCRIPTS_CORE_DIR
-
-# ── Scripts root ──────────────────────────────────────────────────────────────
-# Derived from the CT script that invoked us, NOT from the engine location.
-# Conflating the two is what silently broke local install/ lookups before.
-if [[ -z "${COMMUNITY_SCRIPTS_ROOT:-}" ]]; then
-  _cs_caller="${_CS_ENTRY_SCRIPT:-${BASH_SOURCE[-1]:-}}"
-  if [[ -n "$_cs_caller" && -f "$_cs_caller" ]]; then
-    _cs_dir="$(cd "$(dirname "$_cs_caller")" >/dev/null 2>&1 && pwd)"
-    # Walk up to the first directory holding both ct/ and install/. Checking a
-    # single level would miss anything nested, e.g. ct/deferred/foo.sh.
-    while [[ -n "$_cs_dir" && "$_cs_dir" != "/" ]]; do
-      if [[ -d "${_cs_dir}/ct" && -d "${_cs_dir}/install" ]]; then
-        COMMUNITY_SCRIPTS_ROOT="$_cs_dir"
-        break
-      fi
-      _cs_dir="$(cd "${_cs_dir}/.." >/dev/null 2>&1 && pwd)"
-    done
-  fi
-  unset _cs_caller _cs_dir
-fi
-[[ -n "${COMMUNITY_SCRIPTS_ROOT:-}" ]] && export COMMUNITY_SCRIPTS_ROOT
-
-# ── Origin detection (per root, independently) ────────────────────────────────
-# A fork/branch of core and a fork/branch of the scripts resolve separately, so
-# either can be tested against production of the other.
-_cs_load_origin_helper() {
-  local base="${COMMUNITY_SCRIPTS_CORE_DIR:-}"
-  [[ -z "$base" ]] && return 1
-  local helper="${base}/shared/source-origin.func"
-  [[ -f "$helper" ]] || return 1
-  # shellcheck disable=SC1090
-  source "$helper"
-}
-
-if command -v git >/dev/null 2>&1 && _cs_load_origin_helper 2>/dev/null; then
-  if [[ -z "${COMMUNITY_SCRIPTS_CORE_URL:-}" && -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -d "${COMMUNITY_SCRIPTS_CORE_DIR}/.git" ]]; then
-    _cs_url="$(cs_detect_origin_from_git "$COMMUNITY_SCRIPTS_CORE_DIR" 2>/dev/null || true)"
-    [[ -n "${_cs_url:-}" ]] && COMMUNITY_SCRIPTS_CORE_URL="$_cs_url"
-    unset _cs_url
-  fi
-  if [[ -z "${COMMUNITY_SCRIPTS_URL:-}" && -n "${COMMUNITY_SCRIPTS_ROOT:-}" && -d "${COMMUNITY_SCRIPTS_ROOT}/.git" ]]; then
-    _cs_url="$(cs_detect_origin_from_git "$COMMUNITY_SCRIPTS_ROOT" 2>/dev/null || true)"
-    [[ -n "${_cs_url:-}" ]] && COMMUNITY_SCRIPTS_URL="$_cs_url"
-    unset _cs_url
-  fi
-fi
-
-COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-$_CS_DEFAULT_URL}"
-COMMUNITY_SCRIPTS_CORE_URL="${COMMUNITY_SCRIPTS_CORE_URL:-$_CS_CORE_DEFAULT_URL}"
-export COMMUNITY_SCRIPTS_URL COMMUNITY_SCRIPTS_CORE_URL
-
-# ── Resolution ────────────────────────────────────────────────────────────────
-# Local file for a virtual path, or non-zero when it must be fetched remotely.
-# Every branch is -f guarded: an unguarded assignment used to shadow the
-# fallbacks and send existing files to the network.
-_cs_local_path() {
-  local rel="${1:?relative path}"
-  local candidate
-
-  if _cs_is_engine_path "$rel"; then
-    [[ -z "${COMMUNITY_SCRIPTS_CORE_DIR:-}" ]] && return 1
-    candidate="${COMMUNITY_SCRIPTS_CORE_DIR}/${rel}"
-    if [[ -f "$candidate" ]]; then
-      echo "$candidate"
-      return 0
-    fi
-    return 1
-  fi
-
-  [[ -z "${COMMUNITY_SCRIPTS_ROOT:-}" ]] && return 1
-  candidate="${COMMUNITY_SCRIPTS_ROOT}/${rel}"
-  if [[ -f "$candidate" ]]; then
-    echo "$candidate"
-    return 0
-  fi
-  return 1
-}
-
-# Remote URL for a virtual path — engine and scripts use their own base.
-_cs_remote_url() {
-  local rel="${1:?relative path}"
-  if _cs_is_engine_path "$rel"; then
-    echo "${COMMUNITY_SCRIPTS_CORE_URL}/${rel}"
-  else
-    echo "${COMMUNITY_SCRIPTS_URL}/${rel}"
-  fi
-}
-
-# dev_mode=net records every engine fetch. Read from $dev_mode directly, not
-# from DEV_MODE_NET: parse_dev_mode runs much later, and the first fetches --
-# the ones worth seeing -- happen before it.
-_cs_net_log() {
-  [[ ",${dev_mode:-}," == *,net,* ]] || return 0
-  printf '  [net] %-3s %6s ms  %s
-' "$1" "$2" "$3" >&2
-}
-
-_cs_download() {
-  local url="${1:?url}"
-  local t0 code
-  if [[ ",${dev_mode:-}," == *,net,* ]] && command -v curl >/dev/null 2>&1; then
-    t0=${EPOCHREALTIME/./}
-    local body
-    body="$(curl -fsSL -w '
-%{http_code}' "$url" 2>/dev/null)"
-    code="${body##*$'
-'}"
-    _cs_net_log "$code" "$((( ${EPOCHREALTIME/./} - t0 ) / 1000))" "$url"
-    printf '%s' "${body%$'
-'*}"
-    return 0
-  fi
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url"
-  else
-    wget -qO- "$url"
-  fi
-}
-
-# Fetch text: prefer a local checkout, else download from the matching base.
-_cs_fetch_text() {
-  local rel="${1:?relative path e.g. shared/install.func}"
-  local file
-  if file="$(_cs_local_path "$rel")" && [[ -n "$file" ]]; then
-    cat "$file"
-    return 0
-  fi
-  _cs_download "$(_cs_remote_url "$rel")"
-}
-
-_cs_source_func() {
-  local rel="${1:?relative path}"
-  local file
-  if file="$(_cs_local_path "$rel")" && [[ -n "$file" ]]; then
-    # shellcheck disable=SC1090
-    source "$file"
-    return 0
-  fi
-  # shellcheck disable=SC1090
-  source <(_cs_download "$(_cs_remote_url "$rel")")
-}
-
-# ── Prefetch ─────────────────────────────────────────────────────────────────
-# Without a checkout every engine file is its own HTTPS request — 22 of them on
-# the Proxmox path, ~5.5s before the first prompt. curl fetches them
-# concurrently over one connection instead (~0.4s), into tmpfs, for this run
-# only. No cache, nothing to go stale.
-#
-# The list is checked against the repository by .github/workflows/verify-split-files.yml,
-# so a new .func cannot be forgotten here. A file missing from it would still
-# work — _cs_local_path falls through to the network — just slower.
-_CS_ENGINE_FILES=(
-  shared/alpine-install.func shared/alpine-tools.func shared/api.func
-  shared/api/errorlog.func shared/api/exitcodes.func shared/api/sysinfo.func
-  shared/api/telemetry.func
-  shared/build-ui.func shared/build-ui/advanced.func shared/build-ui/defaults.func
-  shared/build-ui/menu.func shared/build-ui/validate.func shared/cloud-init.func
-  shared/core.func shared/dev-mode.func shared/error_handler.func
-  shared/install.func shared/lxc-platform.func shared/preflight.func
-  shared/source-origin.func shared/tools.func shared/tools/db.func
-  shared/tools/forge.func shared/tools/hwaccel.func shared/tools/runtime.func
-  shared/tools/system.func shared/validate.func
-  pve/backend.func pve/vm-app.func pve/vm-core.func
-  incus/backend.func incus/build.func incus/core.func incus/tools.func
-  incus/vm-core.func
-)
-
-_cs_curl_has_parallel() {
-  local ver major minor
-  ver="$(curl --version 2>/dev/null | head -1 | awk '{print $2}')" || return 1
-  major="${ver%%.*}"
-  minor="${ver#*.}"
-  minor="${minor%%.*}"
-  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 1
-  ((major > 7 || (major == 7 && minor >= 66)))
-}
-
-_cs_prefetch_engine() {
-  [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" ]] && return 0
-  [[ "${COMMUNITY_SCRIPTS_NO_PREFETCH:-0}" == "1" ]] && return 1
-  command -v curl >/dev/null 2>&1 || return 1
-  _cs_curl_has_parallel || return 1
-
-  local base dir=""
-  for base in /dev/shm "${TMPDIR:-/tmp}" /tmp; do
-    [[ -d "$base" && -w "$base" ]] || continue
-    # An EXIT trap would be the obvious cleanup, but core.func and api.func
-    # install their own later and the last one wins. Sweep instead.
-    find "$base" -maxdepth 1 \( -name 'cs-engine.*' -o -name 'cs-pveam.*'       -o -name 'cs-pveversion.*' \) -mmin +60 -exec rm -rf {} + 2>/dev/null || true
-    dir="$(mktemp -d "${base}/cs-engine.XXXXXX" 2>/dev/null)" && break
-    dir=""
-  done
-  [[ -z "$dir" ]] && return 1
-
-  local _cs_t0=${EPOCHREALTIME/./}
-  local args=() rel
-  for rel in "${_CS_ENGINE_FILES[@]}"; do
-    mkdir -p "${dir}/${rel%/*}" 2>/dev/null || true
-    args+=(-o "${dir}/${rel}" "${COMMUNITY_SCRIPTS_CORE_URL}/${rel}")
-  done
-
-  # --fail so a 404 leaves no file rather than an error page that would be
-  # sourced as shell.
-  curl -fsSL --parallel --parallel-immediate --parallel-max 16     --connect-timeout 10 --max-time 60 "${args[@]}" 2>/dev/null
-
-  local kept=0 missing=0
-  for rel in "${_CS_ENGINE_FILES[@]}"; do
-    if [[ -s "${dir}/${rel}" ]]; then
-      kept=$((kept + 1))
-    else
-      rm -f "${dir}/${rel}" 2>/dev/null
-      missing=$((missing + 1))
-    fi
-  done
-  _cs_net_log "200" "$(( ( ${EPOCHREALTIME/./} - _cs_t0 ) / 1000 ))"     "prefetch: ${kept} files, ${missing} missing -> ${dir}"
-  if ((kept == 0)); then
-    rm -rf "$dir" 2>/dev/null
-    return 1
-  fi
-
-  COMMUNITY_SCRIPTS_CORE_DIR="$dir"
+if [[ -n "${_CS_FWD_DIR}" && -s "${_CS_FWD_DIR}/${_CS_FWD}" ]]; then
+  COMMUNITY_SCRIPTS_CORE_DIR="${_CS_FWD_DIR}"
   export COMMUNITY_SCRIPTS_CORE_DIR
-  return 0
-}
-
-_cs_prefetch_engine || true
-
-_cs_source_func "shared/lxc-platform.func"
-
-if is_incus_lxc_backend; then
-  _cs_source_func "incus/build.func"
-  return 0
+  # shellcheck disable=SC1090
+  source "${_CS_FWD_DIR}/${_CS_FWD}"
+else
+  # A failed download would otherwise source an empty stream and fail later,
+  # somewhere unrelated. Fetch first, check, then source.
+  if command -v curl >/dev/null 2>&1; then
+    _CS_FWD_BODY="$(curl -fsSL "${_CS_FWD_BASE}/${_CS_FWD}")" || _CS_FWD_BODY=""
+  else
+    _CS_FWD_BODY="$(wget -qO- "${_CS_FWD_BASE}/${_CS_FWD}")" || _CS_FWD_BODY=""
+  fi
+  if [[ -z "${_CS_FWD_BODY}" ]]; then
+    echo "FATAL: could not fetch ${_CS_FWD_BASE}/${_CS_FWD}" >&2
+    exit 115
+  fi
+  # Process substitution, not a heredoc: a heredoc would take over stdin and
+  # break every interactive prompt in the forwarded file.
+  # shellcheck disable=SC1090
+  source <(printf '%s
+' "${_CS_FWD_BODY}")
+  unset _CS_FWD_BODY
 fi
 
-_cs_source_func "shared/build-ui.func"
-_cs_source_func "pve/backend.func"
+unset _CS_FWD _CS_FWD_BASE _CS_FWD_DIR
