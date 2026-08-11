@@ -131,30 +131,6 @@ tools/      developer helpers (run.sh)
 images/     logos used in container MOTD and VM output
 ```
 
-### Why `shared/` is only shims
-
-Everything used to live in `shared/`. The engine was split into the folders
-above, but six of those files were entry points that published scripts fetch by
-raw URL — and those scripts keep running on other people's machines long after
-this repository is rearranged. Moving them would have 404'd every one of them.
-
-So `shared/` keeps those six paths as forwarding shims:
-
-| Old path | Now at |
-| -------- | ------ |
-| `shared/build.func` | `core/build.func` |
-| `shared/core.func` | `core/core.func` |
-| `shared/error_handler.func` | `core/error_handler.func` |
-| `shared/api.func` | `api/api.func` |
-| `shared/tools.func` | `lib/tools.func` |
-| `shared/cloud-init.func` | `vm/cloud-init.func` |
-
-A shim resolves a local checkout first (including one entered through the old
-path, so a developer's edits are never silently skipped in favour of
-production), and forwards over the network otherwise. It costs one extra round
-trip, which is why new code should use the real path. CI checks that every shim
-still points at a file that exists.
-
 ### Why headers live here
 
 A header is a figlet banner derived from a script's `APP=` line — a generated

@@ -9,10 +9,6 @@ name: Verify split files
 # The same applies to the prefetch lists in core/build.func and
 # lxc/install.func: a .func missing from one still works, it just costs a round
 # trip nobody would notice. So they are checked, not trusted.
-#
-# And shared/ now holds forwarding shims for the paths published scripts still
-# fetch. A shim pointing at a file that moved again would 404 for every one of
-# those scripts, so the targets are checked too.
 
 on:
   pull_request:
@@ -24,7 +20,6 @@ on:
       - "lib/**"
       - "ui/**"
       - "vm/**"
-      - "shared/**"
       - "pve/**"
       - "incus/**"
   push:
@@ -37,7 +32,6 @@ on:
       - "lib/**"
       - "ui/**"
       - "vm/**"
-      - "shared/**"
       - "pve/**"
       - "incus/**"
   workflow_dispatch:
@@ -57,25 +51,7 @@ jobs:
           fail=0
           while IFS= read -r f; do
             bash -n "$f" || { echo "::error file=$f::syntax error"; fail=1; }
-          done < <(find $ENGINE_DIRS shared -name '*.func' -type f)
-          exit $fail
-
-      - name: Every shim points at a file that exists
-        run: |
-          set -euo pipefail
-          fail=0
-          for f in shared/*.func; do
-            target=$(sed -n 's/^_CS_FWD="\(.*\)"$/\1/p' "$f")
-            if [[ -z "$target" ]]; then
-              echo "::error file=$f::not a shim, or _CS_FWD is not parseable"
-              fail=1
-            elif [[ ! -f "$target" ]]; then
-              echo "::error file=$f::forwards to $target, which does not exist"
-              fail=1
-            else
-              echo "$f -> $target"
-            fi
-          done
+          done < <(find $ENGINE_DIRS -name '*.func' -type f)
           exit $fail
 
       - name: Prefetch lists cover every engine file

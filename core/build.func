@@ -37,8 +37,6 @@ _CS_CORE_DEFAULT_URL="${_CS_CORE_DEFAULT_URL:-https://raw.githubusercontent.com/
 _cs_is_engine_path() {
   case "${1:-}" in
   core/* | lxc/* | host/* | api/* | lib/* | ui/* | vm/* | pve/* | incus/*) return 0 ;;
-  # Pre-move paths, still reachable through the shims in shared/.
-  shared/*) return 0 ;;
   *) return 1 ;;
   esac
 }
@@ -47,14 +45,9 @@ _cs_is_engine_path() {
 # This file lives at <core>/core/build.func, so the engine root is its parent.
 if [[ -z "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
   _cs_this_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-  # "core" is where this file lives now; "shared" is where it lived before, and
-  # a local checkout can still be entered through the shim there.
-  case "${_cs_this_dir##*/}" in
-  core | shared)
-    [[ -d "${_cs_this_dir}/../pve" ]] &&
-      COMMUNITY_SCRIPTS_CORE_DIR="$(cd "${_cs_this_dir}/.." >/dev/null 2>&1 && pwd)"
-    ;;
-  esac
+  if [[ "${_cs_this_dir##*/}" == "core" && -d "${_cs_this_dir}/../pve" ]]; then
+    COMMUNITY_SCRIPTS_CORE_DIR="$(cd "${_cs_this_dir}/.." >/dev/null 2>&1 && pwd)"
+  fi
   unset _cs_this_dir
 fi
 
