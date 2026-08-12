@@ -1,0 +1,108 @@
+name: PR test command
+
+# A reviewer should not have to assemble raw URLs by hand to try a pull request
+# out. The engine and the scripts already resolve independently, so pointing
+# COMMUNITY_SCRIPTS_CORE_URL at this PR's branch is all it takes -- this posts
+# that command, filled in.
+#
+# pull_request_target so the comment can be posted on PRs from forks, which is
+# most of them. Nothing from the pull request is ever checked out or executed
+# here: the branch name and the file list come from the API, and the comment is
+# assembled in JavaScript, so no attacker-controlled string reaches a shell.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "core/**"
+      - "lxc/**"
+      - "host/**"
+      - "api/**"
+      - "lib/**"
+      - "ui/**"
+      - "vm/**"
+      - "pve/**"
+      - "incus/**"
+
+permissions:
+  pull-requests: write
+
+jobs:
+  comment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const head = pr.head.repo;               // null if the fork is gone
+            if (!head) return;
+
+            const base = `https://raw.githubusercontent.com/${head.full_name}/${pr.head.ref}`;
+            const scripts = 'https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main';
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner, repo: context.repo.repo, pull_number: pr.number,
+            });
+            const paths = files.map(f => f.filename);
+            const touches = p => paths.some(f => f.startsWith(p));
+
+            // Which host the change can actually be exercised on.
+            let where = '';
+            if (touches('pve/') && !touches('incus/')) {
+              where = '\nThis PR touches `pve/`, so it needs a Proxmox VE host.\n';
+            } else if (touches('incus/') && !touches('pve/')) {
+              where = '\nThis PR touches `incus/`, so it needs an Incus host.\n';
+            } else if (touches('pve/') && touches('incus/')) {
+              where = '\nThis PR touches both backends. Worth running on a Proxmox VE **and** an Incus host.\n';
+            }
+
+            const body = [
+              '<!-- pr-test-command -->',
+              '### Try this branch',
+              '',
+              'The engine and the scripts resolve independently, so a production script can',
+              'be run against the engine from this PR by setting one variable:',
+              '',
+              '```bash',
+              `COMMUNITY_SCRIPTS_CORE_URL=${base} \\`,
+              `bash -c "$(curl -fsSL ${scripts}/ct/debian.sh)"`,
+              '```',
+              '',
+              'Swap `ct/debian.sh` for whatever exercises the change.',
+              where,
+              '<details><summary>Run a script from a fork as well</summary>',
+              '',
+              '```bash',
+              `curl -fsSL ${base}/tools/run.sh |`,
+              '  bash -s -- https://raw.githubusercontent.com/YOU/ProxmoxVED/your-branch ct/debian.sh \\',
+              `             ${base}`,
+              '```',
+              '',
+              'Note that `run.sh` is reached through a pipe, so the script it starts inherits',
+              'an exhausted stdin. Whiptail is fine — it opens `/dev/tty` — but a plain `read`',
+              'would see EOF. The single-variable form above does not have that problem.',
+              '</details>',
+              '',
+              '<details><summary>Useful flags while testing</summary>',
+              '',
+              '`dev_mode=net` logs every engine fetch with status and duration, which is the',
+              'quickest way to confirm the branch is really being used. `dev_mode=keep` stops a',
+              'failed build from deleting the container along with the evidence.',
+              '</details>',
+            ].join('\n');
+
+            // Update in place rather than posting again on every push.
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner, repo: context.repo.repo, issue_number: pr.number,
+            });
+            const mine = comments.find(c => c.body.includes('<!-- pr-test-command -->'));
+            if (mine) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner, repo: context.repo.repo, comment_id: mine.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo, issue_number: pr.number, body,
+              });
+            }

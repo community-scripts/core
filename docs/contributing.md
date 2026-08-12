@@ -59,7 +59,13 @@ into a syntax error and takes the whole engine with it — nothing would install
 
 ## Testing a change
 
-The fastest loop is two local checkouts side by side — no network, no
+Every pull request that touches an engine folder gets a comment with the exact
+command to run a script against that branch — `.github/workflows/pr-test-command.yml`
+assembles it from the PR's own head repository and branch. ProxmoxVED does the
+same for the scripts it touches. So reviewing a change starts with a copy and a
+paste, not with building URLs by hand.
+
+The fastest loop for your own work is two local checkouts side by side — no network, no
 configuration:
 
 ```bash
