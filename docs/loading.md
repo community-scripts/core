@@ -98,6 +98,24 @@ export COMMUNITY_SCRIPTS_CORE_URL=https://raw.githubusercontent.com/YOU/core/my-
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/ct/debian.sh)"
 ```
 
+**Remote fork, scripts only** — `COMMUNITY_SCRIPTS_URL` has to be set here, and
+it is the step people miss:
+
+```bash
+export COMMUNITY_SCRIPTS_URL=https://raw.githubusercontent.com/YOU/ProxmoxVED/my-branch
+bash -c "$(curl -fsSL "$COMMUNITY_SCRIPTS_URL/ct/debian.sh")"
+```
+
+Fetching the ct script from a fork does not tell the engine where that fork is.
+With `bash -c "$(curl …)"` there is no file on disk, so the walk-up that finds
+the scripts root has nothing to walk and `COMMUNITY_SCRIPTS_URL` falls back to
+the default. The ct script would run from the fork and then look for its
+`install/` counterpart in upstream main.
+
+A private fork cannot be used this way at all: `_cs_download` sends no
+authentication header, so `raw.githubusercontent.com` answers 404. Use a local
+checkout for those.
+
 **Remote fork, both sides** — [`tools/run.sh`](../tools/run.sh) sets both bases
 and then runs a script from the script base:
 

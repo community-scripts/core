@@ -64,7 +64,7 @@ does not yet and still ships and loads its own `misc/`.
 
 | Repository | `ct/` scripts bootstrapping from core |
 | ---------- | ------------------------------------ |
-| ProxmoxVED | 89 of 89 |
+| ProxmoxVED | 104 of 104 |
 | Incus | 577 of 577 |
 | ProxmoxVE | 0 of 583 |
 
