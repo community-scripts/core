@@ -281,6 +281,10 @@ build_container() {
   export ENABLE_GPU="$ENABLE_GPU"
   export APPLICATION_VERSION="${var_appversion:-}"
 
+  # The container writes its own MOTD, so it has to know whether this is a
+  # testing build. lxc-attach carries this across.
+  declare -f cs_testing_state >/dev/null 2>&1 && cs_testing_state
+
   # DEV_MODE exports (optional, for debugging)
   export BUILD_LOG="$BUILD_LOG"
   export INSTALL_LOG="/root/.install-${SESSION_ID}.log"

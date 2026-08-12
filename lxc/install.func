@@ -1339,16 +1339,40 @@ EOF
   fi
 
   # Create MOTD profile script
+  #
+  # The testing block is conditional. It used to be printed unconditionally,
+  # which meant every Incus container was told it was an unusable development
+  # build of ProxmoxVED. CS_TESTING is set on the host by cs_testing_state().
   local PROFILE_FILE="/etc/profile.d/00_lxc-details.sh"
   cat >"$PROFILE_FILE" <<EOF
 [ -z "\${SSH_CONNECTION:-}\${SSH_TTY:-}" ] && [ -t 1 ] && printf '\033[3J\033[H\033[2J'
 echo ""
+EOF
+
+  if [[ "${CS_TESTING:-}" == "yes" ]]; then
+    cat >>"$PROFILE_FILE" <<EOF
 echo -e "${BOLD:-}${YW:-}${APPLICATION:-Container} LXC Container - DEV Repository${CL:-}"
 echo -e "${RD:-}WARNING: This is a DEVELOPMENT version (ProxmoxVED). Do NOT use in production!${CL:-}"
+EOF
+  else
+    cat >>"$PROFILE_FILE" <<EOF
+echo -e "${BOLD:-}${YW:-}${APPLICATION:-Container} LXC Container${CL:-}"
+EOF
+  fi
+
+  cat >>"$PROFILE_FILE" <<EOF
 echo -e "${YW:-} OS: ${GN:-}${os_name} - Version: ${os_version}${CL:-}"
 echo -e "${YW:-} Hostname: ${GN:-}\$(hostname)${CL:-}"
 echo -e "${YW:-} IP Address: ${GN:-}\$(ip -4 route get 1 2>/dev/null | sed -n 's/.* src \\([0-9.]\\+\\).*/\\1/p' | head -1)${CL:-}"
+EOF
+
+  if [[ "${CS_TESTING:-}" == "yes" ]]; then
+    cat >>"$PROFILE_FILE" <<EOF
 echo -e "${YW:-} Repository: ${GN:-}https://github.com/community-scripts/ProxmoxVED${CL:-}"
+EOF
+  fi
+
+  cat >>"$PROFILE_FILE" <<EOF
 echo ""
 EOF
   # openSUSE's /etc/bash.bashrc sources profile.d via `[ -x ]`, not `[ -r ]`,
@@ -1360,7 +1384,8 @@ EOF
   # MOTD is shown even on distros where bash login profile loading is quirky
   # (Fedora, Arch, openSUSE, etc.). Static fields only — dynamic IP/hostname
   # come from the profile.d script above when it's sourced.
-  cat >/etc/motd <<EOF
+  if [[ "${CS_TESTING:-}" == "yes" ]]; then
+    cat >/etc/motd <<EOF
 
 ${APPLICATION:-Container} LXC Container - DEV Repository
 WARNING: This is a DEVELOPMENT version (ProxmoxVED). Do NOT use in production!
@@ -1368,6 +1393,14 @@ WARNING: This is a DEVELOPMENT version (ProxmoxVED). Do NOT use in production!
  Repository: https://github.com/community-scripts/ProxmoxVED
 
 EOF
+  else
+    cat >/etc/motd <<EOF
+
+${APPLICATION:-Container} LXC Container
+ OS: ${os_name} - Version: ${os_version}
+
+EOF
+  fi
 
   # Disable default MOTD scripts (Debian/Ubuntu)
   [[ -d /etc/update-motd.d ]] && chmod -x /etc/update-motd.d/* 2>/dev/null || true

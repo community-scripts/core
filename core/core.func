@@ -1716,6 +1716,25 @@ prompt_password() {
   fi
 }
 
+# ------------------------------------------------------------------------------
+# cs_testing_state()
+#
+# Decides whether this is a testing build, and sets CS_TESTING accordingly.
+#
+# ProxmoxVED is the testing repository, so a script that came from there is a
+# testing build by definition. detect_repo_source() has already worked out where
+# the script came from by the time this runs.
+#
+# Exported because the container has to know too: the MOTD is written from
+# inside it by lxc/install.func, and lxc-attach carries the caller's
+# environment.
+# ------------------------------------------------------------------------------
+cs_testing_state() {
+  CS_TESTING=""
+  [[ "${REPO_SOURCE:-}" == "ProxmoxVED" ]] && CS_TESTING="yes"
+  export CS_TESTING
+}
+
 # ==============================================================================
 # SECTION 6: CLEANUP & MAINTENANCE
 # ==============================================================================

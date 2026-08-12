@@ -227,6 +227,12 @@ _incus_prepare_install_exports() {
   export IPV6_METHOD="${IPV6_METHOD:-auto}"
   export ENABLE_GPU="${ENABLE_GPU:-no}"
   export APPLICATION_VERSION="${var_appversion:-}"
+
+  # The container writes its own MOTD, so it has to know whether this is a
+  # testing build. Incus is not the testing repository, so this is normally
+  # empty here -- which is the point: it used to warn unconditionally.
+  declare -f cs_testing_state >/dev/null 2>&1 && cs_testing_state
+
   export BUILD_LOG="${BUILD_LOG:-$INCUS_BUILD_LOG}"
   export INSTALL_LOG="/root/.install-${SESSION_ID}.log"
   export COMMUNITY_SCRIPTS_URL="${INCUS_COMMUNITY_SCRIPTS_URL}"
