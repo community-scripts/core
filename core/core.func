@@ -1719,20 +1719,47 @@ prompt_password() {
 # ------------------------------------------------------------------------------
 # cs_testing_state()
 #
-# Decides whether this is a testing build, and sets CS_TESTING accordingly.
+# Decides whether this is a testing build and where feedback should go.
+# Sets CS_TESTING (yes / empty) and CS_TESTING_URL (validated, may be empty).
 #
-# ProxmoxVED is the testing repository, so a script that came from there is a
-# testing build by definition. detect_repo_source() has already worked out where
-# the script came from by the time this runs.
+# var_testurl is declared by the script, not configured by the user: a script
+# under test points at the thread collecting its feedback. It is additive --
+# a ProxmoxVED script without one still gets the generic warning, so the
+# variable can be filled in one script at a time without a flag day. A script
+# promoted to ProxmoxVE keeps asking for feedback as long as it carries one.
 #
-# Exported because the container has to know too: the MOTD is written from
-# inside it by lxc/install.func, and lxc-attach carries the caller's
-# environment.
+# The URL is checked strictly because of where it ends up. The MOTD is a shell
+# script generated through an unquoted heredoc, so a `$(...)` in the value would
+# execute; the container description is HTML, where a quote would break out of
+# the attribute. The character set below therefore excludes $ ` ( ) \ ' " and
+# whitespace. This is not a privilege boundary -- the calling script is already
+# arbitrary bash -- it is so that a typo cannot break the container's login
+# shell. A rejected value falls back to the generic message instead of failing
+# the build, because a bad link is not worth losing a container over.
+#
+# Exported because the container needs both: the MOTD is written from inside it
+# by lxc/install.func, and lxc-attach carries the caller's environment.
 # ------------------------------------------------------------------------------
 cs_testing_state() {
   CS_TESTING=""
-  [[ "${REPO_SOURCE:-}" == "ProxmoxVED" ]] && CS_TESTING="yes"
-  export CS_TESTING
+  CS_TESTING_URL=""
+
+  local url="${var_testurl:-}"
+  if [[ -n "$url" ]]; then
+    local url_re='^https://[A-Za-z0-9._~:/?#@!&*+,;=%-]+$'
+    if ((${#url} <= 200)) && [[ "$url" =~ $url_re ]]; then
+      CS_TESTING_URL="$url"
+      CS_TESTING="yes"
+    else
+      msg_warn "Ignoring var_testurl: expected a plain https URL of at most 200 characters"
+    fi
+  fi
+
+  # ProxmoxVED is the testing repository, so its scripts are testing builds
+  # whether or not they name a thread yet.
+  [[ -z "$CS_TESTING" && "${REPO_SOURCE:-}" == "ProxmoxVED" ]] && CS_TESTING="yes"
+
+  export CS_TESTING CS_TESTING_URL
 }
 
 # ==============================================================================

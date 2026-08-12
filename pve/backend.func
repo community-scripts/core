@@ -2997,9 +2997,29 @@ create_lxc_container() {
 description() {
   IP=$(pct exec "$CTID" ip a s dev eth0 | awk '/inet / {print $2}' | cut -d/ -f1)
 
+  # A script under test asks for feedback here too, because the description is
+  # visible in the Proxmox UI without logging into the container at all.
+  # cs_testing_state() has already rejected anything that is not a plain https
+  # URL, so the only character left needing an entity here is the ampersand.
+  local _testing_block=""
+  if [[ -n "${CS_TESTING_URL:-}" ]]; then
+    local _url_html="${CS_TESTING_URL//&/&amp;}"
+    _testing_block=$(
+      cat <<EOF
+<div align='center' style='border: 2px solid #d97706; border-radius: 8px; padding: 12px; margin-bottom: 16px;'>
+  <p style='margin: 0 0 8px 0; font-size: 16px;'><strong>Testing build</strong></p>
+  <p style='margin: 0 0 8px 0;'>This script is still being tested. Without feedback it cannot be finished.</p>
+  <a href='${_url_html}' target='_blank' rel='noopener noreferrer'>Report back here</a>
+  <p style='margin: 8px 0 0 0; font-size: 12px;'>Works, broken, or anything odd &mdash; one line is enough.</p>
+</div>
+EOF
+    )
+  fi
+
   # Generate LXC Description
   DESCRIPTION=$(
     cat <<EOF
+${_testing_block}
 <div align='center'>
   <a href='https://Helper-Scripts.com' target='_blank' rel='noopener noreferrer'>
     <img src='https://raw.githubusercontent.com/community-scripts/core/main/images/logo-81x112.png' alt='Logo' style='width:81px;height:112px;'/>
@@ -3029,6 +3049,11 @@ description() {
 EOF
   )
   pct set "$CTID" -description "$DESCRIPTION"
+
+  # Last line of the run, where the user is still looking at the terminal.
+  if [[ -n "${CS_TESTING_URL:-}" ]]; then
+    msg_custom "🔗" "${YW}" "Testing build — please report back: ${CS_TESTING_URL}"
+  fi
 
   if [[ -f /etc/systemd/system/ping-instances.service ]]; then
     systemctl start ping-instances.service

@@ -332,6 +332,11 @@ base_settings() {
   else
     TAGS="community-script${var_tags:+;${var_tags}}"
   fi
+  # A script under test gets a tag too, so these containers stay findable in the
+  # Proxmox tree long after the install output scrolled past.
+  if [[ -n "${var_testurl:-}" && "$TAGS" != *testing* ]]; then
+    TAGS="${TAGS};testing"
+  fi
   ENABLE_FUSE=${var_fuse:-"${1:-no}"}
   ENABLE_TUN=${var_tun:-"${1:-no}"}
 

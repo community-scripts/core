@@ -1349,7 +1349,15 @@ EOF
 echo ""
 EOF
 
-  if [[ "${CS_TESTING:-}" == "yes" ]]; then
+  # A script that names a feedback thread does not name a repository: it may
+  # already have been promoted out of ProxmoxVED and still be collecting
+  # feedback, and saying "ProxmoxVED" there would be wrong.
+  if [[ -n "${CS_TESTING_URL:-}" ]]; then
+    cat >>"$PROFILE_FILE" <<EOF
+echo -e "${BOLD:-}${YW:-}${APPLICATION:-Container} LXC Container - TESTING BUILD${CL:-}"
+echo -e "${RD:-}This script is still being tested. Without feedback it cannot be finished.${CL:-}"
+EOF
+  elif [[ "${CS_TESTING:-}" == "yes" ]]; then
     cat >>"$PROFILE_FILE" <<EOF
 echo -e "${BOLD:-}${YW:-}${APPLICATION:-Container} LXC Container - DEV Repository${CL:-}"
 echo -e "${RD:-}WARNING: This is a DEVELOPMENT version (ProxmoxVED). Do NOT use in production!${CL:-}"
@@ -1366,7 +1374,13 @@ echo -e "${YW:-} Hostname: ${GN:-}\$(hostname)${CL:-}"
 echo -e "${YW:-} IP Address: ${GN:-}\$(ip -4 route get 1 2>/dev/null | sed -n 's/.* src \\([0-9.]\\+\\).*/\\1/p' | head -1)${CL:-}"
 EOF
 
-  if [[ "${CS_TESTING:-}" == "yes" ]]; then
+  if [[ -n "${CS_TESTING_URL:-}" ]]; then
+    cat >>"$PROFILE_FILE" <<EOF
+echo ""
+echo -e "${YW:-} Report back: ${GN:-}${CS_TESTING_URL}${CL:-}"
+echo -e "${YW:-} Works, broken, or anything odd - one line is enough.${CL:-}"
+EOF
+  elif [[ "${CS_TESTING:-}" == "yes" ]]; then
     cat >>"$PROFILE_FILE" <<EOF
 echo -e "${YW:-} Repository: ${GN:-}https://github.com/community-scripts/ProxmoxVED${CL:-}"
 EOF
@@ -1384,7 +1398,18 @@ EOF
   # MOTD is shown even on distros where bash login profile loading is quirky
   # (Fedora, Arch, openSUSE, etc.). Static fields only — dynamic IP/hostname
   # come from the profile.d script above when it's sourced.
-  if [[ "${CS_TESTING:-}" == "yes" ]]; then
+  if [[ -n "${CS_TESTING_URL:-}" ]]; then
+    cat >/etc/motd <<EOF
+
+${APPLICATION:-Container} LXC Container - TESTING BUILD
+This script is still being tested. Without feedback it cannot be finished.
+ OS: ${os_name} - Version: ${os_version}
+
+ Report back: ${CS_TESTING_URL}
+ Works, broken, or anything odd - one line is enough.
+
+EOF
+  elif [[ "${CS_TESTING:-}" == "yes" ]]; then
     cat >/etc/motd <<EOF
 
 ${APPLICATION:-Container} LXC Container - DEV Repository
