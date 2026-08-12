@@ -58,22 +58,6 @@ Incus script tree.
 
 ---
 
-## Status
-
-The split is in progress. ProxmoxVED and Incus bootstrap from core; ProxmoxVE
-does not yet and still ships and loads its own `misc/`.
-
-| Repository | `ct/` scripts bootstrapping from core |
-| ---------- | ------------------------------------ |
-| ProxmoxVED | 104 of 104 |
-| Incus | 577 of 577 |
-| ProxmoxVE | 0 of 583 |
-
-ProxmoxVE stays untouched until the mechanism is proven in ProxmoxVED. See
-[docs/proxmoxve-migration.md](docs/proxmoxve-migration.md) for what stands
-between the two.
-
----
 
 ## Contributing
 
