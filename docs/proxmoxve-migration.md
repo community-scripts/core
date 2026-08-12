@@ -30,6 +30,25 @@ Checked against the current tree, all of them exist here:
 Re-verify before the merge rather than trusting this table: it is a snapshot,
 and ProxmoxVE keeps moving too.
 
+## Better in ProxmoxVE — worth porting
+
+From a function-level comparison of the whole of `ProxmoxVE/misc/` against this
+engine: 371 functions there, 593 here, 358 shared, of which 250 are byte-identical
+once comments and whitespace are ignored. Only `_send_abort_telemetry` exists
+there and not here, and that one was deleted deliberately.
+
+Of the 108 that differ, most are explained by refactors on this side — the forge
+consolidation left one-line wrappers, `error_handler` was split into `_eh_*`
+steps, `get_lxc_ip` had its body moved into `_get_current_ip`. What is left:
+
+| Function | What ProxmoxVE does better | Severity |
+| -------- | -------------------------- | -------- |
+| `validate_container_id` | Checks the **whole cluster** — `pvesh get /cluster/resources` plus a walk of `/etc/pve/nodes/*/`. This engine only looks at `/etc/pve/qemu-server/` and `/etc/pve/lxc/`, which resolve to the local node, so an ID already in use on another node is not detected. | **Bug on clusters** |
+| `get_valid_container_id` | Bounded retry (`max_attempts=1000`) and a numeric guard on the `pvesh get /cluster/nextid` result. Here the loop is unbounded and an empty `pvesh` result falls through to arithmetic on an empty string. Exit code 109 is documented for this and never used. | **Bug** |
+| `diagnostics_menu` | Shows current telemetry state and links to `telemetry.community-scripts.org` in the dialog. | Cosmetic |
+| `check_or_create_swap` | Reports which step failed (allocate, chmod, mkswap, swapon) with distinct exit codes rather than one generic failure. | Cosmetic |
+| `update_os` (Alpine) | Shuffles the mirror list instead of always trying them in the same order. | Marginal |
+
 ## Ahead here — do not regress when merging
 
 - The multi-distro [`lxc/install.func`](../lxc/install.func)
