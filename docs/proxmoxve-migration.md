@@ -25,6 +25,7 @@ Checked against the current tree, all of them exist here:
 | `_bootstrap_die` / `_bootstrap_source` download hardening | [`lxc/alpine-install.func`](../lxc/alpine-install.func) |
 | `apt_update_safe` — was called by `ensure_whiptail` but undefined | [`core/core.func`](../core/core.func) |
 | `silent()` ending in `exit` rather than `return` | now ends in `return "$rc"` |
+| The container notes still used the Ko-fi badge and Gitea links | ported to the script page and sponsoring badges |
 
 Re-verify before the merge rather than trusting this table: it is a snapshot,
 and ProxmoxVE keeps moving too.

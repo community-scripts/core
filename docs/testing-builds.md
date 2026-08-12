@@ -44,8 +44,12 @@ time. There is no flag day.
 ## Where it shows up
 
 - **MOTD**, on every login — `motd_ssh()` in [`lxc/install.func`](../lxc/install.func)
-- **Container description**, visible in the Proxmox UI without logging in —
-  `description()` in [`pve/backend.func`](../pve/backend.func)
+- **Container description**, visible in the Proxmox UI without logging in, and
+  still there long after the install output scrolled away. A `TESTING BUILD`
+  badge and a `Report feedback #<n>` button, above the usual block —
+  `description()` in [`pve/backend.func`](../pve/backend.func). Built from the
+  same elements as the rest of that block, because those are known to survive
+  Proxmox's rendering of the notes field.
 - **Tag** `testing` alongside `community-script`, so the containers stay
   findable in the tree — [`ui/defaults.func`](../ui/defaults.func)
 - **Last line of the install**, while the user is still watching
