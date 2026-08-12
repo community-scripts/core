@@ -2997,20 +2997,53 @@ create_lxc_container() {
 description() {
   IP=$(pct exec "$CTID" ip a s dev eth0 | awk '/inet / {print $2}' | cut -d/ -f1)
 
-  # A script under test asks for feedback here too, because the description is
-  # visible in the Proxmox UI without logging into the container at all.
+  # Links follow the repository the script actually came from, which
+  # detect_repo_source() has already established. Hardcoding ProxmoxVED sent
+  # every Incus container to a repository it has nothing to do with.
+  local repo_slug="${REPO_SLUG:-community-scripts/ProxmoxVE}"
+  local repo_url="https://github.com/${repo_slug}"
+  local script_slug
+  script_slug="$(printf '%s' "${APP}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+
+  # A script under test asks for feedback here too: the description is visible
+  # in the Proxmox UI without logging into the container at all, and it stays
+  # visible long after the install output has scrolled away.
+  #
+  # Built from the same elements as the block below -- centred div, styled
+  # paragraph, shields.io badge, link -- because those are known to survive
+  # Proxmox's rendering of the notes field. A bordered box would look better
+  # and might simply be dropped.
+  #
   # cs_testing_state() has already rejected anything that is not a plain https
-  # URL, so the only character left needing an entity here is the ampersand.
+  # URL, so an ampersand is the only character still needing an entity here.
   local _testing_block=""
   if [[ -n "${CS_TESTING_URL:-}" ]]; then
     local _url_html="${CS_TESTING_URL//&/&amp;}"
+    # "Report feedback #2135" reads as a specific destination; a bare "Report
+    # feedback" reads as a form to fill in. Only when the URL ends in an issue
+    # or discussion number, which is the normal case.
+    local _label="Report%20feedback"
+    if [[ "$CS_TESTING_URL" =~ /(issues|discussions)/([0-9]+)$ ]]; then
+      _label="Report%20feedback%20%23${BASH_REMATCH[2]}"
+    fi
     _testing_block=$(
       cat <<EOF
-<div align='center' style='border: 2px solid #d97706; border-radius: 8px; padding: 12px; margin-bottom: 16px;'>
-  <p style='margin: 0 0 8px 0; font-size: 16px;'><strong>Testing build</strong></p>
-  <p style='margin: 0 0 8px 0;'>This script is still being tested. Without feedback it cannot be finished.</p>
-  <a href='${_url_html}' target='_blank' rel='noopener noreferrer'>Report back here</a>
-  <p style='margin: 8px 0 0 0; font-size: 12px;'>Works, broken, or anything odd &mdash; one line is enough.</p>
+<div align='center'>
+  <p style='margin: 4px 0 12px 0;'>
+    <a href='${_url_html}' target='_blank' rel='noopener noreferrer'>
+      <img src='https://img.shields.io/badge/%E2%9A%A0%EF%B8%8F-TESTING%20BUILD-d97706' alt='Testing build' />
+    </a>
+  </p>
+
+  <p style='margin: 8px 16px; font-size: 13px;'>This script is still being tested.<br/>Without feedback it cannot be finished.</p>
+
+  <p style='margin: 12px 0;'>
+    <a href='${_url_html}' target='_blank' rel='noopener noreferrer'>
+      <img src='https://img.shields.io/badge/%F0%9F%92%AC-${_label}-2ea043' alt='Report feedback' />
+    </a>
+  </p>
+
+  <p style='margin: 8px 16px 16px 16px; font-size: 12px;'>Works, broken, or anything odd &mdash; one line is enough.</p>
 </div>
 EOF
     )
@@ -3021,29 +3054,35 @@ EOF
     cat <<EOF
 ${_testing_block}
 <div align='center'>
-  <a href='https://Helper-Scripts.com' target='_blank' rel='noopener noreferrer'>
+  <a href='https://community-scripts.org' target='_blank' rel='noopener noreferrer'>
     <img src='https://raw.githubusercontent.com/community-scripts/core/main/images/logo-81x112.png' alt='Logo' style='width:81px;height:112px;'/>
   </a>
 
   <h2 style='font-size: 24px; margin: 20px 0;'>${APP} LXC</h2>
 
   <p style='margin: 16px 0;'>
-    <a href='https://ko-fi.com/community_scripts' target='_blank' rel='noopener noreferrer'>
-      <img src='https://img.shields.io/badge/&#x2615;-Buy us a coffee-blue' alt='spend Coffee' />
+    <a href='https://community-scripts.org/donate' target='_blank' rel='noopener noreferrer'>
+      <img src='https://img.shields.io/badge/%E2%9D%A4%EF%B8%8F-Sponsoring%20%26%20Donations-FF5E5B' alt='Sponsoring and donations' />
+    </a>
+  </p>
+
+  <p style='margin: 12px 0;'>
+    <a href='https://community-scripts.org/scripts/${script_slug}' target='_blank' rel='noopener noreferrer'>
+      <img src='https://img.shields.io/badge/%F0%9F%93%A6-Open%20Script%20Page-00617f' alt='Open script page' />
     </a>
   </p>
 
   <span style='margin: 0 10px;'>
     <i class="fa fa-github fa-fw" style="color: #f5f5f5;"></i>
-    <a href='https://git.community-scripts.org/community-scripts/ProxmoxVED' target='_blank' rel='noopener noreferrer' style='text-decoration: none; color: #00617f;'>Git</a>
+    <a href='${repo_url}' target='_blank' rel='noopener noreferrer' style='text-decoration: none; color: #00617f;'>GitHub</a>
   </span>
   <span style='margin: 0 10px;'>
     <i class="fa fa-comments fa-fw" style="color: #f5f5f5;"></i>
-    <a href='https://git.community-scripts.org/community-scripts/ProxmoxVED/discussions' target='_blank' rel='noopener noreferrer' style='text-decoration: none; color: #00617f;'>Discussions</a>
+    <a href='${repo_url}/discussions' target='_blank' rel='noopener noreferrer' style='text-decoration: none; color: #00617f;'>Discussions</a>
   </span>
   <span style='margin: 0 10px;'>
     <i class="fa fa-exclamation-circle fa-fw" style="color: #f5f5f5;"></i>
-    <a href='https://git.community-scripts.org/community-scripts/ProxmoxVED/issues' target='_blank' rel='noopener noreferrer' style='text-decoration: none; color: #00617f;'>Issues</a>
+    <a href='${repo_url}/issues' target='_blank' rel='noopener noreferrer' style='text-decoration: none; color: #00617f;'>Issues</a>
   </span>
 </div>
 EOF
