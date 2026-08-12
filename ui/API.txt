@@ -60,6 +60,7 @@ color_spinner
 configure_http_proxy
 configure_ssh_settings
 confirm_not_pve_host
+cs_testing_state
 default_var_settings
 default_vars
 detect_arm
