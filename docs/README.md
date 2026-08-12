@@ -37,6 +37,9 @@ over, and how the engine is prefetched in a single round trip.
 
 [dev-mode.md](dev-mode.md) covers the opt-in debugging flags.
 
+[testing-builds.md](testing-builds.md) covers `var_testurl` — how a script under
+test asks for feedback, and what it changes.
+
 [contributing.md](contributing.md) covers the rules that CI enforces — where a
 new file goes, which files are loaders, and when an `API.txt` has to be
 regenerated.

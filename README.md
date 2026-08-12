@@ -41,6 +41,7 @@ Incus script tree.
 | [How loading works](docs/loading.md) | The two roots, resolution order, the prefetch, running against a fork |
 | [Contributing](docs/contributing.md) | Where a change belongs, what CI enforces, how to test |
 | [Dev mode](docs/dev-mode.md) | The opt-in debugging flags |
+| [Testing builds](docs/testing-builds.md) | `var_testurl` and how a script under test asks for feedback |
 | [core/](docs/core.md) · [ui/](docs/ui.md) · [lib/](docs/lib.md) · [lxc/](docs/lxc.md) | |
 | [host/](docs/host.md) · [api/](docs/api.md) · [vm/](docs/vm.md) · [backends](docs/backends.md) · [headers/](docs/headers.md) | |
 
