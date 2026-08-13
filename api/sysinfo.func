@@ -46,20 +46,44 @@ detect_repo_source() {
 
   local content="" owner_repo=""
 
+  # Method 0: COMMUNITY_SCRIPTS_URL, which build.func has already resolved from
+  # a local checkout, that checkout's git remote, the environment, or the
+  # default. It IS the scripts base, so it answers directly instead of being
+  # inferred.
+  #
+  # This became necessary rather than merely better: a ct script used to embed
+  # its own repository URL, which the scraping below found. The bootstrap line
+  # now names only the engine, so every modern script scraped as
+  # "community-scripts/core" and was attributed as external -- all of ProxmoxVED
+  # and all of Incus. A fork was mis-attributed the same way, and
+  # cs_testing_state, which keys the development warning off ProxmoxVED, never
+  # fired.
+  if [[ -n "${COMMUNITY_SCRIPTS_URL:-}" ]]; then
+    owner_repo=$(echo "$COMMUNITY_SCRIPTS_URL" |
+      grep -oE 'raw\.githubusercontent\.com/[^/]+/[^/]+' |
+      head -1 | sed 's|raw\.githubusercontent\.com/||') || true
+    if [[ -z "$owner_repo" ]]; then
+      owner_repo=$(echo "$COMMUNITY_SCRIPTS_URL" |
+        grep -oE 'git\.community-scripts\.org/[^/]+/[^/]+' |
+        head -1 | sed 's|git\.community-scripts\.org/||') || true
+    fi
+  fi
+
   # Method 1: Read from /proc/$$/cmdline
   # When invoked via: bash -c "$(curl -fsSL https://.../ct/app.sh)"
-  if [[ -r /proc/$$/cmdline ]]; then
+  if [[ -z "$owner_repo" && -r /proc/$$/cmdline ]]; then
     content=$(tr '\0' ' ' </proc/$$/cmdline 2>/dev/null) || true
   fi
 
   # Method 2: Read from the original script file (bash ct/app.sh)
-  if [[ -z "$content" ]] || ! echo "$content" | grep -qE 'githubusercontent\.com|community-scripts\.org' 2>/dev/null; then
+  if [[ -z "$owner_repo" ]] &&
+    { [[ -z "$content" ]] || ! echo "$content" | grep -qE 'githubusercontent\.com|community-scripts\.org' 2>/dev/null; }; then
     if [[ -f "$0" ]] && [[ "$0" != *bash* ]]; then
       content=$(head -10 "$0" 2>/dev/null) || true
     fi
   fi
 
-  if [[ -n "$content" ]]; then
+  if [[ -z "$owner_repo" && -n "$content" ]]; then
     owner_repo=$(echo "$content" | grep -oE 'raw\.githubusercontent\.com/[^/]+/[^/]+' | head -1 | sed 's|raw\.githubusercontent\.com/||') || true
     if [[ -z "$owner_repo" ]]; then
       owner_repo=$(echo "$content" | grep -oE 'git\.community-scripts\.org/[^/]+/[^/]+' | head -1 | sed 's|git\.community-scripts\.org/||') || true
