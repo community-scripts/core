@@ -46,7 +46,6 @@ fi
 SPINNER_PID=""
 SPINNER_ACTIVE=0
 SPINNER_MSG=""
-declare -A MSG_INFO_SHOWN
 
 # ------------------------------------------------------------------------------
 # Loads core utility groups once (colors, formatting, icons, defaults).
@@ -432,7 +431,11 @@ is_verbose_mode() {
 SPINNER_ACTIVE=0
 SPINNER_PID=""
 SPINNER_MSG=""
-declare -A MSG_INFO_SHOWN=()
+# -gA rather than a file-scope declare: this file is also reached through
+# _cs_source_func, where a file-scope declare is local to the loader and gone
+# once it returns, leaving an indexed array whose subscript bash evaluates as
+# arithmetic. A message key would then be read as a division.
+declare -gA MSG_INFO_SHOWN=()
 
 # Trap cleanup on various signals
 trap 'cleanup_spinner' EXIT INT TERM HUP
@@ -522,10 +525,12 @@ msg_ok() {
   stop_spinner
   printf "\r\e[2K%s %b\n" "${CM}" "${GN}${msg}${CL}" >&2
 
-  # Remove from shown messages to allow it to be shown again
-  local sanitized_msg
-  sanitized_msg=$(printf '%s' "$msg" | sed 's/\x1b\[[0-9;]*m//g; s/[^a-zA-Z0-9_]/_/g')
-  unset 'MSG_INFO_SHOWN['"$sanitized_msg"']' 2>/dev/null || true
+  # Remove from shown messages to allow it to be shown again.
+  #
+  # The key has to be the one msg_info stored. It was sanitised here and raw
+  # there, so the two never matched: nothing was ever removed, and a message
+  # was suppressed for the rest of the run after its first appearance.
+  unset 'MSG_INFO_SHOWN['"$msg"']' 2>/dev/null || true
 }
 
 msg_error() {
