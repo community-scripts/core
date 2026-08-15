@@ -1309,6 +1309,10 @@ create_backup() {
       msg_warn "Skipping backup of '${path}' (not found)"
       continue
     fi
+    if mountpoint -q "$path" 2>/dev/null; then
+      msg_warn "Skipping backup of '${path}' (is a mount point)"
+      continue
+    fi
     dest="${store}/files${path}"
     if ! mkdir -p "$(dirname "$dest")" || ! cp -a "$path" "$dest"; then
       msg_error "Backup of '${path}' failed - aborting update"
