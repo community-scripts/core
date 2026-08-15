@@ -1067,7 +1067,24 @@ PROFILE
     export CONTAINER_INSTALLING=true
 
     local _install_script
-    _install_script="$(_cs_fetch_text "install/${var_install}.sh")"
+    # Fetched explicitly rather than letting the ERR trap report it.
+    #
+    # A missing install script is almost always one thing: the ct/ script came
+    # from a fork but COMMUNITY_SCRIPTS_URL was not set, so the engine looked
+    # here -- upstream -- and found nothing. The trap reported that as
+    # "exit code 22 (Command failed with exit status 22)", which says neither
+    # what was missing nor where it was looked for.
+    if ! _install_script="$(_cs_fetch_text "install/${var_install}.sh")" ||
+      [[ -z "$_install_script" ]]; then
+      msg_error "Could not fetch install/${var_install}.sh"
+      msg_custom "📁" "${YW}" "Looked in: ${COMMUNITY_SCRIPTS_ROOT:-${COMMUNITY_SCRIPTS_URL}}"
+      if [[ -z "${COMMUNITY_SCRIPTS_ROOT:-}" ]]; then
+        msg_custom "💡" "${YW}" "Running a fork? A ct/ script fetched with curl cannot tell the engine"
+        msg_custom "   " "${YW}" "where it came from, so set the scripts base explicitly:"
+        msg_custom "   " "${YW}" "COMMUNITY_SCRIPTS_URL=https://raw.githubusercontent.com/<you>/<repo>/<branch>"
+      fi
+      exit 115
+    fi
     lxc-attach -n "$CTID" -- bash -c "$_install_script"
     local lxc_exit=$?
 
