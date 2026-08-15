@@ -1,0 +1,87 @@
+name: ShellCheck
+
+# The engine had no static analysis at all, and it showed. An unquoted
+# expansion in `pct create ... $PCT_OPTIONS` split a password on spaces and let
+# `Test*` be replaced by a filename -- textbook SC2086, found by a user rather
+# than by a tool.
+#
+# Two stages on purpose:
+#
+#   "Errors" blocks. At severity=error ShellCheck reports things that are wrong
+#   regardless of intent, so it can gate a PR from day one.
+#
+#   "Warnings" reports without blocking. Turning the full set on as a gate would
+#   fail every PR immediately: `$STD` and `$PCT_OPTIONS` are expanded unquoted
+#   deliberately -- that is how the options string becomes separate arguments --
+#   so SC2086 alone fires across the codebase. Those need per-site review and a
+#   disable comment where the split is intended, which is real work and not
+#   something to hide behind a red build.
+#
+# The intent is to work the warning list down and then promote it to blocking.
+
+on:
+  pull_request:
+    paths:
+      - "**/*.func"
+      - "**/*.sh"
+      - ".github/workflows/shellcheck.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.func"
+      - "**/*.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  errors:
+    name: Errors (blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: shellcheck --severity=error
+        run: |
+          set -euo pipefail
+          # SC1091 is excluded: nearly every source is fetched at run time, so
+          # there is no path on disk for ShellCheck to follow.
+          mapfile -t files < <(find . \( -name '*.func' -o -name '*.sh' \) -not -path './.git/*' | sort)
+          echo "checking ${#files[@]} files"
+          shellcheck --shell=bash --severity=error --exclude=SC1091 \
+            --format=gcc "${files[@]}"
+
+  warnings:
+    name: Warnings (report only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: shellcheck --severity=warning
+        run: |
+          set -uo pipefail
+          mapfile -t files < <(find . \( -name '*.func' -o -name '*.sh' \) -not -path './.git/*' | sort)
+          shellcheck --shell=bash --severity=warning --exclude=SC1091 \
+            --format=gcc "${files[@]}" > findings.txt || true
+
+          total=$(wc -l < findings.txt)
+          {
+            echo "### ShellCheck warnings: ${total}"
+            echo ''
+            echo 'By check, most frequent first:'
+            echo '```'
+            grep -oE 'SC[0-9]+' findings.txt | sort | uniq -c | sort -rn | head -25
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # The full list in the log, so a specific site can be looked up
+          # without installing ShellCheck locally.
+          cat findings.txt
