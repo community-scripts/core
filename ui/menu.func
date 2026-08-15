@@ -427,7 +427,7 @@ check_container_resources() {
     read -r prompt </dev/tty
     if [[ ! ${prompt,,} =~ ^(yes)$ ]]; then
       echo -e "${CROSS}${HOLD} ${YWB}Exiting based on user input.${CL}"
-      exit 1
+      exit 113 # user aborted an under-provisioned update
     fi
   else
     echo -e ""
@@ -457,7 +457,7 @@ check_container_storage() {
     [yY][eE][sS] | [yY]) ;;
     *)
       echo -e "${CROSS}${HOLD}${YWB}Exiting based on user input.${CL}"
-      exit 1
+      exit 114 # user aborted with storage too low
       ;;
     esac
   fi
