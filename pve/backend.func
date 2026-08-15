@@ -2220,7 +2220,7 @@ create_lxc_container() {
 
     mkdir -p "$(dirname "$dest")" || {
       msg_error "Cannot create template dir."
-      exit 207
+      exit 217
     }
 
     if [[ "$PCT_OSTYPE" == "debian" ]]; then
@@ -2233,7 +2233,7 @@ create_lxc_container() {
 
       [[ -n "$url" ]] || {
         msg_error "Could not find Debian ${CUSTOM_TEMPLATE_VARIANT} ARM64 template URL."
-        exit 207
+        exit 225
       }
     else
       url="https://jenkins.linuxcontainers.org/job/image-${PCT_OSTYPE}/architecture=arm64,release=${CUSTOM_TEMPLATE_VARIANT},variant=default/lastStableBuild/artifact/rootfs.tar.xz"
@@ -2455,7 +2455,7 @@ create_lxc_container() {
 
     CUSTOM_TEMPLATE_VARIANT=$(arm64_template_variant "$PCT_OSTYPE" "${PCT_OSVERSION:-}") || {
       msg_error "No ARM64 template mapping for ${PCT_OSTYPE} ${PCT_OSVERSION:-latest}"
-      exit 207
+      exit 225
     }
 
     TEMPLATE="${PCT_OSTYPE}-${CUSTOM_TEMPLATE_VARIANT}-rootfs.tar.xz"
