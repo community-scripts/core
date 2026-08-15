@@ -149,9 +149,36 @@ validate_container_id() {
     return 1
   fi
 
-  # Check if config file exists for VM or LXC
+  # Ask the cluster first.
+  #
+  # /etc/pve/qemu-server and /etc/pve/lxc are symlinks into this node's own
+  # directory under /etc/pve/nodes/, so checking them alone only ever sees
+  # local guests. On a cluster the wizard would then hand out an ID already in
+  # use on another node, and pct create fails long after the choice was made.
+  # Harmless on a single node, which still has the cluster structure.
+  if command -v pvesh &>/dev/null; then
+    local cluster_ids
+    cluster_ids=$(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null |
+      grep -oP '"vmid":\s*\K[0-9]+' 2>/dev/null || true)
+    if [[ -n "$cluster_ids" ]] && echo "$cluster_ids" | grep -qw "$ctid"; then
+      return 1
+    fi
+  fi
+
+  # Local config, for when pvesh is unavailable or answered with nothing.
   if [[ -f "/etc/pve/qemu-server/${ctid}.conf" ]] || [[ -f "/etc/pve/lxc/${ctid}.conf" ]]; then
     return 1
+  fi
+
+  # Every node's config directly, which also covers the window where pmxcfs has
+  # the file but /cluster/resources has not caught up.
+  if [[ -d "/etc/pve/nodes" ]]; then
+    local node_dir
+    for node_dir in /etc/pve/nodes/*/; do
+      if [[ -f "${node_dir}qemu-server/${ctid}.conf" ]] || [[ -f "${node_dir}lxc/${ctid}.conf" ]]; then
+        return 1
+      fi
+    done
   fi
 
   # Check if ID is used in LVM logical volumes
@@ -171,10 +198,24 @@ validate_container_id() {
 # - Calls validate_container_id() to check availability
 # ------------------------------------------------------------------------------
 get_valid_container_id() {
-  local suggested_id="${1:-$(pvesh get /cluster/nextid)}"
+  local suggested_id="${1:-$(pvesh get /cluster/nextid 2>/dev/null || echo 100)}"
 
+  # A failed pvesh used to leave this empty, and $((empty + 1)) is 1 -- so the
+  # search started at 1 and walked up through every ID on the host.
+  if ! [[ "$suggested_id" =~ ^[0-9]+$ ]]; then
+    suggested_id=$(pvesh get /cluster/nextid 2>/dev/null || echo 100)
+  fi
+
+  # Bounded, because the loop above had no exit. Exit code 109 is documented
+  # for exactly this and was never reachable.
+  local max_attempts=1000 attempts=0
   while ! validate_container_id "$suggested_id"; do
     suggested_id=$((suggested_id + 1))
+    attempts=$((attempts + 1))
+    if [[ $attempts -ge $max_attempts ]]; then
+      msg_error "Could not find an available container ID after $max_attempts attempts"
+      exit 109
+    fi
   done
 
   echo "$suggested_id"
