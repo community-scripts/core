@@ -399,7 +399,7 @@ shell_check() {
     msg_error "Your default shell is currently not set to Bash. To use these scripts, please switch to the Bash shell."
     echo -e "\nExiting..."
     sleep 2
-    exit
+    exit 103 # shell is not Bash
   fi
 }
 
@@ -646,7 +646,7 @@ check_root() {
     msg_error "Please run this script as root."
     echo -e "\nExiting..."
     sleep 2
-    exit
+    exit 104 # not running as root
   fi
 }
 
@@ -1108,7 +1108,7 @@ vm_select_storage() {
   valid_storage=$(pvesm status -content images | awk 'NR>1')
   if [ -z "$valid_storage" ]; then
     msg_error "Unable to detect a valid storage location."
-    exit
+    exit 119 # no valid storage found
   elif [ $((${#storage_menu[@]} / 3)) -eq 1 ]; then
     STORAGE=${storage_menu[0]}
   else

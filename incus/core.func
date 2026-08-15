@@ -196,7 +196,7 @@ incus_shell_check() {
     incus_msg_error "Your default shell is currently not set to Bash. To use these scripts, please switch to the Bash shell."
     echo -e "\nExiting..."
     sleep 2
-    exit
+    exit 103 # shell is not Bash
   fi
 }
 
@@ -222,7 +222,7 @@ incus_root_check() {
   incus_msg_error "  - Add your user to the incus-admin group: sudo usermod -aG incus-admin \$USER"
   echo -e "\nExiting..."
   sleep 2
-  exit
+  exit 152 # permission denied
 }
 
 # ------------------------------------------------------------------------------
