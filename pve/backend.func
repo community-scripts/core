@@ -1445,7 +1445,15 @@ PROFILE
           set +Eeuo pipefail
           trap - ERR
           local _install_script
-          _install_script="$(_cs_fetch_text "install/${var_install}.sh")"
+          # The ERR trap is off here on purpose, so a failed fetch would hand
+          # lxc-attach an empty script, run nothing, and record success.
+          _install_script="$(_cs_fetch_text "install/${var_install}.sh")" || true
+          if [[ -z "$_install_script" ]]; then
+            set -Eeuo pipefail
+            trap 'error_handler' ERR
+            msg_error "Could not fetch install/${var_install}.sh for the retry"
+            exit 115
+          fi
           lxc-attach -n "$CTID" -- bash -c "$_install_script"
           local apt_retry_exit=$?
           set -Eeuo pipefail
