@@ -683,7 +683,11 @@ _setup_nvidia_gpu() {
         msg_warn "No NVIDIA packages for version ${nvidia_major_version}.x found in repos"
         available_version=$(apt-cache madison libcuda1 2>/dev/null | awk '{print $3}' | head -1 || true)
         if [[ -n "$available_version" ]]; then
-          msg_info "Trying latest available: ${available_version} (may cause version mismatch)"
+          # msg_warn, not msg_info: msg_info writes to the spinner line and is
+          # overwritten by the next message, so the one notice that mattered
+          # scrolled away before anyone read it.
+          msg_warn "No NVIDIA ${nvidia_major_version}.x in this container OS. Installing ${available_version} against host driver ${nvidia_host_version}."
+          msg_warn "CUDA workloads usually fail on a mismatch."
           $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
             libcuda1="${available_version}" libnvcuvid1="${available_version}" \
             libnvidia-encode1="${available_version}" libnvidia-ml1="${available_version}" 2>/dev/null ||
@@ -718,8 +722,13 @@ _setup_nvidia_gpu() {
       fi
 
       # Pin NVIDIA repo for version matching
+      # Scoped to the NVIDIA userspace packages. It used to be Package: *, which
+      # gave that repository priority over every package it happens to carry --
+      # and a priority above 1000 permits downgrades, so a later apt upgrade in
+      # the container could replace unrelated packages. The file is not removed
+      # afterwards, so the scope is what limits the damage.
       cat <<'NVIDIA_PIN' >/etc/apt/preferences.d/nvidia-cuda-pin
-Package: *
+Package: libcuda* libnvcuvid* libnvidia-* nvidia-smi nvidia-utils-* cuda-*
 Pin: origin developer.download.nvidia.com
 Pin-Priority: 1001
 NVIDIA_PIN
@@ -737,7 +746,16 @@ NVIDIA_PIN
         msg_info "Installing NVIDIA libraries (version ${available_version})"
         local nvidia_pkgs="libcuda1=${available_version} libnvcuvid1=${available_version} libnvidia-encode1=${available_version} libnvidia-ml1=${available_version}"
         if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends $nvidia_pkgs 2>/dev/null; then
-          msg_ok "Installed version-matched NVIDIA libraries"
+          # Not "version-matched": the selection above compares only the
+          # major, so 580.126.09 on the host and 580.65.06 here both pass.
+          # NVIDIA wants the full version to agree, so state both and let
+          # the reader judge.
+          if [[ "$available_version" == "${nvidia_host_version}"* ]]; then
+            msg_ok "Installed NVIDIA libraries ${available_version} (host ${nvidia_host_version})"
+          else
+            msg_warn "NVIDIA libraries ${available_version} do not match the host driver ${nvidia_host_version}"
+            msg_warn "CUDA workloads usually fail on a mismatch. Install the matching driver on the host, or pick a container OS whose repos carry it."
+          fi
         else
           msg_warn "Version-pinned install failed - trying unpinned"
           $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends libcuda1 libnvcuvid1 libnvidia-encode1 libnvidia-ml1 2>/dev/null ||
@@ -800,7 +818,13 @@ NVIDIA_PIN
       msg_info "Installing NVIDIA libraries (version ${available_version})"
       local nvidia_pkgs="libcuda1=${available_version} libnvcuvid1=${available_version} libnvidia-encode1=${available_version} libnvidia-ml1=${available_version}"
       if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends $nvidia_pkgs 2>/dev/null; then
-        msg_ok "Installed version-matched NVIDIA libraries"
+        # Same as above: only the major was compared.
+        if [[ "$available_version" == "${nvidia_host_version}"* ]]; then
+          msg_ok "Installed NVIDIA libraries ${available_version} (host ${nvidia_host_version})"
+        else
+          msg_warn "NVIDIA libraries ${available_version} do not match the host driver ${nvidia_host_version}"
+          msg_warn "CUDA workloads usually fail on a mismatch. Install the matching driver on the host, or pick a container OS whose repos carry it."
+        fi
       else
         # Fallback to Ubuntu repo packages with versioned nvidia-utils
         msg_warn "CUDA repo install failed - trying Ubuntu native packages (nvidia-utils-${nvidia_major_version})"
