@@ -360,11 +360,15 @@ $PCT_OPTIONS_STRING"
   -timezone $_pct_timezone"
   fi
 
-  # Password (already formatted)
-  if [ -n "$PW" ]; then
-    PCT_OPTIONS_STRING="$PCT_OPTIONS_STRING
-  $PW"
-  fi
+  # The password deliberately stays out of PCT_OPTIONS.
+  #
+  # That string is expanded unquoted at every pct create, which is how the
+  # other options get split into arguments. A password is the one value a user
+  # can put anything into, so word splitting and globbing would reach it: a
+  # space made two arguments, and a * was replaced by a matching filename.
+  # It goes in as its own quoted argument instead.
+  _PW_ARGS=()
+  [[ -n "${PW:-}" ]] && _PW_ARGS=(--password "$PW")
 
   # Export as string (this works, unlike arrays!)
   export PCT_OPTIONS="$PCT_OPTIONS_STRING"
@@ -2026,7 +2030,7 @@ create_lxc_container() {
     export PCT_OSVERSION
 
     msg_info "Retrying container creation with $os_type $fallback_ver"
-    if pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" $PCT_OPTIONS >>"$LOGFILE" 2>&1; then
+    if pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" $PCT_OPTIONS ${_PW_ARGS[@]+"${_PW_ARGS[@]}"} >>"$LOGFILE" 2>&1; then
       msg_ok "Container created successfully with $os_type $fallback_ver (fallback from $old_template)."
       return 0
     else
@@ -2171,7 +2175,7 @@ create_lxc_container() {
         fi
         if [[ "$do_retry" == "yes" ]]; then
           msg_info "Retrying container creation after upgrade"
-          if pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" $PCT_OPTIONS >>"$LOGFILE" 2>&1; then
+          if pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" $PCT_OPTIONS ${_PW_ARGS[@]+"${_PW_ARGS[@]}"} >>"$LOGFILE" 2>&1; then
             msg_ok "Container created successfully after upgrade."
             return 0
           else
@@ -2811,12 +2815,13 @@ create_lxc_container() {
   # Release lock after template validation - pct create has its own internal locking
   exec 9>&-
 
-  msg_debug "pct create command: pct create $CTID ${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE} $PCT_OPTIONS"
+  # Without the password argument on purpose: this line goes to the log.
+  msg_debug "pct create command (password omitted): pct create $CTID ${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE} $PCT_OPTIONS"
   msg_debug "Logfile: $LOGFILE"
 
   # First attempt (PCT_OPTIONS is a multi-line string, use it directly)
   set -f
-  if ! pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" $PCT_OPTIONS >"$LOGFILE" 2>&1; then
+  if ! pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" $PCT_OPTIONS ${_PW_ARGS[@]+"${_PW_ARGS[@]}"} >"$LOGFILE" 2>&1; then
     msg_debug "Container creation failed on ${TEMPLATE_STORAGE}. Checking error..."
 
     if grep -qiE 'Compilation failed|Bareword.*not allowed' "$LOGFILE"; then
@@ -2835,7 +2840,7 @@ create_lxc_container() {
       export CTID
       msg_warn "Container ID $old_ctid was claimed by another process. Retrying with ID $CTID"
       LOGFILE="/tmp/pct_create_${CTID}_$(date +%Y%m%d_%H%M%S)_${SESSION_ID}.log"
-      if pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" $PCT_OPTIONS >"$LOGFILE" 2>&1; then
+      if pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" $PCT_OPTIONS ${_PW_ARGS[@]+"${_PW_ARGS[@]}"} >"$LOGFILE" 2>&1; then
         msg_ok "Container successfully created with new ID $CTID"
       else
         msg_error "Container creation failed even with new ID $CTID. See $LOGFILE"
@@ -2850,7 +2855,7 @@ create_lxc_container() {
         msg_ok "Template re-downloaded"
       fi
 
-      if ! pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" $PCT_OPTIONS >>"$LOGFILE" 2>&1; then
+      if ! pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" $PCT_OPTIONS ${_PW_ARGS[@]+"${_PW_ARGS[@]}"} >>"$LOGFILE" 2>&1; then
         if [[ "$TEMPLATE_STORAGE" != "local" ]]; then
           msg_info "Retrying container creation with fallback to local storage"
           LOCAL_TEMPLATE_PATH="/var/lib/vz/template/cache/$TEMPLATE"
@@ -2866,7 +2871,7 @@ create_lxc_container() {
           else
             msg_ok "Trying local storage fallback"
           fi
-          if ! pct create "$CTID" "local:vztmpl/${TEMPLATE}" $PCT_OPTIONS >>"$LOGFILE" 2>&1; then
+          if ! pct create "$CTID" "local:vztmpl/${TEMPLATE}" $PCT_OPTIONS ${_PW_ARGS[@]+"${_PW_ARGS[@]}"} >>"$LOGFILE" 2>&1; then
             if grep -qiE 'unsupported .* version' "$LOGFILE"; then
               msg_warn "pct reported 'unsupported version' – LXC stack might be too old for this template"
               offer_lxc_stack_upgrade_and_maybe_retry "yes"
@@ -2893,7 +2898,7 @@ create_lxc_container() {
               msg_error "Container creation failed. See $LOGFILE"
               if whiptail --yesno "pct create failed.\nDo you want to enable verbose debug mode and view detailed logs?" 12 70; then
                 set -x
-                pct create "$CTID" "local:vztmpl/${TEMPLATE}" $PCT_OPTIONS 2>&1 | tee -a "$LOGFILE"
+                pct create "$CTID" "local:vztmpl/${TEMPLATE}" $PCT_OPTIONS ${_PW_ARGS[@]+"${_PW_ARGS[@]}"} 2>&1 | tee -a "$LOGFILE"
                 set +x
               fi
               _flush_pct_log
@@ -2929,7 +2934,7 @@ create_lxc_container() {
             msg_error "Container creation failed. See $LOGFILE"
             if whiptail --yesno "pct create failed.\nDo you want to enable verbose debug mode and view detailed logs?" 12 70; then
               set -x
-              pct create "$CTID" "local:vztmpl/${TEMPLATE}" $PCT_OPTIONS 2>&1 | tee -a "$LOGFILE"
+              pct create "$CTID" "local:vztmpl/${TEMPLATE}" $PCT_OPTIONS ${_PW_ARGS[@]+"${_PW_ARGS[@]}"} 2>&1 | tee -a "$LOGFILE"
               set +x
             fi
             _flush_pct_log

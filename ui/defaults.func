@@ -233,7 +233,12 @@ base_settings() {
     if [[ -z "$_pw_raw" ]]; then
       msg_warn "Password was only dashes after cleanup; leaving empty."
     else
-      PW="--password $_pw_raw"
+      # The value only. It used to carry the "--password " flag as part of the
+      # string, which then went into PCT_OPTIONS and was word-split by an
+      # unquoted expansion at every pct create: a password with a space
+      # became two arguments, and one containing * was replaced by a
+      # matching filename. It is passed as its own quoted argument now.
+      PW="$_pw_raw"
     fi
   fi
 
