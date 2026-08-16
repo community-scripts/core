@@ -713,6 +713,24 @@ NVIDIA_PIN
     local cuda_list="/etc/apt/sources.list.d/cuda-community-scripts.list"
     local chosen_repo="" available_version="" cuda_repo=""
 
+    # Pick the host's exact version when the repo has it, and only then settle
+    # for another release in the same series. Taking the newest of the series
+    # unconditionally is the wrong direction: a host on 580.126 would be handed
+    # 580.178, which is newer than the loaded kernel module and therefore fails
+    # the same way a whole major mismatch does.
+    _cuda_pick_version() {
+      local madison exact
+      madison=$(apt-cache madison libcuda1 2>/dev/null | awk '{print $3}') || return 0
+      # Dots are escaped: unescaped they are regex wildcards, so 580.178.04
+      # would also match a hypothetical 580x178x04.
+      exact=$(printf '%s\n' "$madison" | grep -E "^${nvidia_host_version//./\\.}(-|$)" | head -1)
+      if [[ -n "$exact" ]]; then
+        printf '%s\n' "$exact"
+        return 0
+      fi
+      printf '%s\n' "$madison" | grep -E "^${nvidia_major_version}\." | head -1 || true
+    }
+
     for cuda_repo in "${cuda_repos[@]}"; do
       # The keyring package drops its own list file for whichever repo it came
       # from. Left in place it would keep a rejected candidate active alongside
@@ -721,7 +739,7 @@ NVIDIA_PIN
       echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/${cuda_repo}/x86_64/ /" >"$cuda_list"
       $STD apt-get -y update 2>/dev/null || true
 
-      available_version=$(apt-cache madison libcuda1 2>/dev/null | awk '{print $3}' | grep -E "^${nvidia_major_version}\." | head -1 || true)
+      available_version="$(_cuda_pick_version)"
       if [[ -n "$available_version" ]]; then
         chosen_repo="$cuda_repo"
         break
@@ -733,14 +751,26 @@ NVIDIA_PIN
       # Last resort: the distribution's own non-free packages.
       rm -f "$cuda_list"
       $STD apt-get -y update 2>/dev/null || true
-      available_version=$(apt-cache madison libcuda1 2>/dev/null | awk '{print $3}' | grep -E "^${nvidia_major_version}\." | head -1 || true)
+      available_version="$(_cuda_pick_version)"
       [[ -n "$available_version" ]] && chosen_repo="Debian non-free"
     fi
+    unset -f _cuda_pick_version
 
     if [[ -n "$chosen_repo" ]]; then
       msg_info "Installing NVIDIA userspace ${available_version} from ${chosen_repo}"
       local nvidia_pkgs="libcuda1=${available_version} libnvcuvid1=${available_version} libnvidia-encode1=${available_version} libnvidia-ml1=${available_version}"
-      if ! $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends $nvidia_pkgs 2>/dev/null; then
+      if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends $nvidia_pkgs 2>/dev/null; then
+        # Say which kind of match this was. NVIDIA wants the full version to
+        # agree; the fallback above only guarantees the series, so 580.178.04
+        # on the host and 580.126.20 here would both land here. State both and
+        # let the reader judge rather than calling it "version-matched".
+        if [[ "$available_version" == "${nvidia_host_version}"* ]]; then
+          msg_ok "NVIDIA userspace ${available_version} matches the host driver"
+        else
+          msg_warn "NVIDIA userspace ${available_version} differs from the host driver ${nvidia_host_version}"
+          msg_warn "Same driver series, different release. CUDA workloads may still fail on this."
+        fi
+      else
         msg_warn "Version-pinned install failed - trying unpinned"
         $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
           libcuda1 libnvcuvid1 libnvidia-encode1 libnvidia-ml1 2>/dev/null || true
