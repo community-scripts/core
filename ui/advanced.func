@@ -212,7 +212,12 @@ advanced_settings() {
               _pw2_clean="${_pw2_clean#-}"
             done
             if [[ "$_pw1_clean" == "$_pw2_clean" ]]; then
-              _pw="--password $_pw1_clean"
+              # The value alone, without the "--password " flag. PW reaches pct
+              # through the quoted _PW_ARGS array, which supplies the flag
+              # itself; carrying it here too produced
+              # --password '--password secret' and pct answered "400 unable to
+              # parse option". base_settings() already stores var_pw this way.
+              _pw="$_pw1_clean"
               _pw_display="********"
               ((STEP++))
             else
