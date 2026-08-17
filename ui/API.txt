@@ -1,6 +1,8 @@
 _build_current_app_vars_tmp
 _build_vars_diff
 _container_write_failure
+_cs_os_family
+_cs_run_os_section
 _cs_runtime_cache_dir
 _dev_step_end
 _dev_step_key
@@ -148,6 +150,8 @@ resolve_ip_from_range
 resolve_os_version
 root_check
 run_addon_updates
+run_os_setup
+run_os_update
 run_preflight
 runtime_script_status_guard
 set_std_mode
