@@ -742,6 +742,102 @@ stop_spinner() {
   stty sane 2>/dev/null || true
 }
 
+# ------------------------------------------------------------------------------
+# _cs_os_family()
+#
+# Echoes the OS family this is running on: debian, alpine, rhel, suse, arch,
+# gentoo, or unknown. Devuan and Ubuntu report debian through ID_LIKE.
+#
+# Deliberately does not read OS_FAMILY or PKG_MANAGER. Those are set by
+# detect_os() in lxc/install.func, which only runs on the install path -- an
+# update reaches update_script() without it. Reading them would work at install
+# time and then silently pick the wrong branch on every update afterwards.
+# ------------------------------------------------------------------------------
+_cs_os_family() {
+  if [[ -f /etc/alpine-release ]]; then
+    echo "alpine"
+    return 0
+  fi
+
+  local id="" id_like=""
+  if [[ -r /etc/os-release ]]; then
+    id="$(. /etc/os-release 2>/dev/null && echo "${ID:-}")"
+    id_like="$(. /etc/os-release 2>/dev/null && echo "${ID_LIKE:-}")"
+  fi
+
+  case "${id,,} ${id_like,,}" in
+  *alpine*) echo "alpine" ;;
+  *debian* | *ubuntu*) echo "debian" ;;
+  *rhel* | *fedora* | *centos*) echo "rhel" ;;
+  *suse*) echo "suse" ;;
+  *arch*) echo "arch" ;;
+  *gentoo*) echo "gentoo" ;;
+  *) echo "unknown" ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------
+# _cs_run_os_section(kind)
+#
+# Shared implementation of run_os_setup and run_os_update: resolves the OS
+# family to a function name and calls it.
+#
+# The mapping is an explicit table rather than a computed "${kind}_${family}",
+# so the names a script author writes read as English -- deb_based says "this
+# covers Ubuntu and Devuan too", which "debian" would not.
+# ------------------------------------------------------------------------------
+_cs_run_os_section() {
+  local kind="$1" family fn
+  family="$(_cs_os_family)"
+
+  case "$family" in
+  debian) fn="${kind}_deb_based" ;;
+  alpine) fn="${kind}_alpine" ;;
+  rhel) fn="${kind}_rhel_based" ;;
+  suse) fn="${kind}_suse_based" ;;
+  arch) fn="${kind}_arch_based" ;;
+  gentoo) fn="${kind}_gentoo_based" ;;
+  *)
+    msg_error "Cannot determine the OS family of this system"
+    return 1
+    ;;
+  esac
+
+  # A script declares which systems it supports by defining the function. Saying
+  # so beats installing half of something: the alternative is a silent no-op
+  # that looks like success.
+  if ! declare -f "$fn" >/dev/null 2>&1; then
+    msg_error "${APP:-This script} does not support ${family}: ${fn}() is not defined"
+    return 1
+  fi
+
+  "$fn"
+}
+
+# ------------------------------------------------------------------------------
+# run_os_setup()
+#
+# Calls the per-OS section of an install script: setup_deb_based, setup_alpine,
+# setup_rhel_based and so on. Must appear AFTER those definitions -- the shell
+# has to have read them before this runs.
+#
+# The point is that each OS gets one readable block, instead of the same
+# distinction being re-decided at every step. Whatever does not depend on the OS
+# belongs in a shared function both sections call, not copied into each.
+# ------------------------------------------------------------------------------
+run_os_setup() { _cs_run_os_section setup; }
+
+# ------------------------------------------------------------------------------
+# run_os_update()
+#
+# The same for the update path of a ct script: update_deb_based, update_alpine.
+# Call it from update_script().
+#
+# Dispatch is on the OS actually running, never on var_os: var_os states what to
+# create and is meaningless once the container exists.
+# ------------------------------------------------------------------------------
+run_os_update() { _cs_run_os_section update; }
+
 # ==============================================================================
 # SECTION 4: MESSAGE OUTPUT
 # ==============================================================================
