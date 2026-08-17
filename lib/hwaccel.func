@@ -723,7 +723,7 @@ NVIDIA_PIN
       madison=$(apt-cache madison libcuda1 2>/dev/null | awk '{print $3}') || return 0
       # Dots are escaped: unescaped they are regex wildcards, so 580.178.04
       # would also match a hypothetical 580x178x04.
-      exact=$(printf '%s\n' "$madison" | grep -E "^${nvidia_host_version//./\\.}(-|$)" | head -1)
+      exact=$(printf '%s\n' "$madison" | grep -E "^${nvidia_host_version//./\\.}(-|$)" | head -1 || true)
       if [[ -n "$exact" ]]; then
         printf '%s\n' "$exact"
         return 0
