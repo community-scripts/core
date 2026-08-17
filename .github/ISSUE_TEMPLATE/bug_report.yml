@@ -1,0 +1,99 @@
+name: "🐞 Engine Bug Report"
+description: Report a bug in the shared engine (core/, lib/, ui/, lxc/, host/, api/). For a specific app script's install/update failure, use the ProxmoxVE or Incus repo instead.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## ⚠️ **IMPORTANT - READ FIRST**
+        - 🔍 **Search first:** Before submitting, check if the issue has already been reported or resolved in [closed issues](https://github.com/community-scripts/core/issues?q=is%3Aissue+is%3Aclosed).
+        - 📦 **Wrong repo?** If this is about a specific app failing to install or update (not the engine itself), report it in [ProxmoxVE](https://github.com/community-scripts/ProxmoxVE/issues/new/choose) or [Incus](https://github.com/community-scripts/Incus/issues/new/choose) instead — this repo only holds the shared engine those scripts run on.
+        - 📜 **Read the source:** Check the function in question in this repo first; it may explain intended behavior that looks like a bug at first glance.
+
+        Thank you for taking the time to report an issue! Please provide as much detail as possible.
+
+  - type: input
+    id: guidelines
+    attributes:
+      label: ✅ Have you read and understood the above guidelines?
+      placeholder: "yes"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: verbose_run
+    attributes:
+      label: 🔎 Did you run the script with verbose mode enabled?
+      description: "Required for debugging most engine issues. A verbose log is mandatory."
+      options:
+        - ""
+        - "Yes, verbose mode was enabled and the output is included below"
+        - "No (this issue will likely be closed automatically)"
+    validations:
+      required: true
+
+  - type: input
+    id: script_repo
+    attributes:
+      label: 📜 Which script (and repo) were you running when you hit this?
+      placeholder: "e.g., ct/vllm.sh in community-scripts/ProxmoxVE"
+    validations:
+      required: true
+
+  - type: input
+    id: engine_file
+    attributes:
+      label: 🧩 Which engine file or function is affected, if known?
+      placeholder: "e.g., lib/hwaccel.func, _setup_nvidia_gpu()"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: 🖥️ Which backend is this on?
+      options:
+        - ""
+        - Proxmox VE
+        - Incus
+    validations:
+      required: true
+
+  - type: input
+    id: os_version
+    attributes:
+      label: 🐧 Which container/VM OS and version?
+      placeholder: "e.g., Debian 13, Ubuntu 24.04, Alpine"
+    validations:
+      required: true
+
+  - type: textarea
+    id: issue_description
+    attributes:
+      label: 📝 Provide a clear and concise description of the issue.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps_to_reproduce
+    attributes:
+      label: 🔄 Steps to reproduce the issue.
+      placeholder: "e.g., Step 1: ..., Step 2: ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: error_output
+    attributes:
+      label: ❌ Paste the full error output (if available).
+      placeholder: "Include any relevant logs or error messages."
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: 🖼️ Additional context (optional).
+      placeholder: "Include screenshots, code blocks (use triple backticks ```), or any other relevant information."
+    validations:
+      required: false
