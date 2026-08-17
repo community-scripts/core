@@ -590,15 +590,56 @@ EOF
         return 0
       fi
 
-      # Use pct set for NVIDIA devices
-      local dev_index=0
+      # Separate per-card device nodes (/dev/nvidia0, /dev/nvidia1, ...) from
+      # the shared control nodes (nvidiactl, nvidia-uvm*, nvidia-caps/*,
+      # nvidia-modeset), so a host with several NVIDIA cards can pass through
+      # only some of them instead of always all-or-nothing.
+      local -a nvidia_cards=() nvidia_shared=()
       for dev in "${NVIDIA_DEVICES[@]}"; do
+        if [[ "$dev" =~ ^/dev/nvidia[0-9]+$ ]]; then
+          nvidia_cards+=("$dev")
+        else
+          nvidia_shared+=("$dev")
+        fi
+      done
+
+      local -a selected_cards=("${nvidia_cards[@]}")
+      if [[ ${#nvidia_cards[@]} -gt 1 ]]; then
+        echo -e "\n${INFO} Multiple NVIDIA GPUs detected:"
+        local i
+        for i in "${!nvidia_cards[@]}"; do
+          echo "  $((i + 1))) ${nvidia_cards[$i]}"
+        done
+        echo "  A) Configure ALL GPUs"
+        local gpu_selection=""
+        read -r -t 60 -p "Select GPU(s) to pass through (1-${#nvidia_cards[@]}, A=all) [timeout 60s, default=all]: " gpu_selection </dev/tty || gpu_selection=""
+        gpu_selection="${gpu_selection^^}"
+
+        if [[ -n "$gpu_selection" && "$gpu_selection" != "A" ]]; then
+          selected_cards=()
+          local -a nums
+          IFS=',' read -ra nums <<<"$gpu_selection"
+          local num
+          for num in "${nums[@]}"; do
+            num=$(echo "$num" | tr -d ' ')
+            if [[ "$num" =~ ^[0-9]+$ ]] && ((num >= 1 && num <= ${#nvidia_cards[@]})); then
+              selected_cards+=("${nvidia_cards[$((num - 1))]}")
+            fi
+          done
+          [[ ${#selected_cards[@]} -eq 0 ]] && selected_cards=("${nvidia_cards[@]}")
+        fi
+      fi
+
+      # Use pct set for NVIDIA devices
+      local -a devices_to_add=("${selected_cards[@]}" "${nvidia_shared[@]}")
+      local dev_index=0
+      for dev in "${devices_to_add[@]}"; do
         echo "dev${dev_index}: ${dev},gid=44" >>"$LXC_CONFIG"
         dev_index=$((dev_index + 1))
       done
 
       export GPU_TYPE="NVIDIA"
-      msg_ok "NVIDIA GPU passthrough configured (${#NVIDIA_DEVICES[@]} devices) - install drivers in container if needed"
+      msg_ok "NVIDIA GPU passthrough configured (${#selected_cards[@]}/${#nvidia_cards[@]} GPU(s), ${#devices_to_add[@]} devices) - install drivers in container if needed"
       ;;
     esac
   }
