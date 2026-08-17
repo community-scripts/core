@@ -2439,7 +2439,7 @@ create_lxc_container() {
     exit 213
   fi
 
-  STORAGE_TYPE=$(grep -E "^[^:]+:[[:space:]]*$CONTAINER_STORAGE[[:space:]]*$" /etc/pve/storage.cfg | cut -d: -f1 | head -1 || true)
+  STORAGE_TYPE=$(grep -E "^[^:]+:[[:space:]]*${CONTAINER_STORAGE}[[:space:]]*$" /etc/pve/storage.cfg | cut -d: -f1 | head -1 || true)
   if [[ -z "$STORAGE_TYPE" ]]; then
     STORAGE_TYPE=$(pvesm status -storage "$CONTAINER_STORAGE" 2>/dev/null | awk 'NR>1{print $2}')
   fi
