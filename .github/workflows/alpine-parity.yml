@@ -1,0 +1,143 @@
+name: Alpine parity
+
+# lib/alpine.func reimplements a subset of the lib/tools.func tree, because that
+# tree is Debian-bound: roughly ten thousand lines with over a hundred apt calls
+# against a handful of apk ones. Merging them would be a rewrite, so the two stay
+# separate -- which leaves one hazard worth automating against: a fix lands in
+# one copy and not the other, and nothing says so.
+#
+# Comparing function name lists would not catch that, since a divergent edit
+# changes no names. So this checks bodies: if a pull request modifies a function
+# in the tools tree that lib/alpine.func also defines, and does not touch
+# lib/alpine.func, it names those functions and asks whether the same fix is
+# needed there.
+#
+# Reporting, not blocking. Plenty of edits genuinely apply to one side only --
+# anything apt-specific, for a start -- so a red build would be wrong more often
+# than right. The summary is the point.
+
+on:
+  pull_request:
+    paths:
+      - "lib/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    name: Shared functions (report only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Functions defined on both sides
+        id: shared
+        run: |
+          set -uo pipefail
+          TOOLS_PARTS="lib/system.func lib/forge.func lib/runtime.func lib/db.func lib/hwaccel.func"
+
+          grep -hoE '^[a-z_][a-z0-9_]*\(\)' lib/alpine.func | tr -d '()' | sort -u >/tmp/alpine.txt
+          # shellcheck disable=SC2086
+          grep -hoE '^[a-z_][a-z0-9_]*\(\)' $TOOLS_PARTS | tr -d '()' | sort -u >/tmp/tools.txt
+          comm -12 /tmp/alpine.txt /tmp/tools.txt >/tmp/shared.txt
+
+          {
+            echo "alpine=$(wc -l </tmp/alpine.txt)"
+            echo "tools=$(wc -l </tmp/tools.txt)"
+            echo "shared=$(wc -l </tmp/shared.txt)"
+            echo "tools_parts=$TOOLS_PARTS"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Did this change touch a shared function?
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          TOOLS_PARTS: ${{ steps.shared.outputs.tools_parts }}
+          N_ALPINE: ${{ steps.shared.outputs.alpine }}
+          N_TOOLS: ${{ steps.shared.outputs.tools }}
+          N_SHARED: ${{ steps.shared.outputs.shared }}
+        run: |
+          set -uo pipefail
+
+          if [[ -z "${BASE:-}" ]]; then
+            echo "Not a pull request; nothing to compare."
+            exit 0
+          fi
+
+          changed="$(git diff --name-only "$BASE" "$HEAD")"
+          alpine_touched=0
+          grep -qx 'lib/alpine.func' <<<"$changed" && alpine_touched=1
+
+          # Line numbers the diff actually modified in the head revision. -U0 so a
+          # hunk covers only changed lines, not the surrounding context.
+          changed_lines() {
+            git diff -U0 "$BASE" "$HEAD" -- "$1" |
+              grep -oE '^@@ -[0-9,]+ \+[0-9]+(,[0-9]+)?' |
+              sed 's/.*+//' |
+              awk -F, '{ start=$1; count=($2==""?1:$2); for (i=0; i<count; i++) print start+i }'
+          }
+
+          # First and last line of a function definition. Counting brace depth
+          # would miscount ${VAR} and heredoc payloads; every .func here opens a
+          # function at column 0 and closes it with a lone } at column 0, so that
+          # is what this looks for.
+          function_range() {
+            awk -v fn="$2" '
+              $0 ~ "^" fn "[(][)]" { start=NR; next }
+              start && /^[}]/ { print start, NR; exit }
+            ' "$1"
+          }
+
+          hits=""
+          for file in $TOOLS_PARTS; do
+            grep -qx "$file" <<<"$changed" || continue
+            mapfile -t lines < <(changed_lines "$file")
+            [[ ${#lines[@]} -eq 0 ]] && continue
+
+            while read -r fn; do
+              read -r from to < <(function_range "$file" "$fn")
+              [[ -z "${from:-}" ]] && continue
+              for ln in "${lines[@]}"; do
+                if [[ "$ln" -ge "$from" && "$ln" -le "$to" ]]; then
+                  hits+="${fn} (${file})"$'\n'
+                  break
+                fi
+              done
+            done </tmp/shared.txt
+          done
+
+          hits="$(printf '%s' "$hits" | sort -u)"
+
+          {
+            echo "### Alpine parity"
+            echo ""
+            echo "\`lib/alpine.func\` defines ${N_ALPINE} functions; the tools tree defines ${N_TOOLS}."
+            echo "${N_SHARED} share a name and are therefore maintained twice."
+            echo ""
+            if [[ -z "$hits" ]]; then
+              echo "This change touches none of them."
+            elif [[ "$alpine_touched" -eq 1 ]]; then
+              echo "Touched on both sides, which is what we want:"
+              echo '```'
+              echo "$hits"
+              echo '```'
+            else
+              echo "**Changed in the tools tree, with \`lib/alpine.func\` untouched:**"
+              echo '```'
+              echo "$hits"
+              echo '```'
+              echo ""
+              echo "If the fix is not apt-specific, \`lib/alpine.func\` probably needs it too."
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+
+          if [[ -n "$hits" && "$alpine_touched" -eq 0 ]]; then
+            while read -r line; do
+              [[ -n "$line" ]] && echo "::warning::Shared with lib/alpine.func, which this PR does not touch: $line"
+            done <<<"$hits"
+          fi
