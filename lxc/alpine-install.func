@@ -17,6 +17,32 @@ _cs_core_url() {
 }
 # Container context: failure artifacts only, never talk to the telemetry API
 export TELEMETRY_CONTEXT="container"
+
+# ------------------------------------------------------------------------------
+# post_progress_to_api()
+#
+# The Debian bootstrap has had this since progress reporting was added; Alpine
+# never did, so every Alpine install jumped straight from the host's
+# "configuring" to its terminal status and looked stalled in between. core.func
+# calls it behind a `declare -f` guard, which is why the gap stayed silent.
+#
+# Deliberately a copy rather than a shared definition: core.func is the one file
+# both bootstraps load, but the host defines its own post_progress_to_api in
+# api/telemetry.func, and putting a container version there would leave the
+# winner to load order.
+# ------------------------------------------------------------------------------
+post_progress_to_api() {
+  command -v curl &>/dev/null || return 0
+  [[ "${DIAGNOSTICS:-no}" == "no" ]] && return 0
+  [[ -z "${RANDOM_UUID:-}" ]] && return 0
+
+  local progress_status="${1:-configuring}"
+
+  curl -fsS -m 5 -X POST "${TELEMETRY_URL:-https://telemetry.community-scripts.org/telemetry}" \
+    -H "Content-Type: application/json" \
+    -A "community-scripts-core/${TELEMETRY_PAYLOAD_VERSION:-2}" \
+    -d "{\"payload_version\":${TELEMETRY_PAYLOAD_VERSION:-2},\"random_id\":\"${RANDOM_UUID}\",\"execution_id\":\"${EXECUTION_ID:-${RANDOM_UUID}}\",\"type\":\"lxc\",\"nsapp\":\"${app:-unknown}\",\"status\":\"${progress_status}\",\"platform\":\"${TELEMETRY_PLATFORM:-}\",\"repo_source\":\"${REPO_SOURCE:-}\",\"repo_slug\":\"${REPO_SLUG:-}\"}" &>/dev/null || true
+}
 # A freshly booted container may not have DNS up yet. `source <(curl ...)` hides
 # curl's exit code, so a failed download would silently source an empty stream.
 _bootstrap_die() {

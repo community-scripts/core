@@ -215,6 +215,15 @@ post_to_api() {
 
   TELEMETRY_TYPE="${TELEMETRY_TYPE:-lxc}"
 
+  # Start the clock here, at the first thing a run reports about itself.
+  #
+  # start_install_timer runs much later -- just before lxc-attach, so after ID
+  # selection, storage selection, the template download and container creation.
+  # Everything the host did was outside the measurement, and any run that ended
+  # before that point reported a duration of zero. From here it measures what the
+  # field name promises: how long the run took.
+  [[ -z "${INSTALL_START_TIME:-}" ]] && export INSTALL_START_TIME="$(date +%s)"
+
   local payload
   payload=$(_tm_payload "installing")
 
@@ -419,9 +428,10 @@ post_tool_to_api() {
   JSON_PAYLOAD=$(
     cat <<EOF
 {
+    "payload_version": ${TELEMETRY_PAYLOAD_VERSION},
     "random_id": "${uuid}",
     "execution_id": "${uuid}",
-    "type": "pve",
+    "type": "${TELEMETRY_TOOL_TYPE:-pve}",
     "nsapp": "${tool_name}",
     "status": "${status}",
     "exit_code": ${exit_code},
@@ -473,10 +483,17 @@ post_addon_to_api() {
     os_version=$(grep "^VERSION_ID=" /etc/os-release | cut -d= -f2 | tr -d '"' || true)
   fi
 
+  # TM_PLATFORM, not TELEMETRY_PLATFORM. The latter is exported into the
+  # container only while it is being built and never written to disk, so an addon
+  # running weeks later saw an empty string every single time -- the field was
+  # unconditionally blank in every addon record ever sent.
+  telemetry_collect_sysinfo
+
   local JSON_PAYLOAD
   JSON_PAYLOAD=$(
     cat <<EOF
 {
+    "payload_version": ${TELEMETRY_PAYLOAD_VERSION},
     "random_id": "${uuid}",
     "execution_id": "${uuid}",
     "type": "addon",
@@ -488,7 +505,7 @@ post_addon_to_api() {
     "install_duration": ${duration:-0},
     "os_type": "${os_type}",
     "os_version": "${os_version}",
-    "platform": "${TELEMETRY_PLATFORM:-}",
+    "platform": "${TM_PLATFORM:-}",
     "repo_source": "${REPO_SOURCE}",
     "repo_slug": "${REPO_SLUG:-}"
 }
@@ -576,6 +593,10 @@ init_tool_telemetry() {
 # ==============================================================================
 
 start_install_timer() {
+  # Does not restart a clock that is already running. post_to_api starts it at
+  # the first report, and the later call from the backend used to reset it --
+  # discarding everything the host had already spent on this run.
+  [[ -n "${INSTALL_START_TIME:-}" ]] && return 0
   INSTALL_START_TIME=$(date +%s)
   export INSTALL_START_TIME
 }

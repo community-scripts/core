@@ -1199,7 +1199,10 @@ incus_run_install_script_with_recovery() {
     msg_error "Remove it manually if not needed: incus delete ${CT_NAME} --force"
   fi
 
-  post_update_to_api "failed" "$install_exit_code" "force" 2>/dev/null || true
+  # No "force": the same failure was already reported earlier in this path, and
+  # force bypasses the POST_UPDATE_DONE guard, so this duplicated every failed
+  # install's terminal event. Same fix as pve/backend.func.
+  post_update_to_api "failed" "$install_exit_code" 2>/dev/null || true
   exit "$install_exit_code"
 }
 

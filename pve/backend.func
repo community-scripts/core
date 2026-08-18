@@ -1628,8 +1628,16 @@ PROFILE
       msg_error "Remove it manually if not needed: pct destroy ${CTID}"
     fi
 
+    # No "force" here. The same failure was already reported further up in this
+    # very path, and force exists to bypass the POST_UPDATE_DONE guard -- so this
+    # sent every failed install's terminal event a second time, identical to the
+    # first. The guard makes it a no-op once the report has gone out, and still
+    # reports if some path reached here without one.
+    #
+    # force stays where the outcome genuinely changed since the first report, as
+    # after a successful rebuild.
     $STD echo -e "${TAB}⏳ Finalizing telemetry report..."
-    post_update_to_api "failed" "$install_exit_code" "force"
+    post_update_to_api "failed" "$install_exit_code"
     $STD echo -e "${TAB}${CM:-✔} Telemetry finalized"
 
     trap - TSTP TTIN TTOU

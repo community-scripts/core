@@ -48,6 +48,18 @@ TELEMETRY_URL="${TELEMETRY_URL:-https://telemetry.community-scripts.org/telemetr
 
 # Timeout for progress pings (seconds)
 TELEMETRY_TIMEOUT=5
+
+# Payload schema version, sent as a field and in the User-Agent.
+#
+# Bump it whenever the payload gains, loses or changes the meaning of a field, so
+# the server can tell an old client from a new one. Before it existed the only
+# way to guess a client's age was which fields happened to be present, which made
+# every staged change a blind rollout.
+#
+#   1  the original payload
+#   2  adds kernel_version, app_version, failed_command, failed_line;
+#      gpu_passthrough changes meaning from host capability to actual passthrough
+TELEMETRY_PAYLOAD_VERSION=2
 # Timeout for final status updates (they carry the error trace)
 STATUS_TIMEOUT=10
 
