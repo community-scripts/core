@@ -681,7 +681,15 @@ EOF
   # ============================================================================
 
   msg_info "Starting LXC Container"
-  pct start "$CTID"
+  # Checked, and with its own code. Unchecked, a failure here surfaced as pct's
+  # generic 255 -- which the exit table reads as DPKG's fatal error, so 197 runs
+  # across 70 apps in a fortnight were filed as a package manager problem when
+  # the container simply would not start.
+  if ! pct start "$CTID"; then
+    msg_error "Container ${CTID} was created but would not start"
+    msg_warn "pct start failed. Check: pct config ${CTID} and journalctl -u pve-container@${CTID}"
+    exit 227
+  fi
 
   # Wait for container to be running
   for i in {1..10}; do

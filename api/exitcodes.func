@@ -180,6 +180,11 @@ explain_exit_code() {
   213) echo "Proxmox: Storage type does not support 'rootdir' content" ;;
   214) echo "Proxmox: Not enough storage space" ;;
   215) echo "Proxmox: Container created but not listed (ghost state)" ;;
+  # 197 runs across 70 apps in a fortnight failed here and were filed as a
+  # package manager problem: pct returns 255, and 255 is DPKG's fatal error. A
+  # container that will not start is not a dependency problem, and calling it one
+  # sends everybody looking in the wrong place.
+  227) echo "Proxmox: Container created but failed to start" ;;
   216) echo "Proxmox: RootFS entry missing in config" ;;
   217) echo "Proxmox: Storage not accessible" ;;
   218) echo "Proxmox: Template file corrupted or incomplete" ;;
@@ -254,7 +259,7 @@ categorize_error() {
   100 | 101 | 102 | 127 | 160 | 161 | 162 | 255) echo "dependency" ;;
   126 | 152) echo "permission" ;;
   128 | 203 | 204 | 205 | 206 | 207 | 208) echo "config" ;;
-  200 | 209 | 210 | 212 | 213 | 215 | 216 | 218 | 220 | 221 | 222 | 223 | 225 | 231) echo "proxmox" ;;
+  200 | 209 | 210 | 212 | 213 | 215 | 216 | 218 | 220 | 221 | 222 | 223 | 225 | 227 | 231) echo "proxmox" ;;
   150 | 151 | 153 | 154) echo "service" ;;
   170 | 171 | 172 | 173 | 180 | 181 | 182 | 183 | 190 | 191 | 192 | 193) echo "database" ;;
   243 | 245 | 246 | 247 | 248 | 249) echo "runtime" ;;
