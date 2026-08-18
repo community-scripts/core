@@ -84,8 +84,29 @@ _tm_payload() {
   gpu_model=$(json_escape "${GPU_MODEL:-}")
   cpu_model=$(json_escape "${CPU_MODEL:-}")
 
+  # What the container actually got, not what the host happens to own. This used
+  # to carry detect_gpu's verdict -- "igpu", "dgpu", "unknown" -- which describes
+  # the host's hardware and is already in gpu_vendor and gpu_model. Whether the
+  # devices were handed to the container is a different question, and the one the
+  # field name asks.
+  local gpu_passthrough="no"
+  [[ "${var_gpu:-no}" == "yes" || "${ENABLE_GPU:-no}" == "yes" ]] && gpu_passthrough="yes"
+
+  # The failing command and line as their own fields. They already exist as
+  # structured values in the error handler and were only ever flattened into the
+  # free-text error string, where grouping by them means parsing prose.
+  local failed_command failed_line
+  failed_command=$(json_escape "${FAILED_COMMAND:-}")
+  failed_line="${FAILED_LINE:-}"
+  [[ ! "$failed_line" =~ ^[0-9]+$ ]] && failed_line=0
+
+  local app_version kernel_version
+  app_version=$(json_escape "${APPLICATION_VERSION:-${var_appversion:-}}")
+  kernel_version=$(json_escape "${KERNEL_VERSION:-}")
+
   cat <<EOF
 {
+    "payload_version": ${TELEMETRY_PAYLOAD_VERSION},
     "random_id": "${RANDOM_UUID}",
     "execution_id": "${EXECUTION_ID:-${RANDOM_UUID}}",
     "type": "${TELEMETRY_TYPE:-lxc}",
@@ -107,11 +128,15 @@ _tm_payload() {
     "cpu_model": "${cpu_model}",
     "gpu_vendor": "${GPU_VENDOR:-unknown}",
     "gpu_model": "${gpu_model}",
-    "gpu_passthrough": "${GPU_PASSTHROUGH:-unknown}",
+    "gpu_passthrough": "${gpu_passthrough}",
     "ram_speed": "${RAM_SPEED:-}",
     "arch": "${TM_ARCH:-}",
     "platform": "${TM_PLATFORM:-}",
     "has_arm": ${HAS_ARM:-false},
+    "kernel_version": "${kernel_version}",
+    "app_version": "${app_version}",
+    "failed_command": "${failed_command}",
+    "failed_line": ${failed_line},
     "repo_source": "${REPO_SOURCE}",
     "repo_slug": "${REPO_SLUG:-}"
 }
@@ -149,8 +174,12 @@ _tm_send() {
     if [[ "${DEV_MODE:-}" == "true" ]]; then
       echo "[DEBUG] telemetry POST (attempt ${attempt}/${attempts}): $payload" >&2
     fi
+    # The User-Agent carries the payload version too. Without either, the server
+    # could only guess a client's age from which fields happened to be present,
+    # which makes any staged change to the schema a blind rollout.
     http_code=$(curl -sS -w "%{http_code}" -m "$timeout" -X POST "${TELEMETRY_URL}" \
       -H "Content-Type: application/json" \
+      -A "community-scripts-core/${TELEMETRY_PAYLOAD_VERSION}" \
       -d "$payload" -o /dev/null 2>/dev/null) || http_code="000"
     [[ "${DEV_MODE:-}" == "true" ]] && echo "[DEBUG] telemetry HTTP=${http_code}" >&2
     if [[ "$http_code" =~ ^2[0-9]{2}$ ]]; then
