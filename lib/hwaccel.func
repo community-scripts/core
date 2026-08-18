@@ -127,10 +127,26 @@ setup_hwaccel() {
   local -a SELECTED_INDICES=()
   local install_nvidia_drivers="yes"
 
+  # What this picks is a driver stack, not a card. Two NVIDIA cards install the
+  # same libraries either way, so there is nothing to decide -- and the host has
+  # already asked which cards to pass through, making this a second prompt for a
+  # question already answered. It enumerates through lspci, which sees every GPU
+  # on the host regardless of what was passed in, so it appeared even after the
+  # host selection had narrowed things down.
+  #
+  # A genuinely mixed set, Intel alongside NVIDIA, is still a real choice.
+  local unique_types
+  unique_types="$(printf '%s\n' "${GPU_TYPES[@]}" | sort -u | wc -l)"
+
   if [[ $gpu_count -eq 1 ]]; then
     # Single GPU - auto-select
     SELECTED_INDICES=(0)
     msg_ok "Detected GPU: ${GPU_NAMES[0]} (${GPU_TYPES[0]})"
+  elif [[ "$unique_types" -eq 1 ]]; then
+    for i in "${!GPU_LIST[@]}"; do
+      SELECTED_INDICES+=("$i")
+    done
+    msg_ok "Detected ${gpu_count}x ${GPU_TYPES[0]} GPU - configuring all, same driver stack"
   else
     # Multiple GPUs - show selection menu
     echo ""
@@ -887,6 +903,21 @@ NVIDIA_PIN
   else
     msg_error "NVIDIA GPU not usable: libcuda.so.1 is not available in this container"
     msg_warn "The host driver is ${nvidia_host_version}. CUDA workloads will fail until a matching userspace library is present."
+  fi
+
+  # nvidia-smi gets its own check because installing it can succeed and still
+  # leave nothing behind: in NVIDIA's CUDA repositories the package is an empty
+  # transitional stub -- 610.57.04-1 declares no Depends and ships no binary --
+  # so dpkg reports it installed while `nvidia-smi` is not on PATH. A user hit
+  # exactly that and assumed the driver install had failed.
+  #
+  # CUDA itself does not need it: libnvidia-ml1 above carries NVML, which is what
+  # libraries actually call. So this reports rather than tries harder; pulling the
+  # package that does ship the binary would drag the full driver stack, kernel
+  # DKMS included, into a container that shares the host's kernel.
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    msg_warn "nvidia-smi is not available: the CUDA repository ships it as an empty transitional package"
+    msg_warn "CUDA workloads are unaffected. For the tool itself, use the matching .run installer with --no-kernel-module."
   fi
 }
 
