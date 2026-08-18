@@ -37,7 +37,9 @@ get_cached_version() {
     cat "/var/cache/app-versions/${app}_version.txt"
     return 0
   fi
-  return 0
+  # 1, not 0. The tools tree returns 1 here, and `if get_cached_version app`
+  # was therefore true on Alpine with nothing cached and empty output.
+  return 1
 }
 
 version_gt() {
@@ -57,6 +59,10 @@ version_gt() {
   }'
 }
 
+# The tools tree takes dpkg|uname|both and defaults to dpkg. Alpine has no
+# dpkg, so every mode resolves through uname -- but the argument is accepted
+# rather than silently ignored, so a caller written against the other side
+# behaves the same here.
 get_system_arch() {
   local arch
   arch=$(uname -m 2>/dev/null || echo "")
@@ -65,8 +71,26 @@ get_system_arch() {
   echo "$arch"
 }
 
+# The tools tree registers every temp dir for cleanup on exit. Doing nothing
+# here leaked one per call, so keep a list and clear it the same way.
+_alpine_temp_dirs=()
+_alpine_cleanup_temp_dirs() {
+  local d
+  for d in "${_alpine_temp_dirs[@]}"; do
+    [ -n "$d" ] && [ -d "$d" ] && rm -rf "$d"
+  done
+  _alpine_temp_dirs=()
+}
+
 create_temp_dir() {
-  mktemp -d
+  local tmp_dir
+  tmp_dir=$(mktemp -d) || return 1
+  if [ "${_alpine_temp_cleanup_registered:-0}" != "1" ]; then
+    trap _alpine_cleanup_temp_dirs EXIT
+    _alpine_temp_cleanup_registered=1
+  fi
+  _alpine_temp_dirs+=("$tmp_dir")
+  echo "$tmp_dir"
 }
 
 get_os_info() {
@@ -74,10 +98,14 @@ get_os_info() {
   [ -z "${_OS_ID:-}" ] && _OS_ID=$(awk -F= '/^ID=/{gsub(/"/,"",$2); print $2}' /etc/os-release 2>/dev/null)
   [ -z "${_OS_CODENAME:-}" ] && _OS_CODENAME=$(awk -F= '/^VERSION_CODENAME=/{gsub(/"/,"",$2); print $2}' /etc/os-release 2>/dev/null)
   [ -z "${_OS_VERSION:-}" ] && _OS_VERSION=$(awk -F= '/^VERSION_ID=/{gsub(/"/,"",$2); print $2}' /etc/os-release 2>/dev/null)
+  # version_full was missing, so asking for it fell through to *) and returned
+  # the OS id instead of a version.
+  [ -z "${_OS_VERSION_FULL:-}" ] && _OS_VERSION_FULL=$(awk -F= '/^VERSION=/{gsub(/"/,"",$2); print $2}' /etc/os-release 2>/dev/null)
   case "$field" in
   id) echo "$_OS_ID" ;;
   codename) echo "$_OS_CODENAME" ;;
   version | version_id) echo "$_OS_VERSION" ;;
+  version_full) echo "$_OS_VERSION_FULL" ;;
   all) echo "ID=$_OS_ID CODENAME=$_OS_CODENAME VERSION=$_OS_VERSION" ;;
   *) echo "$_OS_ID" ;;
   esac
@@ -97,69 +125,107 @@ ensure_dependencies() {
 
 download_file() {
   local url="$1" output="$2" max_retries="${3:-3}" show_progress="${4:-false}"
-  local i=1 curl_opts="-fsSL"
-  [ "$show_progress" = "true" ] && curl_opts="-fL#"
+  local i=1
+  local curl_opts=(-fsSL)
+  [ "$show_progress" = "true" ] && curl_opts=(-fL#)
   while [ $i -le "$max_retries" ]; do
-    if curl $curl_opts -o "$output" "$url"; then
+    if curl "${curl_opts[@]}" -o "$output" "$url"; then
       return 0
     fi
     i=$((i + 1))
-    [ $i -le "$max_retries" ] && sleep 2
+    [ $i -le "$max_retries" ] && {
+      msg_warn "Download failed, retrying... (attempt $((i - 1))/$max_retries)"
+      sleep 2
+    }
   done
   msg_error "Failed to download: $url"
-  return 1
+  # 250, matching lib/system.func. The exit code is what the error handler and
+  # the telemetry read; returning 1 filed every Alpine download failure in the
+  # same undifferentiated bucket as everything else that returns 1.
+  return 250
 }
 
 github_api_call() {
   local url="$1" output_file="${2:-/dev/stdout}"
   local max_retries=3 retry_delay=2 attempt=1
-  local header=""
-  [ -n "${GITHUB_TOKEN:-}" ] && header="-H Authorization:Bearer\ ${GITHUB_TOKEN}"
+  local http_code
+
+  # An array, not a string. The old form built "-H Authorization:Bearer\ $TOKEN"
+  # and expanded it unquoted, which split into three words: curl got a valueless
+  # header (which it then drops) and the token as a second URL to fetch. Alpine
+  # never authenticated, however valid the token was.
+  local header_args=()
+  [ -n "${GITHUB_TOKEN:-}" ] && header_args=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+
   while [ $attempt -le $max_retries ]; do
-    http_code=$(curl -fsSL -w "%{http_code}" -o "$output_file" \
+    # -sSL, not -fsSL. With -f curl exits non-zero on an HTTP error while -w
+    # still prints the status, so the old `|| echo 000` appended to it and
+    # http_code came out as "404000" -- making the 403 and 404 arms below
+    # unreachable. Every failure fell through to the catch-all, and a 404 was
+    # retried three times for a URL that was never going to exist.
+    http_code=$(curl -sSL -w "%{http_code}" -o "$output_file" \
       -H "Accept: application/vnd.github+json" \
       -H "X-GitHub-Api-Version: 2022-11-28" \
-      $header "$url" 2>/dev/null || echo 000)
+      "${header_args[@]}" "$url" 2>/dev/null) || true
+    [ -z "$http_code" ] && http_code=000
+
     case "$http_code" in
     200) return 0 ;;
-    403) [ $attempt -lt $max_retries ] && sleep "$retry_delay" || {
-      msg_error "GitHub API rate limit exceeded"
-      return 1
+    401)
+      msg_error "GitHub API authentication failed (HTTP 401)"
+      [ -n "${GITHUB_TOKEN:-}" ] && msg_error "GITHUB_TOKEN appears to be invalid or expired"
+      return 22
+      ;;
+    403) [ $attempt -lt $max_retries ] || {
+      msg_error "GitHub API rate limit exceeded (HTTP 403)"
+      return 22
     } ;;
     404)
       msg_error "GitHub API endpoint not found: $url"
-      return 1
+      return 22
       ;;
-    *) [ $attempt -lt $max_retries ] && sleep "$retry_delay" || {
+    *) [ $attempt -lt $max_retries ] || {
       msg_error "GitHub API call failed with HTTP $http_code"
-      return 1
+      return 22
     } ;;
     esac
+    sleep "$retry_delay"
     retry_delay=$((retry_delay * 2))
     attempt=$((attempt + 1))
   done
-  return 1
+  return 22
 }
 
 extract_version_from_json() {
   local json="$1" field="${2:-tag_name}" strip_v="${3:-true}" version
-  need_tool jq || return 1
+  need_tool jq || return 250
   version=$(printf '%s' "$json" | jq -r ".${field} // empty")
-  [ -z "$version" ] && return 1
+  if [ -z "$version" ]; then
+    msg_warn "JSON field '${field}' is empty in API response"
+    return 250
+  fi
   [ "$strip_v" = "true" ] && printf '%s' "${version#v}" || printf '%s' "$version"
 }
 
 get_latest_github_release() {
-  local repo="$1" strip_v="${2:-true}" tmp
-  tmp=$(mktemp) || return 1
+  local repo="$1" strip_v="${2:-true}" tmp rc version
+  tmp=$(mktemp) || return 250
+  # 22 for "could not reach the API", 250 for "reached it but got no version",
+  # the same split lib/forge.func uses. Both used to be 1 here, which the error
+  # handler cannot tell apart from any other failure.
   github_api_call "https://api.github.com/repos/${repo}/releases/latest" "$tmp" || {
+    msg_warn "GitHub API call failed for ${repo}"
     rm -f "$tmp"
-    return 1
+    return 22
   }
-  extract_version_from_json "$(cat "$tmp")" "tag_name" "$strip_v"
+  version=$(extract_version_from_json "$(cat "$tmp")" "tag_name" "$strip_v")
   rc=$?
   rm -f "$tmp"
-  return $rc
+  if [ $rc -ne 0 ] || [ -z "$version" ]; then
+    msg_error "Could not determine latest version for ${repo}"
+    return 250
+  fi
+  printf '%s' "$version"
 }
 
 need_tool() {
