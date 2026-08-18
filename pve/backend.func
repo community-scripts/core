@@ -237,11 +237,11 @@ build_container() {
   # Build PCT_OPTIONS as string for export
   TEMP_DIR=$(mktemp -d)
   pushd "$TEMP_DIR" >/dev/null
-  if [ "$var_os" == "alpine" ]; then
-    export FUNCTIONS_FILE_PATH="$(_cs_fetch_text "lxc/alpine-install.func")"
-  else
-    export FUNCTIONS_FILE_PATH="$(_cs_fetch_text "lxc/install.func")"
-  fi
+  # One bootstrap for every OS. install.func detects Alpine itself and has
+  # carried apk, OpenRC and BusyBox branches all along; the split only meant
+  # those branches never ran and Alpine got a second, thinner copy of the same
+  # eight functions that had to be fixed separately every time.
+  export FUNCTIONS_FILE_PATH="$(_cs_fetch_text "lxc/install.func")"
 
   # Core exports for install.func
   export DIAGNOSTICS="$DIAGNOSTICS"

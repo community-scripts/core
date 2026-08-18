@@ -198,11 +198,9 @@ validate_storage_space() {
 }
 
 _incus_prepare_install_exports() {
-  if [[ "${var_os:-debian}" == "alpine" ]]; then
-    export FUNCTIONS_FILE_PATH="$(_cs_fetch_text "lxc/alpine-install.func")"
-  else
-    export FUNCTIONS_FILE_PATH="$(_cs_fetch_text "lxc/install.func")"
-  fi
+  # One bootstrap for every OS — see pve/backend.func for why the Alpine split
+  # went away.
+  export FUNCTIONS_FILE_PATH="$(_cs_fetch_text "lxc/install.func")"
 
   export DIAGNOSTICS="${DIAGNOSTICS:-yes}"
   export RANDOM_UUID="${RANDOM_UUID}"

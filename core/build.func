@@ -245,7 +245,7 @@ _cs_source_func() {
 # so a new .func cannot be forgotten here. A file missing from it would still
 # work — _cs_local_path falls through to the network — just slower.
 _CS_ENGINE_FILES=(
-  lxc/alpine-install.func lib/alpine.func api/api.func
+  lib/alpine.func api/api.func
   api/errorlog.func api/exitcodes.func api/sysinfo.func
   api/telemetry.func
   ui/build-ui.func ui/advanced.func ui/defaults.func

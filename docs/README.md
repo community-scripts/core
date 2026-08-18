@@ -67,8 +67,7 @@ engine and ProxmoxVE, which has not moved over yet.
 | [`lib/db.func`](../lib/db.func) | Databases and search engines |
 | [`lib/hwaccel.func`](../lib/hwaccel.func) | GPU detection and hardware acceleration |
 | [`lib/alpine.func`](../lib/alpine.func) | The Alpine helper library, loaded instead of the above |
-| [`lxc/install.func`](../lxc/install.func) | In-container bootstrap, multi-distro |
-| [`lxc/alpine-install.func`](../lxc/alpine-install.func) | In-container bootstrap for Alpine |
+| [`lxc/install.func`](../lxc/install.func) | In-container bootstrap, every distro including Alpine |
 | [`lxc/platform.func`](../lxc/platform.func) | Proxmox VE / Incus / in-container detection |
 | [`host/preflight.func`](../host/preflight.func) | Optional host readiness checks, off by default |
 | [`host/validate.func`](../host/validate.func) | MAC, VLAN and MTU checks shared by both platforms |

@@ -263,6 +263,29 @@ detect_os() {
 # ------------------------------------------------------------------------------
 # Bootstrap: Ensure curl is available and source core functions
 # ------------------------------------------------------------------------------
+# A freshly booted container may not have DNS up yet, and `source <(...)` hides
+# the exit code of whatever produced the stream: a failed download used to source
+# an empty script, and the first call into it failed with "command not found"
+# rather than naming the file that could not be fetched. The probe catches the
+# other half — a truncated response that parses but is missing what we need.
+_bootstrap_die() {
+  if declare -f msg_error >/dev/null 2>&1; then
+    msg_error "$1"
+  else
+    echo "FATAL: $1" >&2
+  fi
+  exit 115
+}
+
+_bootstrap_source() {
+  local rel="${1:?func path}" probe="${2:?probe function}" content
+  content="$(_cs_engine_read "$rel")" && [[ -n "$content" ]] ||
+    _bootstrap_die "Failed to download ${rel}"
+  source /dev/stdin <<<"$content"
+  declare -f "$probe" >/dev/null 2>&1 ||
+    _bootstrap_die "${rel} loaded but incomplete (missing ${probe})"
+}
+
 _bootstrap() {
   # Minimal bootstrap to get curl installed
   if ! command -v curl &>/dev/null; then
@@ -309,14 +332,14 @@ _bootstrap() {
 
   # Source core functions
   _cs_ct_prefetch_engine || true
-  source <(_cs_engine_read core/core.func)
-  source <(_cs_engine_read core/error_handler.func)
+  _bootstrap_source core/core.func load_functions
+  _bootstrap_source core/error_handler.func catch_errors
   # The dev helpers are worth a round trip only when a flag is set: core.func's
   # timing hooks no-op without them, and error_handler's exit path asks for the
   # summary with declare -f. The host exports the parsed DEV_MODE_* flags, so
   # there is nothing to re-parse on this side.
   if [[ -n "${dev_mode:-}" ]]; then
-    source <(_cs_engine_read core/dev-mode.func)
+    _bootstrap_source core/dev-mode.func parse_dev_mode
   fi
   load_functions
   catch_errors
@@ -549,7 +572,9 @@ pkg_update() {
       msg_warn "apk update failed (dl-cdn.alpinelinux.org), trying alternate mirrors..."
       local alpine_mirrors="mirror.init7.net ftp.halifax.rwth-aachen.de mirrors.edge.kernel.org alpine.mirror.wearetriple.com mirror.leaseweb.com uk.alpinelinux.org dl-2.alpinelinux.org dl-4.alpinelinux.org"
       local apk_ok=false
-      for m in $(printf '%s\n' $alpine_mirrors | shuf); do
+      # Fall back to the fixed order if shuf is absent: an empty list here would
+      # skip every mirror and report "all mirrors failed" without trying one.
+      for m in $(printf '%s\n' $alpine_mirrors | shuf 2>/dev/null || printf '%s\n' $alpine_mirrors); do
         if timeout 2 bash -c "echo >/dev/tcp/$m/80" 2>/dev/null; then
           msg_custom "${INFO}" "${YW}" "Attempting mirror: ${m}"
           cat <<EOF >/etc/apk/repositories
@@ -1605,6 +1630,15 @@ EOF
       ;;
 
     openrc)
+      # Alpine ships BusyBox getty, not agetty, and the rewrite below names
+      # /sbin/agetty explicitly. Without util-linux the new inittab line points
+      # at a binary that does not exist and the console never comes back.
+      # --force-broken-world: the minirootfs world file can disagree with what is
+      # actually installed, which would otherwise abort the add.
+      if [[ "$PKG_MANAGER" == "apk" ]] && ! command -v agetty &>/dev/null; then
+        $STD apk add --no-cache --force-broken-world util-linux || true
+      fi
+
       # Alpine/Gentoo inittab formats differ: Alpine uses
       #   "tty1::respawn:/sbin/getty 38400 tty1"
       # Gentoo uses
@@ -1612,12 +1646,16 @@ EOF
       # Match any respawn line running a getty/agetty on tty1 (resp. console) and
       # rewrite it with --autologin, preserving the original inittab id.
       if [[ -f /etc/inittab ]]; then
-        sed -i -E 's#^([A-Za-z0-9]*:[0-9]*:respawn:).*[ag]etty.*tty1.*#\1/sbin/agetty --autologin root --noclear tty1 38400 linux#' /etc/inittab
-        sed -i -E 's#^([A-Za-z0-9]*:[0-9]*:respawn:).*[ag]etty.*console.*#\1/sbin/agetty --autologin root --noclear console 115200 linux#' /etc/inittab
-        telinit q &>/dev/null || kill -HUP 1 &>/dev/null || true
-        sleep 1
-        pkill -f 'agetty.*tty1' &>/dev/null || true
-        pkill -f 'agetty.*console' &>/dev/null || true
+        if command -v agetty &>/dev/null; then
+          sed -i -E 's#^([A-Za-z0-9]*:[0-9]*:respawn:).*[ag]etty.*tty1.*#\1/sbin/agetty --autologin root --noclear tty1 38400 linux#' /etc/inittab
+          sed -i -E 's#^([A-Za-z0-9]*:[0-9]*:respawn:).*[ag]etty.*console.*#\1/sbin/agetty --autologin root --noclear console 115200 linux#' /etc/inittab
+          telinit q &>/dev/null || kill -HUP 1 &>/dev/null || true
+          sleep 1
+          pkill -f 'agetty.*tty1' &>/dev/null || true
+          pkill -f 'agetty.*console' &>/dev/null || true
+        else
+          msg_warn "agetty is unavailable — leaving /etc/inittab alone rather than pointing it at a binary that does not exist"
+        fi
       fi
       touch /root/.hushlogin
       ;;
