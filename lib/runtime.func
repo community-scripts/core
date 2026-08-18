@@ -181,9 +181,18 @@ ensure_docker() {
   fi
 
   msg_warn "Docker is not installed."
+  # An unguarded read is worse than useless headless: at EOF it returns 1, and
+  # catch_errors has errexit plus an ERR trap, so the script died reporting
+  # "exit code 1" instead of the message two lines down. The default is
+  # unchanged -- anything but yes still aborts -- it just says why now.
+  local install_docker_prompt=""
+  if _docker_is_noninteractive; then
+    msg_error "Docker is required for ${APP:-this script}, and this run is unattended."
+    msg_custom "💡" "${YW:-}" "Install Docker first, or re-run interactively to be asked."
+    exit 254
+  fi
   echo -n "${TAB:-  }Install Docker now? (y/N): "
-  local install_docker_prompt
-  read -r install_docker_prompt
+  read -r install_docker_prompt || install_docker_prompt=""
   if [[ ! "${install_docker_prompt,,}" =~ ^(y|yes)$ ]]; then
     msg_error "Docker is required for ${APP:-this script}. Exiting."
     exit 254
