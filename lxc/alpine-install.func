@@ -129,8 +129,8 @@ network_check() {
   fi
 
   if [[ $ipv4_connected == false ]]; then
-    read -r -p "No Internet detected, would you like to continue anyway? <y/N> " prompt </dev/tty
-    if [[ "${prompt,,}" =~ ^(y|yes)$ ]]; then
+    # See lxc/install.func: a bare read from /dev/tty kills a headless install.
+    if prompt_confirm "No Internet detected, would you like to continue anyway?" "n"; then
       echo -e "${INFO}${RD}Expect Issues Without Internet${CL}"
     else
       echo -e "${NETWORK}Check Network Settings"

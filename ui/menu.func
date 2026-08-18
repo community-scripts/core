@@ -423,10 +423,17 @@ check_container_resources() {
   if [[ "$current_ram" -lt "$var_ram" ]] || [[ "$current_cpu" -lt "$var_cpu" ]]; then
     echo -e "\n${INFO}${HOLD} ${GN}Required: ${var_cpu} CPU, ${var_ram}MB RAM ${CL}| ${RD}Current: ${current_cpu} CPU, ${current_ram}MB RAM${CL}"
     echo -e "${YWB}Please ensure that the ${APP} LXC is configured with at least ${var_cpu} vCPU and ${var_ram} MB RAM for the build process.${CL}\n"
-    echo -ne "${INFO}${HOLD} May cause data loss! ${INFO} Continue update with under-provisioned LXC? <yes/No>  "
-    read -r prompt </dev/tty
-    if [[ ! ${prompt,,} =~ ^(yes)$ ]]; then
-      echo -e "${CROSS}${HOLD} ${YWB}Exiting based on user input.${CL}"
+    # prompt_confirm, not a bare read from /dev/tty. update-apps.sh exports
+    # PHS_SILENT=1 for unattended runs and cron has no /dev/tty at all, so the
+    # read failed the whole update with a device error instead of answering the
+    # question it was asked.
+    echo -e "${INFO}${HOLD} ${RD}May cause data loss!${CL}"
+    if ! prompt_confirm "Continue update with under-provisioned LXC?" "n"; then
+      if is_unattended; then
+        echo -e "${CROSS}${HOLD} ${YWB}Not continuing: LXC is under-provisioned and there is nobody to ask.${CL}"
+      else
+        echo -e "${CROSS}${HOLD} ${YWB}Exiting based on user input.${CL}"
+      fi
       exit 113 # user aborted an under-provisioned update
     fi
   else
@@ -450,16 +457,16 @@ check_container_storage() {
 
   if [ "$usage" -gt 80 ]; then
     echo -e "${INFO}${HOLD}${YWB}Warning: Storage is dangerously low (${usage}%).${CL}"
-    printf "Continue anyway? <y/N>  "
-    read -r prompt </dev/tty
-
-    case "$prompt" in
-    [yY][eE][sS] | [yY]) ;;
-    *)
-      echo -e "${CROSS}${HOLD}${YWB}Exiting based on user input.${CL}"
+    # See check_container_resources above for why this is not a bare read.
+    if ! prompt_confirm "Continue anyway?" "n"; then
+      if is_unattended; then
+        echo -e "${CROSS}${HOLD}${YWB}Not continuing: only $((100 - usage))% of / is free and there is nobody to ask.${CL}"
+        echo -e "${TAB}${YWB}An upgrade that runs out of disk mid-dpkg leaves the container broken.${CL}"
+      else
+        echo -e "${CROSS}${HOLD}${YWB}Exiting based on user input.${CL}"
+      fi
       exit 114 # user aborted with storage too low
-      ;;
-    esac
+    fi
   fi
 }
 

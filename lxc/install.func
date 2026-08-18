@@ -518,8 +518,12 @@ pkg_update() {
         else
           msg_warn "Find Debian mirrors at: https://www.debian.org/mirror/list"
         fi
-        while true; do
-          read -rp "  Enter a mirror hostname (or 'skip' to abort): " custom_mirror </dev/tty
+        # Only ask when there is someone to answer. Headless, /dev/tty does not
+        # exist, the read fails instantly, custom_mirror stays empty and the
+        # `continue` below spins the loop forever instead of prompting. Falling
+        # through leaves apt_ok=false, which the caller reports properly.
+        while ! is_unattended; do
+          read -rp "  Enter a mirror hostname (or 'skip' to abort): " custom_mirror </dev/tty || break
           [[ -z "$custom_mirror" ]] && continue
           [[ "$custom_mirror" == "skip" ]] && break
           [[ ! "$custom_mirror" =~ ^[a-zA-Z0-9._-]+$ ]] && {
@@ -1162,8 +1166,10 @@ network_check() {
 
   # If both IPv4 and IPv6 checks fail, prompt the user
   if [[ $ipv4_connected == false && $ipv6_connected == false ]]; then
-    read -r -p "No Internet detected, would you like to continue anyway? <y/N> " prompt </dev/tty
-    if [[ "${prompt,,}" =~ ^(y|yes)$ ]]; then
+    # prompt_confirm, not a bare read from /dev/tty: an install driven from cron
+    # or any other headless context has no /dev/tty, and reading from it there
+    # aborted with a device error instead of answering the question.
+    if prompt_confirm "No Internet detected, would you like to continue anyway?" "n"; then
       echo -e "${INFO}${RD}Expect Issues Without Internet${CL}"
     else
       echo -e "${NETWORK}Check Network Settings"
