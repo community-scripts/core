@@ -152,7 +152,13 @@ setup_composer() {
 #   - Set DOCKER_NONINTERACTIVE=1 to skip interactive prompts (CI/unattended)
 # ------------------------------------------------------------------------------
 _docker_is_noninteractive() {
-  [[ "${DOCKER_NONINTERACTIVE:-}" == "1" || "${DOCKER_NONINTERACTIVE:-}" == "true" || "${DOCKER_NONINTERACTIVE:-}" == "TRUE" ]] || [[ ! -t 0 ]]
+  [[ "${DOCKER_NONINTERACTIVE:-}" == "1" || "${DOCKER_NONINTERACTIVE:-}" == "true" || "${DOCKER_NONINTERACTIVE:-}" == "TRUE" ]] && return 0
+  # PHS_SILENT, var_unattended and MODE all mean "do not ask", and update-apps.sh
+  # exports PHS_SILENT=1. Checking only for a TTY was not enough: pct exec
+  # inherits the caller's stdin, so an unattended run started from an SSH session
+  # still had one, and the prompts below blocked an update nobody was watching.
+  declare -f is_unattended >/dev/null 2>&1 && is_unattended && return 0
+  [[ ! -t 0 ]]
 }
 
 # ------------------------------------------------------------------------------
@@ -344,7 +350,10 @@ EOF
         if _docker_is_noninteractive; then
           msg_info "Skipping Portainer update prompt (non-interactive)"
         else
-          read -r -p "${TAB3}Update Portainer $PORTAINER_CURRENT → $PORTAINER_LATEST? <y/N> " prompt </dev/tty
+          # Timeout like the container prompts further down. Without one, a
+          # batch update over many LXCs stops dead on the first Portainer that
+          # has an update and waits for a keystroke that may never come.
+          read -r -t 60 -p "${TAB3}Update Portainer $PORTAINER_CURRENT → $PORTAINER_LATEST? <y/N> (auto-no in 60s): " prompt </dev/tty || prompt=""
           if [[ ${prompt,,} =~ ^(y|yes)$ ]]; then
             msg_info "Updating Portainer"
             docker stop portainer
