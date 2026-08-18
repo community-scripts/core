@@ -192,7 +192,10 @@ EOF
       exit 1
     fi
   fi
-  source <(curl -fsSL "$(_cs_core_url lib/alpine.func)")
+  # Same treatment as the bootstrap above: a bare `source <(curl ...)` hides the
+  # exit code, so a failed download used to source nothing and leave every
+  # helper below missing with no explanation.
+  _bootstrap_source "$(_cs_core_url lib/alpine.func)" fetch_and_deploy_gh_release
   msg_ok "Updated Container OS"
 }
 

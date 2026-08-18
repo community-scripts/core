@@ -45,15 +45,26 @@ _cs_core_url() {
   echo "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/${1:?func path}"
 }
 
-# Retry options for every engine fetch on this side. Defined again rather than
-# taken from build.func because that file stays on the host; this one is piped
-# into the container and has to stand alone.
-#
-# A container is at its most fragile right after boot — DNS may not have come up
-# yet — and exit 115 ("download failed") is one of the larger failure buckets in
-# telemetry. curl's own --retry knows to skip a 404, so a genuinely missing file
-# still fails immediately instead of costing three attempts.
-_CS_CT_CURL_RETRY=(--retry 3 --retry-delay 1 --retry-connrefused --connect-timeout 10)
+# Retry options for engine fetches. Repeated here rather than taken from
+# core/build.func, which stays on the host while this file is piped into the
+# container and has to stand alone. A container is at its most fragile right
+# after boot, before DNS is up; core/build.func carries the full reasoning.
+_CS_CURL_RETRY=(--retry 3 --retry-delay 1 --retry-connrefused --connect-timeout 10)
+
+# curl -S prints one line per failed attempt, so a download that recovers on the
+# second try would show the user two errors and then quietly work — during a
+# spinner, no less. Hold stderr back and release it only if every attempt failed.
+_cs_curl_retry() {
+  local url="${1:?url}" err rc=0
+  err="$(mktemp 2>/dev/null)" || {
+    curl -fsSL "${_CS_CURL_RETRY[@]}" "$url"
+    return
+  }
+  curl -fsSL "${_CS_CURL_RETRY[@]}" "$url" 2>"$err" || rc=$?
+  ((rc != 0)) && cat "$err" >&2
+  rm -f "$err"
+  return "$rc"
+}
 
 # The engine reaches a container in nine pieces. The host's prefetch cannot
 # help here — a container has its own filesystem — so fetch them concurrently
@@ -93,7 +104,7 @@ _cs_ct_prefetch_engine() {
   done
 
   curl -fsSL --parallel --parallel-immediate --parallel-max 16 \
-    "${_CS_CT_CURL_RETRY[@]}" --max-time 60 "${args[@]}" 2>/dev/null
+    "${_CS_CURL_RETRY[@]}" --max-time 60 "${args[@]}" 2>/dev/null
 
   local kept=0
   for rel in "${_CS_CT_ENGINE_FILES[@]}"; do
@@ -122,9 +133,9 @@ _cs_engine_read() {
     return 0
   fi
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "${_CS_CT_CURL_RETRY[@]}" "$(_cs_core_url "$name")"
+    _cs_curl_retry "$(_cs_core_url "$name")"
   else
-    wget -q --tries=3 --waitretry=1 -O- "$(_cs_core_url "$name")"
+    wget -qO- "$(_cs_core_url "$name")"
   fi
 }
 

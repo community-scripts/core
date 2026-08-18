@@ -6,6 +6,12 @@
 [[ -n "${_VM_CORE_DISPATCHED:-}" ]] && return
 _VM_CORE_DISPATCHED=1
 
+# Retry options for engine fetches. Repeated in each file that bootstraps
+# itself over the network rather than shared, because there is nowhere to put
+# a shared copy that does not itself need downloading first. core/build.func
+# carries the full reasoning.
+_CS_CURL_RETRY=(--retry 3 --retry-delay 1 --retry-connrefused --connect-timeout 10)
+
 COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
 
 if command -v pveversion &>/dev/null; then
@@ -21,7 +27,7 @@ elif command -v incus &>/dev/null && incus info &>/dev/null 2>&1; then
   else
     _vm_core_base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
     # shellcheck disable=SC1090
-    source <(curl -fsSL "${_vm_core_base}/incus/vm-core.func" 2>/dev/null ||
+    source <(curl -fsSL "${_CS_CURL_RETRY[@]}" "${_vm_core_base}/incus/vm-core.func" 2>/dev/null ||
       wget -qO- "${_vm_core_base}/incus/vm-core.func")
   fi
   return 0
@@ -39,7 +45,7 @@ elif [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -f "${COMMUNITY_SCRIPTS_CORE_DIR
 else
   _vm_validate_base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
   # shellcheck disable=SC1090
-  source <(curl -fsSL "${_vm_validate_base}/host/validate.func" 2>/dev/null ||
+  source <(curl -fsSL "${_CS_CURL_RETRY[@]}" "${_vm_validate_base}/host/validate.func" 2>/dev/null ||
     wget -qO- "${_vm_validate_base}/host/validate.func")
 fi
 
@@ -58,7 +64,7 @@ COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://git.community-scripts.or
 
 load_api_functions() {
   if ! declare -f post_to_api_vm >/dev/null 2>&1; then
-    source /dev/stdin <<<$(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/api/api.func")
+    source /dev/stdin <<<$(curl -fsSL "${_CS_CURL_RETRY[@]}" "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/api/api.func")
   fi
 }
 
@@ -86,7 +92,7 @@ load_cloud_init_functions() {
       _cs_source_func "vm/cloud-init.func" 2>/dev/null || true
     else
       # shellcheck disable=SC1090
-      source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/vm/cloud-init.func") 2>/dev/null || true
+      source <(curl -fsSL "${_CS_CURL_RETRY[@]}" "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/vm/cloud-init.func") 2>/dev/null || true
     fi
   fi
 }
@@ -257,7 +263,7 @@ silent() {
         _cs_source_func "core/error_handler.func" 2>/dev/null || true
       else
         # shellcheck disable=SC1090
-        source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/core/error_handler.func") 2>/dev/null || true
+        source <(curl -fsSL "${_CS_CURL_RETRY[@]}" "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/core/error_handler.func") 2>/dev/null || true
       fi
     fi
 

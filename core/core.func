@@ -1073,7 +1073,11 @@ get_header() {
     fi
 
     mkdir -p "$(dirname "$cached")"
-    if curl -fsSL "${core_url}/headers/${rel}" -o "$cached" && [[ -s "$cached" ]]; then
+    # No retry here, unlike every other engine fetch: this one only decides
+    # whether an ASCII banner appears, and the loop has several candidates to
+    # get through. It does need a bound, though — without one a black-holed
+    # network waits out the OS TCP timeout per candidate before drawing nothing.
+    if curl -fsSL --connect-timeout 5 --max-time 15 "${core_url}/headers/${rel}" -o "$cached" && [[ -s "$cached" ]]; then
       cat "$cached" 2>/dev/null || true
       return 0
     fi

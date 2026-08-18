@@ -19,6 +19,12 @@ _INCUS_VM_CORE_LOADED=1
 
 _CORE_BASE="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
 
+# Retry options for engine fetches. Repeated in each file that bootstraps
+# itself over the network rather than shared, because there is nowhere to put
+# a shared copy that does not itself need downloading first. core/build.func
+# carries the full reasoning.
+_CS_CURL_RETRY=(--retry 3 --retry-delay 1 --retry-connrefused --connect-timeout 10)
+
 # Prefer the dispatcher's resolver so a local checkout and forks keep working.
 _incus_vm_source() {
   local rel="$1"
@@ -32,7 +38,7 @@ _incus_vm_source() {
     return
   fi
   # shellcheck disable=SC1090
-  source <(curl -fsSL "${_CORE_BASE}/${rel}")
+  source <(curl -fsSL "${_CS_CURL_RETRY[@]}" "${_CORE_BASE}/${rel}")
 }
 
 # core/core.func first: it owns prompt_confirm/prompt_input/prompt_select,

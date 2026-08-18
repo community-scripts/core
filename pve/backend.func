@@ -1424,7 +1424,7 @@ PROFILE
         if [[ "${DEV_MODE_MOTD:-false}" == "true" ]]; then
           echo -e "${TAB}${HOLD}${DGN}Setting up MOTD and SSH for debugging...${CL}"
           if pct exec "$CTID" -- bash -c "
-              source <(curl -fsSL \"${COMMUNITY_SCRIPTS_CORE_URL}/install.func\")
+              source <(curl -fsSL --retry 3 --retry-delay 1 --retry-connrefused --connect-timeout 10 \"${COMMUNITY_SCRIPTS_CORE_URL}/lxc/install.func\")
               declare -f motd_ssh >/dev/null 2>&1 && motd_ssh || true
             " >/dev/null 2>&1; then
             local ct_ip=$(pct exec "$CTID" ip a s dev eth0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1)

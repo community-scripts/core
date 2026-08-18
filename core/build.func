@@ -168,7 +168,27 @@ _cs_net_log() {
 #
 # Three attempts with a one second base delay; curl doubles it, so the worst case
 # adds about three seconds to a download that was going to fail anyway.
+#
+# The wget fallbacks deliberately stay a single attempt: --tries/--waitretry are
+# GNU options, and the fallback exists for exactly the minimal systems that ship
+# BusyBox wget, where an unrecognised option is a hard failure rather than a
+# slower download.
 _CS_CURL_RETRY=(--retry 3 --retry-delay 1 --retry-connrefused --connect-timeout 10)
+
+# curl -S prints one line per failed attempt, so a download that recovers on the
+# second try would show the user two errors and then quietly work — during a
+# spinner, no less. Hold stderr back and release it only if every attempt failed.
+_cs_curl_retry() {
+  local url="${1:?url}" err rc=0
+  err="$(mktemp 2>/dev/null)" || {
+    curl -fsSL "${_CS_CURL_RETRY[@]}" "$url"
+    return
+  }
+  curl -fsSL "${_CS_CURL_RETRY[@]}" "$url" 2>"$err" || rc=$?
+  ((rc != 0)) && cat "$err" >&2
+  rm -f "$err"
+  return "$rc"
+}
 
 _cs_download() {
   local url="${1:?url}"
@@ -186,9 +206,9 @@ _cs_download() {
     return 0
   fi
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "${_CS_CURL_RETRY[@]}" "$url"
+    _cs_curl_retry "$url"
   else
-    wget -q --tries=3 --waitretry=1 -O- "$url"
+    wget -qO- "$url"
   fi
 }
 

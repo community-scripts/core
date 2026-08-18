@@ -32,6 +32,12 @@
 #
 # ==============================================================================
 
+# Retry options for engine fetches. Repeated in each file that bootstraps
+# itself over the network rather than shared, because there is nowhere to put
+# a shared copy that does not itself need downloading first. core/build.func
+# carries the full reasoning.
+_CS_CURL_RETRY=(--retry 3 --retry-delay 1 --retry-connrefused --connect-timeout 10)
+
 # ==============================================================================
 # SECTION 1: APP DISCOVERY & SELECTION
 # ==============================================================================
@@ -374,8 +380,8 @@ customize_vm_image() {
   local tmp_install_func tmp_tools_func
   tmp_install_func=$(mktemp)
   tmp_tools_func=$(mktemp)
-  curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/lxc/install.func" >"$tmp_install_func"
-  curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/lib/tools.func" >"$tmp_tools_func"
+  curl -fsSL "${_CS_CURL_RETRY[@]}" "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/lxc/install.func" >"$tmp_install_func"
+  curl -fsSL "${_CS_CURL_RETRY[@]}" "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/lib/tools.func" >"$tmp_tools_func"
 
   virt-customize -q -a "$WORK_FILE" \
     --mkdir /opt/community-scripts \
