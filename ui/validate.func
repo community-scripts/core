@@ -83,7 +83,10 @@ update_motd_ip() {
     # Get current values
     local current_os="$(grep ^NAME /etc/os-release | cut -d= -f2 | tr -d '"') - Version: $(grep ^VERSION_ID /etc/os-release | cut -d= -f2 | tr -d '"')"
     local current_hostname="$(hostname)"
-    local current_ip="$(hostname -I | awk '{print $1}')"
+    # get_current_ip, not `hostname -I`: BusyBox's hostname has no -I, so on
+    # Alpine this aborted the update with "unrecognized option: I". The helper
+    # a few lines above already handles that and is used for the MOTD line.
+    local current_ip="$(get_current_ip)"
 
     # Update only if values actually changed
     if ! grep -q "OS:.*$current_os" "$profile_file" 2>/dev/null; then
