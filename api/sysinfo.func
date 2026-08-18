@@ -250,7 +250,20 @@ telemetry_collect_sysinfo() {
   [[ -z "${RAM_SPEED+x}" ]] && detect_ram
   [[ -z "${HAS_ARM:-}" ]] && detect_arm
 
-  TM_ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m || echo unknown)"
+  # One vocabulary, not two. dpkg says amd64/arm64 and uname says x86_64/aarch64,
+  # so which one a run reported depended on whether dpkg existed -- an Alpine
+  # host landed in a different bucket from a Debian one for the same hardware.
+  # The first data carrying this field showed all four names side by side.
+  #
+  # Normalised to dpkg's spelling, because that is what the rest of the project
+  # already uses: var_arm64, the container templates, the release assets.
+  TM_ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m 2>/dev/null || echo unknown)"
+  case "$TM_ARCH" in
+  x86_64) TM_ARCH="amd64" ;;
+  aarch64) TM_ARCH="arm64" ;;
+  armv7* | armhf) TM_ARCH="armhf" ;;
+  i386 | i686) TM_ARCH="i386" ;;
+  esac
 
   # Virtualization platform: pve (Proxmox VE) or incus.
   # Containers inherit TELEMETRY_PLATFORM from the host environment.
