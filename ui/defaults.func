@@ -355,6 +355,19 @@ base_settings() {
   CT_TIMEZONE=${var_timezone:-"$timezone"}
   [[ "${CT_TIMEZONE:-}" == Etc/* ]] && CT_TIMEZONE="host" # pct doesn't accept Etc/* zones
 
+  # Inside a container the OS is a fact, not a default. A script that supports
+  # both Debian and Alpine only asks on the host, so an update run arrives here
+  # with var_os unset -- and falling straight through to "debian 12" made
+  # check_container_os_guard compare that against the running Alpine and report
+  # a mismatch that was not one.
+  #
+  # pveversion is how start() itself separates host from container.
+  if [[ -z "${var_os:-}" || -z "${var_version:-}" ]] &&
+    ! command -v pveversion >/dev/null 2>&1 && [[ -r /etc/os-release ]]; then
+    [[ -z "${var_os:-}" ]] && var_os="$(. /etc/os-release 2>/dev/null && echo "${ID:-}")"
+    [[ -z "${var_version:-}" ]] && var_version="$(. /etc/os-release 2>/dev/null && echo "${VERSION_ID:-}")"
+  fi
+
   # Since these 2 are only defined outside of default_settings function, we add a temporary fallback. TODO: To align everything, we should add these as constant variables (e.g. OSTYPE and OSVERSION), but that would currently require updating the default_settings function for all existing scripts
   if [ -z "$var_os" ]; then
     var_os="debian"
