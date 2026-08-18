@@ -153,13 +153,30 @@ _cs_net_log() {
 ' "$1" "$2" "$3" >&2
 }
 
+# Retry options shared by every engine fetch.
+#
+# Fourteen days of telemetry showed roughly 240 failures that were the engine
+# unable to download its own parts: 189 runs across 63 apps hit exit 115
+# ("install.func download failed"), and 51 more across 31 apps took an HTTP error
+# straight from the .func fetch. None of those are the fault of the script being
+# installed, and a single attempt was all any of them got.
+#
+# curl's own --retry rather than a loop around it, because it already knows which
+# failures are worth repeating: timeouts, 408, 429 and 5xx. A 404 is not retried,
+# so a genuinely missing file still fails at once instead of costing three
+# attempts. --retry-connrefused adds the case where the far end is briefly gone.
+#
+# Three attempts with a one second base delay; curl doubles it, so the worst case
+# adds about three seconds to a download that was going to fail anyway.
+_CS_CURL_RETRY=(--retry 3 --retry-delay 1 --retry-connrefused --connect-timeout 10)
+
 _cs_download() {
   local url="${1:?url}"
   local t0 code
   if [[ ",${dev_mode:-}," == *,net,* ]] && command -v curl >/dev/null 2>&1; then
     t0=${EPOCHREALTIME/./}
     local body
-    body="$(curl -fsSL -w '
+    body="$(curl -fsSL "${_CS_CURL_RETRY[@]}" -w '
 %{http_code}' "$url" 2>/dev/null)"
     code="${body##*$'
 '}"
@@ -169,9 +186,9 @@ _cs_download() {
     return 0
   fi
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url"
+    curl -fsSL "${_CS_CURL_RETRY[@]}" "$url"
   else
-    wget -qO- "$url"
+    wget -q --tries=3 --waitretry=1 -O- "$url"
   fi
 }
 
@@ -259,7 +276,7 @@ _cs_prefetch_engine() {
 
   # --fail so a 404 leaves no file rather than an error page that would be
   # sourced as shell.
-  curl -fsSL --parallel --parallel-immediate --parallel-max 16     --connect-timeout 10 --max-time 60 "${args[@]}" 2>/dev/null
+  curl -fsSL --parallel --parallel-immediate --parallel-max 16     "${_CS_CURL_RETRY[@]}" --max-time 60 "${args[@]}" 2>/dev/null
 
   local kept=0 missing=0
   for rel in "${_CS_ENGINE_FILES[@]}"; do
