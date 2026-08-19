@@ -71,7 +71,7 @@ header_info() {
   if declare -f get_header >/dev/null 2>&1; then
     header_content=$(get_header 2>/dev/null || true)
   fi
-  clear
+  _cs_clear
   if [[ -n "$header_content" ]]; then
     echo "$header_content"
   else
@@ -102,7 +102,7 @@ kvm_check() {
 ssh_check() { :; }
 
 exit_script() {
-  clear
+  _cs_clear
   echo -e "\n${CROSS}${RD}User exited script${CL}\n"
   exit 1
 }

@@ -192,7 +192,7 @@ incus_set_std_mode() {
 # ------------------------------------------------------------------------------
 incus_shell_check() {
   if [[ "$(ps -p $$ -o comm=)" != "bash" ]]; then
-    clear
+    _cs_clear
     incus_msg_error "Your default shell is currently not set to Bash. To use these scripts, please switch to the Bash shell."
     echo -e "\nExiting..."
     sleep 2
@@ -216,7 +216,7 @@ incus_root_check() {
     return 0
   fi
 
-  clear
+  _cs_clear
   incus_msg_error "Cannot access Incus. Either:"
   incus_msg_error "  - Run as root (sudo), or"
   incus_msg_error "  - Add your user to the incus-admin group: sudo usermod -aG incus-admin \$USER"

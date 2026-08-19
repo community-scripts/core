@@ -973,7 +973,7 @@ start() {
       set_std_mode
       ;;
     3)
-      clear
+      _cs_clear
       exit_script
       exit
       ;;

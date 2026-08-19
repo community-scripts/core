@@ -460,7 +460,7 @@ advanced_settings() {
             3>&1 1>&2 2>&3); then
             if is_ip_range "$ip_range"; then
               # Exit whiptail screen temporarily to show scan progress
-              clear
+              _cs_clear
               header_info
               echo -e "${INFO}${BOLD}${DGN}Scanning IP range for free address...${CL}\n"
               if resolve_ip_from_range "$ip_range"; then

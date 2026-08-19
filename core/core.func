@@ -210,6 +210,18 @@ set_std_mode() {
   fi
 }
 
+# `clear` is part of ncurses, which the minimal Fedora and Arch container images
+# do not ship. A bare call there returns 127, and under errexit that aborted the
+# run before it had done anything -- `update` on a fresh Fedora container died on
+# this line. The escape sequence does the same job wherever clear is missing.
+_cs_clear() {
+  if command -v clear >/dev/null 2>&1; then
+    clear
+  else
+    printf '\033[H\033[2J\033[3J'
+  fi
+}
+
 # ==============================================================================
 # SECTION 2: VALIDATION CHECKS
 # ==============================================================================
@@ -223,7 +235,7 @@ set_std_mode() {
 # ------------------------------------------------------------------------------
 shell_check() {
   if [[ "$(ps -p $$ -o comm=)" != "bash" ]]; then
-    clear
+    _cs_clear
     msg_error "Your default shell is currently not set to Bash. To use these scripts, please switch to the Bash shell."
     echo -e "\nExiting..."
     sleep 2
@@ -240,7 +252,7 @@ shell_check() {
 # ------------------------------------------------------------------------------
 root_check() {
   if [[ "$(id -u)" -ne 0 || $(ps -o comm= -p $PPID) == "sudo" ]]; then
-    clear
+    _cs_clear
     msg_error "Please run this script as root."
     echo -e "\nExiting..."
     sleep 2
@@ -1026,7 +1038,7 @@ fatal() {
 # - Exits with default exit code
 # ------------------------------------------------------------------------------
 exit_script() {
-  clear
+  _cs_clear
   echo -e "\n${CROSS}${RD}User exited script${CL}\n"
   exit
 }
@@ -1105,7 +1117,7 @@ header_info() {
 
   header_content=$(get_header "$app_name") || header_content=""
 
-  clear
+  _cs_clear
   local term_width
   term_width=$(tput cols 2>/dev/null || echo 120)
 

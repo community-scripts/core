@@ -123,7 +123,7 @@ header_info() {
 
   header_content=$(get_header "$app_name") || header_content=""
 
-  clear
+  _cs_clear
   local term_width
   term_width=$(tput cols 2>/dev/null || echo 120)
 
@@ -401,7 +401,7 @@ __curl_err_handler() {
 # ------------------------------------------------------------------------------
 shell_check() {
   if [[ "$(ps -p $$ -o comm=)" != "bash" ]]; then
-    clear
+    _cs_clear
     msg_error "Your default shell is currently not set to Bash. To use these scripts, please switch to the Bash shell."
     echo -e "\nExiting..."
     sleep 2
@@ -648,7 +648,7 @@ cleanup() {
 
 check_root() {
   if [[ "$(id -u)" -ne 0 || $(ps -o comm= -p $PPID) == "sudo" ]]; then
-    clear
+    _cs_clear
     msg_error "Please run this script as root."
     echo -e "\nExiting..."
     sleep 2
@@ -700,14 +700,14 @@ ssh_check() {
     if whiptail --backtitle "Proxmox VE Helper Scripts" --defaultno --title "SSH DETECTED" --yesno "It's suggested to use the Proxmox shell instead of SSH, since SSH can create issues while gathering variables. Would you like to proceed with using SSH?" 10 62; then
       :
     else
-      clear
+      _cs_clear
       exit
     fi
   fi
 }
 
 exit_script() {
-  clear
+  _cs_clear
   echo -e "\n${CROSS}${RD}User exited script${CL}\n"
   exit
 }

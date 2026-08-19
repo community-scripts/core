@@ -2038,7 +2038,7 @@ create_lxc_container() {
         awk -v os="$os_type" -v pat="$tpl_pattern" '$1 ~ ("^"os"|/"os) && $1 ~ pat {print $1}' |
         sed 's|.*/||' |
         sed -E "s/^${os_type}-([0-9]+(\.[0-9]+)?).*/\1/" |
-        sort -u -V
+        sort -u -V || true
     )
     all_versions+=("${_local_vers[@]}")
 
@@ -2072,7 +2072,7 @@ create_lxc_container() {
     mapfile -t _fb_local < <(
       pveam list "$TEMPLATE_STORAGE" 2>/dev/null |
         awk -v search="$fallback_search" -v pat="$tpl_pattern" '$1 ~ search && $1 ~ pat {print $1}' |
-        sed 's|.*/||' | sort -t - -k 2 -V
+        sed 's|.*/||' | sort -t - -k 2 -V || true
     )
     if [[ ${#_fb_local[@]} -gt 0 ]]; then
       fallback_template="${_fb_local[-1]}"
@@ -2148,7 +2148,7 @@ create_lxc_container() {
           grep -E "^${os_type}-[0-9]" |
           { [[ -n "$tpl_pattern" ]] && grep "$tpl_pattern" || cat; } |
           sed -E "s/^${os_type}-([0-9]+(\.[0-9]+)?).*/\1/" |
-          sort -u -V
+          sort -u -V || true
       )
       all_versions+=("${_local_vers[@]}")
 
@@ -2585,7 +2585,7 @@ create_lxc_container() {
       pveam list "$TEMPLATE_STORAGE" 2>/dev/null |
         awk -v search="${TEMPLATE_SEARCH}" -v pattern="${TEMPLATE_PATTERN}" -v arch="${ARCH}" \
           '$1 ~ search && $1 ~ pattern && $1 ~ ("_" arch "\\.(tar\\.zst|tar\\.xz|tar\\.gz)$") {print $1}' |
-        sed 's|.*/||' | sort -t - -k 2 -V
+        sed 's|.*/||' | sort -t - -k 2 -V || true
     )
 
     # Step 2: If local template found, use it immediately (skip pveam update)
@@ -2636,7 +2636,7 @@ create_lxc_container() {
           awk -F'\t' '{print $1}' |
           grep "^${PCT_OSTYPE}-" |
           sed -E "s/.*${PCT_OSTYPE}-([0-9]+(\.[0-9]+)?).*/\1/" |
-          sort -u -V 2>/dev/null
+          sort -u -V 2>/dev/null || true
       )
 
       if [[ ${#AVAILABLE_VERSIONS[@]} -gt 0 ]]; then
@@ -2659,7 +2659,7 @@ create_lxc_container() {
           mapfile -t LOCAL_TEMPLATES < <(
             pveam list "$TEMPLATE_STORAGE" 2>/dev/null |
               awk -v search="${TEMPLATE_SEARCH}-" -v pattern="${TEMPLATE_PATTERN}" '$1 ~ search && $1 ~ pattern {print $1}' |
-              sed 's|.*/||' | sort -t - -k 2 -V
+              sed 's|.*/||' | sort -t - -k 2 -V || true
           )
           mapfile -t ONLINE_TEMPLATES < <(
             _pveam_available |
@@ -2755,6 +2755,16 @@ create_lxc_container() {
     fi
 
     if [[ "$NEED_DOWNLOAD" -eq 1 ]]; then
+      # Belt and braces. Every path above that leaves TEMPLATE empty is supposed
+      # to have exited already, but one of them did not, and `pveam download
+      # local ""` was retried three times with backoff before reporting a
+      # generic failure. An empty name is never worth a single attempt.
+      if [[ -z "$TEMPLATE" ]]; then
+        msg_error "No template name resolved for ${PCT_OSTYPE} ${PCT_OSVERSION} — refusing to download"
+        msg_custom "ℹ️" "${YW}" "Check what this host offers:"
+        echo -e "${TAB}  pveam update && pveam available -section system | grep '${PCT_OSTYPE}-'"
+        exit 225
+      fi
       [[ -f "$TEMPLATE_PATH" ]] && rm -f "$TEMPLATE_PATH"
       for attempt in {1..3}; do
         msg_info "Attempt $attempt: Downloading template $TEMPLATE to $TEMPLATE_STORAGE"
