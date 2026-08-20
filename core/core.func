@@ -157,9 +157,16 @@ ensure_profile_loaded() {
   # painted the MOTD over the screen a moment before header_info wiped it again.
   # Redirecting also makes its own `[ -t 1 ]` guard false, so the escape is
   # skipped rather than merely swallowed.
+  # A profile script that ends on a false conditional -- Arch ships several,
+  # debuginfod.sh and perlbin.sh among them -- makes `source` return that
+  # status. As the final command of an && list it is not exempt from errexit, so
+  # it took the whole update with it. Nothing went wrong: these are sourced for
+  # their PATH side effects, and what their last line evaluated to is not our
+  # business.
   if [[ -d /etc/profile.d ]]; then
     for script in /etc/profile.d/*.sh; do
-      [[ -r "$script" ]] && source "$script" >/dev/null 2>&1
+      [[ -r "$script" ]] || continue
+      source "$script" >/dev/null 2>&1 || true
     done
   fi
 
