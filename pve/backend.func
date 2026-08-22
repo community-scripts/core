@@ -16,6 +16,16 @@ _PVE_BACKEND_FUNC_LOADED=1
 # SECTION 8: CONTAINER CREATION & DEPLOYMENT
 # ==============================================================================
 
+_use_custom_arm64_template() {
+  [[ "${1:-}" == "arm64" && "${2:-}" != "debian" ]]
+}
+
+_filter_templates_by_arch() {
+  local arch="${1:-}"
+  [[ -n "$arch" ]] || return 1
+  grep -E "_${arch}\\.(tar\\.zst|tar\\.xz|tar\\.gz)([[:space:]]|$)"
+}
+
 # ------------------------------------------------------------------------------
 # _apply_http_proxy_in_container()
 # ------------------------------------------------------------------------------
@@ -2037,6 +2047,7 @@ create_lxc_container() {
       pveam list "$TEMPLATE_STORAGE" 2>/dev/null |
         awk -v os="$os_type" -v pat="$tpl_pattern" '$1 ~ ("^"os"|/"os) && $1 ~ pat {print $1}' |
         sed 's|.*/||' |
+        _filter_templates_by_arch "$ARCH" |
         sed -E "s/^${os_type}-([0-9]+(\.[0-9]+)?).*/\1/" |
         sort -u -V || true
     )
@@ -2048,6 +2059,7 @@ create_lxc_container() {
         awk '{print $2}' |
         grep -E "^${os_type}-[0-9]" |
         { [[ -n "$tpl_pattern" ]] && grep "$tpl_pattern" || cat; } |
+        _filter_templates_by_arch "$ARCH" |
         sed -E "s/^${os_type}-([0-9]+(\.[0-9]+)?).*/\1/" |
         sort -u -V 2>/dev/null || true
     )
@@ -2072,7 +2084,9 @@ create_lxc_container() {
     mapfile -t _fb_local < <(
       pveam list "$TEMPLATE_STORAGE" 2>/dev/null |
         awk -v search="$fallback_search" -v pat="$tpl_pattern" '$1 ~ search && $1 ~ pat {print $1}' |
-        sed 's|.*/||' | sort -t - -k 2 -V || true
+        sed 's|.*/||' |
+        _filter_templates_by_arch "$ARCH" |
+        sort -t - -k 2 -V || true
     )
     if [[ ${#_fb_local[@]} -gt 0 ]]; then
       fallback_template="${_fb_local[-1]}"
@@ -2081,6 +2095,7 @@ create_lxc_container() {
         _pveam_available |
           awk '{print $2}' |
           grep -E "^${fallback_search}.*${tpl_pattern}" |
+          _filter_templates_by_arch "$ARCH" |
           sort -t - -k 2 -V 2>/dev/null || true
       )
       [[ ${#_fb_online[@]} -gt 0 ]] && fallback_template="${_fb_online[-1]}"
@@ -2147,6 +2162,7 @@ create_lxc_container() {
           sed 's|.*/||' |
           grep -E "^${os_type}-[0-9]" |
           { [[ -n "$tpl_pattern" ]] && grep "$tpl_pattern" || cat; } |
+          _filter_templates_by_arch "$ARCH" |
           sed -E "s/^${os_type}-([0-9]+(\.[0-9]+)?).*/\1/" |
           sort -u -V || true
       )
@@ -2158,6 +2174,7 @@ create_lxc_container() {
           awk '{print $2}' |
           grep -E "^${os_type}-[0-9]" |
           { [[ -n "$tpl_pattern" ]] && grep "$tpl_pattern" || cat; } |
+          _filter_templates_by_arch "$ARCH" |
           sed -E "s/^${os_type}-([0-9]+(\.[0-9]+)?).*/\1/" |
           sort -u -V 2>/dev/null || true
       )
@@ -2277,7 +2294,8 @@ create_lxc_container() {
 
   ARCH="$(dpkg --print-architecture)"
 
-  # Maps OS type + version to the release variant name used by ARM64 template sources.
+  # Maps OS type + version to the release variant name used by custom ARM64
+  # template sources. Debian uses the official pveam catalog below.
   arm64_template_variant() {
     case "$1:$2" in
     debian:12) echo "bookworm" ;;
@@ -2294,9 +2312,8 @@ create_lxc_container() {
     esac
   }
 
-  # Downloads an ARM64 LXC rootfs template to $1.
-  # Debian: fetches latest release from community-scripts/debian-arm64-lxc on GitHub.
-  # Others: fetches from jenkins.linuxcontainers.org.
+  # Downloads a custom ARM64 LXC rootfs template to $1. Debian uses the
+  # official pveam catalog; this fallback is retained for other distributions.
   download_arm64_template() {
     local dest="$1" url
 
@@ -2305,21 +2322,7 @@ create_lxc_container() {
       exit 217
     }
 
-    if [[ "$PCT_OSTYPE" == "debian" ]]; then
-      url=$(
-        curl -fsSL "https://api.github.com/repos/community-scripts/debian-arm64-lxc/releases/latest" |
-          jq -r --arg v "$CUSTOM_TEMPLATE_VARIANT" \
-            '.assets[].browser_download_url | select(test("debian-" + $v + "-arm64-rootfs\\.tar\\.xz$"))' |
-          head -n1
-      )
-
-      [[ -n "$url" ]] || {
-        msg_error "Could not find Debian ${CUSTOM_TEMPLATE_VARIANT} ARM64 template URL."
-        exit 225
-      }
-    else
-      url="https://jenkins.linuxcontainers.org/job/image-${PCT_OSTYPE}/architecture=arm64,release=${CUSTOM_TEMPLATE_VARIANT},variant=default/lastStableBuild/artifact/rootfs.tar.xz"
-    fi
+    url="https://jenkins.linuxcontainers.org/job/image-${PCT_OSTYPE}/architecture=arm64,release=${CUSTOM_TEMPLATE_VARIANT},variant=default/lastStableBuild/artifact/rootfs.tar.xz"
 
     msg_info "Downloading ${PCT_OSTYPE^} ${CUSTOM_TEMPLATE_VARIANT} ARM64 template"
     local patched="${dest%/*}/.${dest##*/}.patched"
@@ -2356,7 +2359,7 @@ create_lxc_container() {
 
   download_template() {
     local dest="${1:-$TEMPLATE_PATH}"
-    if [[ "$ARCH" == "arm64" ]]; then
+    if [[ "$TEMPLATE_SOURCE" == "custom-arm64" ]]; then
       download_arm64_template "$dest"
     else
       pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" >>"${BUILD_LOG:-/dev/null}" 2>&1 || {
@@ -2531,8 +2534,10 @@ create_lxc_container() {
   # ------------------------------------------------------------------------------
   CUSTOM_TEMPLATE_VARIANT=""
 
-  if [[ "$ARCH" == "arm64" ]]; then
-    # ARM64: use custom template download from linuxcontainers.org / GitHub
+  if _use_custom_arm64_template "$ARCH" "$PCT_OSTYPE"; then
+    # Use a custom ARM64 template only when the Proxmox catalog does not supply
+    # the distribution. Debian ARM64 is available through pveam and follows the
+    # same architecture-filtered discovery path as Debian AMD64.
     msg_info "Preparing ARM64 template"
 
     CUSTOM_TEMPLATE_VARIANT=$(arm64_template_variant "$PCT_OSTYPE" "${PCT_OSVERSION:-}") || {
@@ -2583,9 +2588,11 @@ create_lxc_container() {
     # Step 1: Check local templates first (instant)
     mapfile -t LOCAL_TEMPLATES < <(
       pveam list "$TEMPLATE_STORAGE" 2>/dev/null |
-        awk -v search="${TEMPLATE_SEARCH}" -v pattern="${TEMPLATE_PATTERN}" -v arch="${ARCH}" \
-          '$1 ~ search && $1 ~ pattern && $1 ~ ("_" arch "\\.(tar\\.zst|tar\\.xz|tar\\.gz)$") {print $1}' |
-        sed 's|.*/||' | sort -t - -k 2 -V || true
+        awk -v search="${TEMPLATE_SEARCH}" -v pattern="${TEMPLATE_PATTERN}" \
+          '$1 ~ search && $1 ~ pattern {print $1}' |
+        sed 's|.*/||' |
+        _filter_templates_by_arch "$ARCH" |
+        sort -t - -k 2 -V || true
     )
 
     # Step 2: If local template found, use it immediately (skip pveam update)
@@ -2630,14 +2637,7 @@ create_lxc_container() {
       msg_custom "ℹ️" "${YW}" "Select a different available version or press Enter to cancel."
 
       AVAILABLE_VERSIONS=()
-      mapfile -t AVAILABLE_VERSIONS < <(
-        _pveam_available |
-          grep -E '\.(tar\.zst|tar\.xz|tar\.gz)$' |
-          awk -F'\t' '{print $1}' |
-          grep "^${PCT_OSTYPE}-" |
-          sed -E "s/.*${PCT_OSTYPE}-([0-9]+(\.[0-9]+)?).*/\1/" |
-          sort -u -V 2>/dev/null || true
-      )
+      mapfile -t AVAILABLE_VERSIONS < <(_list_os_versions "$PCT_OSTYPE")
 
       if [[ ${#AVAILABLE_VERSIONS[@]} -gt 0 ]]; then
         echo ""
@@ -2659,13 +2659,16 @@ create_lxc_container() {
           mapfile -t LOCAL_TEMPLATES < <(
             pveam list "$TEMPLATE_STORAGE" 2>/dev/null |
               awk -v search="${TEMPLATE_SEARCH}-" -v pattern="${TEMPLATE_PATTERN}" '$1 ~ search && $1 ~ pattern {print $1}' |
-              sed 's|.*/||' | sort -t - -k 2 -V || true
+              sed 's|.*/||' |
+              _filter_templates_by_arch "$ARCH" |
+              sort -t - -k 2 -V || true
           )
           mapfile -t ONLINE_TEMPLATES < <(
             _pveam_available |
               grep -E '\.(tar\.zst|tar\.xz|tar\.gz)$' |
               awk '{print $2}' |
               grep -E "^${TEMPLATE_SEARCH}-.*${TEMPLATE_PATTERN}" |
+              _filter_templates_by_arch "$ARCH" |
               sort -t - -k 2 -V 2>/dev/null || true
           )
           ONLINE_TEMPLATE=""
@@ -2868,7 +2871,7 @@ create_lxc_container() {
     download_template
     msg_ok "Template downloaded"
   elif ! tar -tf "$TEMPLATE_PATH" &>/dev/null; then
-    if [[ "$ARCH" == "arm64" || -n "$ONLINE_TEMPLATE" ]]; then
+    if [[ "$TEMPLATE_SOURCE" == "custom-arm64" || -n "$ONLINE_TEMPLATE" ]]; then
       msg_info "Template appears corrupted – re-downloading"
       rm -f "$TEMPLATE_PATH"
       download_template
@@ -2954,7 +2957,7 @@ create_lxc_container() {
           if [[ ! -f "$LOCAL_TEMPLATE_PATH" ]]; then
             msg_ok "Trying local storage fallback"
             msg_info "Downloading template to local"
-            if [[ "$ARCH" == "arm64" ]]; then
+            if [[ "$TEMPLATE_SOURCE" == "custom-arm64" ]]; then
               download_arm64_template "$LOCAL_TEMPLATE_PATH"
             else
               pveam download local "$TEMPLATE" >>"${BUILD_LOG:-/dev/null}" 2>&1
