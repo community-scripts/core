@@ -1097,6 +1097,13 @@ Leave empty to skip."
       else
         _verbose="no"
       fi
+
+      # Applications may add their own advanced settings without replacing this
+      # wizard. The optional callbacks are defined by the application script.
+      if declare -f advanced_settings_app_configure >/dev/null 2>&1; then
+        advanced_settings_app_configure
+      fi
+
       # Build summary
       local ct_type_desc="Unprivileged"
       [[ "$_ct_type" == "0" ]] && ct_type_desc="Privileged"
@@ -1149,6 +1156,14 @@ Advanced:
   Inherit Host CAs: $inherit_ca_display
   Verbose: $_verbose
   Post-Install Script: ${post_install_display}${post_install_warn}"
+
+      if declare -f advanced_settings_app_summary >/dev/null 2>&1; then
+        local app_summary
+        app_summary="$(advanced_settings_app_summary)"
+        [[ -n "$app_summary" ]] && summary="${summary}
+
+${app_summary}"
+      fi
 
       if whiptail --backtitle "Proxmox VE Helper Scripts [Step $STEP/$MAX_STEP]" \
         --title "CONFIRM SETTINGS" \
