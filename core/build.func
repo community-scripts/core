@@ -322,6 +322,30 @@ _cs_prefetch_engine || true
 
 _cs_source_func "lxc/platform.func"
 
+# Inside a container the OS is a fact, not a choice. A script that supports both
+# Debian and Alpine picks its resource defaults by branching on var_os near the
+# top of the file, and only offers the menu on a host -- so an `update` run
+# reached that branch with var_os empty and took the Debian arm. An Alpine
+# container whose update is `apk upgrade` plus a service restart was told it
+# needed the Debian build's 6 GB of RAM and four cores.
+#
+# base_settings() already derives both of these, but it runs long after the ct
+# script has branched. Doing it here, while that script is still on its `source`
+# line, is early enough to be of use. var_version comes along because the same
+# branches set it, and a static default there would otherwise survive
+# base_settings and be compared against the running system as a mismatch.
+#
+# detect_lxc_platform, not `command -v pveversion`: an Incus host has no
+# pveversion either, and guessing its OS there would break container creation.
+case "$(detect_lxc_platform)" in
+container | incus-container)
+  if [[ -r /etc/os-release ]]; then
+    [[ -z "${var_os:-}" ]] && var_os="$(. /etc/os-release 2>/dev/null && echo "${ID:-}")"
+    [[ -z "${var_version:-}" ]] && var_version="$(. /etc/os-release 2>/dev/null && echo "${VERSION_ID:-}")"
+  fi
+  ;;
+esac
+
 if is_incus_lxc_backend; then
   _cs_source_func "incus/build.func"
   return 0
