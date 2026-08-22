@@ -36,6 +36,13 @@ saved default no longer matches what the script wants.
 
 `advanced_settings` — one function, the full interactive configuration path.
 
+Application scripts may optionally define `advanced_settings_app_configure` and
+`advanced_settings_app_summary`. The first runs before the confirmation dialog
+in the Advanced wizard; the second returns a text block appended to that
+dialog. This keeps application-specific settings in the script without
+replacing or parsing the shared wizard. Both callbacks are optional and are
+never called by default or silent installs.
+
 ## [`menu.func`](../ui/menu.func)
 
 The entry points and the menus:
