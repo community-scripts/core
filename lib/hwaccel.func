@@ -341,6 +341,13 @@ _setup_intel_arc() {
       vainfo \
       intel-gpu-tools 2>/dev/null || msg_warn "Some Intel Arc packages failed"
 
+    # The oneVPL runtime dispatcher. Anything that dlopens libvpl instead of
+    # going through VA-API -- ErsatzTV's QSV capability probe, for one -- fails
+    # at runtime without it. On its own line rather than in the batch above: an
+    # apt list is all-or-nothing, so a release that does not carry the package
+    # would take every other driver down with it.
+    $STD apt -y install libvpl2 2>/dev/null || true
+
   elif [[ "$os_id" == "debian" ]]; then
     # Add non-free repos
     _add_debian_nonfree "$os_codename"
@@ -406,6 +413,8 @@ _setup_intel_modern() {
     $STD apt -y install intel-media-va-driver-non-free 2>/dev/null || true
     $STD apt -y install intel-opencl-icd 2>/dev/null || true
     $STD apt -y install libmfx-gen1.2 2>/dev/null || true
+    # oneVPL dispatcher — see _setup_intel_arc for why this matters
+    $STD apt -y install libvpl2 2>/dev/null || true
 
   elif [[ "$os_id" == "debian" ]]; then
     _add_debian_nonfree "$os_codename"
@@ -438,6 +447,9 @@ _setup_intel_modern() {
       vainfo \
       libmfx-gen1.2 \
       intel-gpu-tools 2>/dev/null || msg_warn "Some Intel packages failed"
+
+    # oneVPL dispatcher — see _setup_intel_arc for why this matters
+    $STD apt -y install libvpl2 2>/dev/null || true
 
     # Bookworm has intel-opencl-icd in repos (compatible version)
     [[ "$os_codename" == "bookworm" ]] && $STD apt -y install intel-opencl-icd libigdgmm12 2>/dev/null || true

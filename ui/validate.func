@@ -68,7 +68,13 @@ update_motd_ip() {
   # here the way MOTD_FILE is, while still honouring an inherited value.
   local profile_file="${PROFILE_FILE:-/etc/profile.d/00_lxc-details.sh}"
 
-  if [ -f "$MOTD_FILE" ]; then
+  # Only touch /etc/motd when it is the one motd_ssh wrote. A container created
+  # before that ran still carries the distribution's own file -- on Debian the
+  # paragraph about the programs being free software -- and appending to it left
+  # a stray coloured IP line under that boilerplate after every update, with the
+  # real details following underneath from profile.d. The profile branch below
+  # has always checked whose file it is; this one never did.
+  if [ -f "$MOTD_FILE" ] && grep -q "LXC Container" "$MOTD_FILE" 2>/dev/null; then
     # Remove existing IP Address lines to prevent duplication
     sed -i '/IP Address:/d' "$MOTD_FILE"
 
@@ -95,7 +101,14 @@ update_motd_ip() {
     if ! grep -q "Hostname:.*$current_hostname" "$profile_file" 2>/dev/null; then
       sed -i "s|Hostname:.*|Hostname: \${GN}$current_hostname\${CL}\\\"|" "$profile_file"
     fi
-    if ! grep -q "IP Address:.*$current_ip" "$profile_file" 2>/dev/null; then
+    # motd_ssh writes the IP line as a command substitution so it follows the
+    # container. Rewriting it here replaced that with whatever the address was
+    # on the day of the first update and it never moved again -- and since the
+    # literal address is then never found by the grep above, the substitution
+    # fired on every run. Leave a line that computes its own value alone.
+    if grep -q 'IP Address:.*\$(' "$profile_file" 2>/dev/null; then
+      :
+    elif ! grep -q "IP Address:.*$current_ip" "$profile_file" 2>/dev/null; then
       sed -i "s|IP Address:.*|IP Address: \${GN}$current_ip\${CL}\\\"|" "$profile_file"
     fi
   fi
