@@ -13,6 +13,30 @@
 [[ -n "${_TOOLS_HWACCEL_LOADED:-}" ]] && return 0
 _TOOLS_HWACCEL_LOADED=1
 
+# Install a best-effort package list without letting one absentee take the rest.
+#
+# apt is all-or-nothing: name twelve packages, have one of them renamed or
+# missing on this release, and none of the other eleven get installed. Every
+# driver list in this file is best-effort by design -- the caller wants whatever
+# is available -- but each was written as `apt -y install a b c … || msg_warn`,
+# one absent package away from installing nothing at all and leaving the
+# container without acceleration while reporting only a warning.
+#
+# The batch is still tried first: that is one apt run instead of twelve, and it
+# is what normally happens. Only when it fails does this go package by package,
+# which is also the only way to say which one was actually missing.
+_cs_apt_install_optional() {
+  (($#)) || return 0
+  $STD apt -y install "$@" 2>/dev/null && return 0
+
+  local missed=() pkg
+  for pkg in "$@"; do
+    $STD apt -y install "$pkg" 2>/dev/null || missed+=("$pkg")
+  done
+  ((${#missed[@]})) && msg_warn "Not available on this release: ${missed[*]}"
+  return 0
+}
+
 # ------------------------------------------------------------------------------
 # Sets up Hardware Acceleration on debian or ubuntu.
 #
@@ -332,14 +356,7 @@ _setup_intel_arc() {
 
   if [[ "$os_id" == "ubuntu" ]]; then
     # Ubuntu 22.04+ has Arc support in HWE kernel
-    $STD apt -y install \
-      intel-media-va-driver-non-free \
-      intel-opencl-icd \
-      libmfx-gen1.2 \
-      mesa-vulkan-drivers \
-      vulkan-tools \
-      vainfo \
-      intel-gpu-tools 2>/dev/null || msg_warn "Some Intel Arc packages failed"
+    _cs_apt_install_optional intel-media-va-driver-non-free intel-opencl-icd libmfx-gen1.2 mesa-vulkan-drivers vulkan-tools vainfo intel-gpu-tools
 
     # The oneVPL runtime dispatcher. Anything that dlopens libvpl instead of
     # going through VA-API -- ErsatzTV's QSV capability probe, for one -- fails
@@ -374,18 +391,10 @@ _setup_intel_arc() {
       fetch_and_deploy_gh_release "intel-level-zero-gpu" "intel/compute-runtime" "binary" "latest" "" "libze-intel-gpu1_*_amd64.deb" || true
     fi
 
-    $STD apt -y install \
-      intel-media-va-driver-non-free \
-      ocl-icd-libopencl1 \
-      libvpl2 \
-      libmfx-gen1.2 \
-      mesa-vulkan-drivers \
-      vulkan-tools \
-      vainfo \
-      intel-gpu-tools 2>/dev/null || msg_warn "Some Intel Arc packages failed"
+    _cs_apt_install_optional intel-media-va-driver-non-free ocl-icd-libopencl1 libvpl2 libmfx-gen1.2 mesa-vulkan-drivers vulkan-tools vainfo intel-gpu-tools
 
     # Bookworm has compatible versions of these packages in repos
-    [[ "$os_codename" == "bookworm" ]] && $STD apt -y install intel-opencl-icd libigdgmm12 2>/dev/null || true
+    [[ "$os_codename" == "bookworm" ]] && _cs_apt_install_optional intel-opencl-icd libigdgmm12
   fi
 
   msg_ok "Intel Arc GPU configured"
@@ -400,14 +409,7 @@ _setup_intel_modern() {
   msg_info "Installing Intel Gen 9+ GPU drivers"
 
   if [[ "$os_id" == "ubuntu" ]]; then
-    $STD apt -y install \
-      va-driver-all \
-      intel-media-va-driver \
-      ocl-icd-libopencl1 \
-      mesa-vulkan-drivers \
-      vulkan-tools \
-      vainfo \
-      intel-gpu-tools 2>/dev/null || msg_warn "Some Intel packages failed"
+    _cs_apt_install_optional va-driver-all intel-media-va-driver ocl-icd-libopencl1 mesa-vulkan-drivers vulkan-tools vainfo intel-gpu-tools
 
     # Try non-free driver for better codec support
     $STD apt -y install intel-media-va-driver-non-free 2>/dev/null || true
@@ -439,20 +441,13 @@ _setup_intel_modern() {
       fetch_and_deploy_gh_release "intel-opencl-icd" "intel/compute-runtime" "binary" "latest" "" "intel-opencl-icd_*_amd64.deb" || true
     fi
 
-    $STD apt -y install \
-      intel-media-va-driver-non-free \
-      ocl-icd-libopencl1 \
-      mesa-vulkan-drivers \
-      vulkan-tools \
-      vainfo \
-      libmfx-gen1.2 \
-      intel-gpu-tools 2>/dev/null || msg_warn "Some Intel packages failed"
+    _cs_apt_install_optional intel-media-va-driver-non-free ocl-icd-libopencl1 mesa-vulkan-drivers vulkan-tools vainfo libmfx-gen1.2 intel-gpu-tools
 
     # oneVPL dispatcher — see _setup_intel_arc for why this matters
     $STD apt -y install libvpl2 2>/dev/null || true
 
     # Bookworm has intel-opencl-icd in repos (compatible version)
-    [[ "$os_codename" == "bookworm" ]] && $STD apt -y install intel-opencl-icd libigdgmm12 2>/dev/null || true
+    [[ "$os_codename" == "bookworm" ]] && _cs_apt_install_optional intel-opencl-icd libigdgmm12
   fi
 
   msg_ok "Intel Gen 9+ GPU configured"
@@ -467,13 +462,7 @@ _setup_intel_legacy() {
   msg_info "Installing Intel Legacy GPU drivers (Gen 6-8)"
 
   # Legacy GPUs use i965 driver - stable repo packages only
-  $STD apt -y install \
-    va-driver-all \
-    i965-va-driver \
-    mesa-va-drivers \
-    ocl-icd-libopencl1 \
-    vainfo \
-    intel-gpu-tools 2>/dev/null || msg_warn "Some Intel legacy packages failed"
+  _cs_apt_install_optional va-driver-all i965-va-driver mesa-va-drivers ocl-icd-libopencl1 vainfo intel-gpu-tools
 
   # beignet provides OpenCL for older Intel GPUs (Sandy Bridge to Broadwell)
   # Note: beignet-opencl-icd was removed in Debian 12+ and Ubuntu 22.04+
@@ -497,14 +486,7 @@ _setup_amd_gpu() {
   msg_info "Installing AMD GPU drivers"
 
   # Core Mesa drivers
-  $STD apt -y install \
-    mesa-va-drivers \
-    mesa-vdpau-drivers \
-    mesa-opencl-icd \
-    ocl-icd-libopencl1 \
-    libdrm-amdgpu1 \
-    vainfo \
-    clinfo 2>/dev/null || msg_warn "Some AMD packages failed"
+  _cs_apt_install_optional mesa-va-drivers mesa-vdpau-drivers mesa-opencl-icd ocl-icd-libopencl1 libdrm-amdgpu1 vainfo clinfo
 
   # Firmware for AMD GPUs
   if [[ "$os_id" == "debian" ]]; then
@@ -527,12 +509,7 @@ _setup_amd_apu() {
 
   msg_info "Installing AMD APU drivers"
 
-  $STD apt -y install \
-    mesa-va-drivers \
-    mesa-vdpau-drivers \
-    mesa-opencl-icd \
-    ocl-icd-libopencl1 \
-    vainfo 2>/dev/null || msg_warn "Some AMD APU packages failed"
+  _cs_apt_install_optional mesa-va-drivers mesa-vdpau-drivers mesa-opencl-icd ocl-icd-libopencl1 vainfo
 
   if [[ "$os_id" == "debian" ]]; then
     _add_debian_nonfree_firmware "$os_codename"
@@ -620,7 +597,7 @@ EOF
   # Install only runtime packages — full 'rocm' meta-package includes 15GB+ dev tools
   $STD apt install -y rocm-opencl-runtime rocm-hip-runtime rocm-smi-lib 2>/dev/null || {
     msg_warn "ROCm runtime install failed — trying minimal set"
-    $STD apt install -y rocm-opencl-runtime rocm-smi-lib 2>/dev/null || msg_warn "ROCm minimal install also failed"
+    _cs_apt_install_optional rocm-opencl-runtime rocm-smi-lib
   }
 
   # Group membership for GPU access
@@ -670,7 +647,7 @@ _setup_nvidia_gpu() {
   if [[ -z "$nvidia_host_version" ]]; then
     msg_warn "NVIDIA host driver version not found in /proc/driver/nvidia/version"
     msg_warn "Ensure NVIDIA drivers are installed on host and GPU passthrough is enabled"
-    $STD apt-get -y install va-driver-all vainfo 2>/dev/null || true
+    _cs_apt_install_optional va-driver-all vainfo
     return 0
   fi
 
@@ -882,7 +859,7 @@ NVIDIA_PIN
   fi
 
   # VA-API for hybrid setups (Intel + NVIDIA)
-  $STD apt-get -y install va-driver-all vainfo 2>/dev/null || true
+  _cs_apt_install_optional va-driver-all vainfo
 
   # Fix GLX alternatives: nvidia-alternative diverts mesa libs but in LXC
   # containers the nvidia GLX libs are typically missing, leaving libGL.so.1
