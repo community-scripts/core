@@ -12,6 +12,7 @@ _dev_timing_dir
 _eh_destroy_container
 _eh_explanation
 _eh_hint_from_log
+_eh_hint_missing_command
 _eh_hint_node_oom
 _eh_info
 _eh_offer_container_removal

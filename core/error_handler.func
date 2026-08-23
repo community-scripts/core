@@ -406,6 +406,57 @@ _eh_print_log_tail() {
 }
 
 # ------------------------------------------------------------------------------
+# _eh_hint_missing_command() - name what could not be run, and where it comes from
+#
+# Deliberately installs nothing. This runs from a trap, after the fact, with no
+# idea what the script was in the middle of -- and a handler that quietly put
+# the missing tool back would have masked the setup_nodejs defect that deleted
+# pnpm, leaving every other container just as broken with nobody the wiser.
+# Provisioning belongs where the tool is provisioned. What the handler can do is
+# save the user working out which of the words on the line was the missing one.
+#
+# Arguments: exit_code, command
+# ------------------------------------------------------------------------------
+_eh_hint_missing_command() {
+  local exit_code="$1" command="$2"
+  [[ "$exit_code" == "127" ]] || return 0
+  [[ -n "$command" ]] || return 0
+
+  # 127 is the shell saying it could not find something to run, but not what.
+  # That is the first word which is not a leading VAR=value assignment.
+  local word missing=""
+  for word in $command; do
+    [[ "$word" == *=* && "$word" != /* && "$word" != ./* ]] && continue
+    missing="$word"
+    break
+  done
+  [[ -n "$missing" ]] || return 0
+
+  # Callable after all: then the 127 came from deeper in -- a script's own
+  # shebang, a nested call -- and naming this would point at the wrong thing.
+  command -v "$missing" >/dev/null 2>&1 && return 0
+
+  _eh_warn "${missing} is not installed or not on PATH"
+  case "$missing" in
+  pnpm | yarn | yarnpkg | corepack | npx)
+    _eh_info "Provisioned by setup_nodejs via NODE_MODULE. To carry on now: npm install -g ${missing}"
+    ;;
+  cargo | rustc | rustup)
+    _eh_info "Provisioned by setup_rust, which links into /usr/local/bin"
+    ;;
+  go | gofmt)
+    _eh_info "Provisioned by setup_go, which links into /usr/local/bin"
+    ;;
+  uv | uvx | composer | yq)
+    _eh_info "Provisioned into /usr/local/bin - check it is still on PATH"
+    ;;
+  *)
+    _eh_info "Install it, or re-run the script so its setup step provisions it again"
+    ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------
 # _eh_hint_node_oom() - suggest a heap size when the build died of OOM
 #
 # The suggestion is 75% of whatever we can find out about available memory,
@@ -602,6 +653,7 @@ error_handler() {
 
   _eh_resolve_log
   _eh_print_log_tail "$_EH_ACTIVE_LOG"
+  _eh_hint_missing_command "$exit_code" "$command"
   _eh_hint_node_oom "$exit_code" "$command" "$_EH_ACTIVE_LOG"
   _eh_hint_from_log "$_EH_ACTIVE_LOG"
 

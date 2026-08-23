@@ -1,6 +1,7 @@
 _add_debian_nonfree
 _add_debian_nonfree_firmware
 _configure_pg_cron_preload
+_cs_clean_target_dir
 _cs_drop_pm_shim
 _deploy_source_tarball
 _deploy_unpacked_archive
