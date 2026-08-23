@@ -1196,6 +1196,18 @@ setup_java() {
 #   - Automatically runs on network changes
 # ------------------------------------------------------------------------------
 
+# Recent corepack ships its own /usr/bin/{pnpm,yarn,yarnpkg}, and npm refuses to
+# create its bin link over one (EEXIST). Removing it first is right -- but only
+# once we have decided to install. It used to run before the version check, so a
+# module whose installed version already matched took neither install branch and
+# the binary was simply gone: a Zigbee2MQTT update deleted /usr/bin/pnpm,
+# reported success, and left `pnpm install --frozen-lockfile` failing with 127.
+_cs_drop_pm_shim() {
+  case "${1:-}" in
+  pnpm | yarn | yarnpkg) rm -f /usr/bin/"$1" /usr/local/bin/"$1" 2>/dev/null || true ;;
+  esac
+}
+
 setup_nodejs() {
   local NODE_VERSION="${NODE_VERSION:-24}"
   local NODE_MODULE="${NODE_MODULE:-}"
@@ -1437,17 +1449,17 @@ setup_nodejs() {
         continue
       fi
 
-      # For the npm-global path, drop any corepack-provided shim first so the
-      # bin link can be created without an EEXIST collision.
-      if [[ "$MODULE_NAME" == "pnpm" || "$MODULE_NAME" == "yarn" || "$MODULE_NAME" == "yarnpkg" ]]; then
-        rm -f /usr/bin/"$MODULE_NAME" /usr/local/bin/"$MODULE_NAME" 2>/dev/null || true
-      fi
+      # The corepack shim is dropped by _cs_drop_pm_shim immediately before each
+      # npm install below, never here. Dropping it up front deleted a working
+      # binary and then let the version check decide there was nothing to
+      # reinstall -- see the comment on that function.
 
       # Check if the module is already installed
       if $STD npm list -g --depth=0 "$MODULE_NAME" 2>&1 | grep -q "$MODULE_NAME@"; then
         MODULE_INSTALLED_VERSION="$(npm list -g --depth=0 "$MODULE_NAME" 2>&1 | grep "$MODULE_NAME@" | awk -F@ '{print $2}' 2>/dev/null | tr -d '[:space:]' || echo '')"
         if [[ "$MODULE_REQ_VERSION" != "latest" && "$MODULE_REQ_VERSION" != "$MODULE_INSTALLED_VERSION" ]]; then
           msg_info "Updating $MODULE_NAME to v$MODULE_REQ_VERSION"
+          _cs_drop_pm_shim "$MODULE_NAME"
           # Retry with --force to overwrite corepack-provided shims (pnpm/yarn), which now
           # ship with recent corepack and cause EEXIST on /usr/bin/<tool>
           if $STD npm install -g "${MODULE_NAME}@${MODULE_REQ_VERSION}" 2>/dev/null ||
@@ -1459,6 +1471,7 @@ setup_nodejs() {
           fi
         elif [[ "$MODULE_REQ_VERSION" == "latest" ]]; then
           msg_info "Updating $MODULE_NAME to latest version"
+          _cs_drop_pm_shim "$MODULE_NAME"
           if $STD npm install -g "${MODULE_NAME}@latest" 2>/dev/null ||
             $STD npm install -g --force "${MODULE_NAME}@latest" 2>/dev/null; then
             msg_ok "Updated $MODULE_NAME"
@@ -1469,6 +1482,7 @@ setup_nodejs() {
         fi
       else
         msg_info "Installing $MODULE_NAME@$MODULE_REQ_VERSION"
+        _cs_drop_pm_shim "$MODULE_NAME"
         # Retry with --force to overwrite corepack-provided shims (pnpm/yarn), which now
         # ship with recent corepack and cause EEXIST on /usr/bin/<tool>
         if $STD npm install -g "${MODULE_NAME}@${MODULE_REQ_VERSION}" 2>/dev/null ||
@@ -1480,6 +1494,32 @@ setup_nodejs() {
         fi
       fi
     done
+    # Being registered with npm and being runnable are different things, and the
+    # branches above only ever check the former. A corepack takeover, a shim
+    # removed without a reinstall behind it, a half-finished global install --
+    # each leaves a module npm still lists while `command -v` finds nothing, and
+    # the caller is about to run exactly that binary. So ask the question the
+    # caller cares about, and put back whatever cannot answer it.
+    local mod_bin
+    for mod in "${MODULES[@]}"; do
+      # Scoped packages do not name their binary (@vue/cli installs `vue`), so
+      # there is nothing reliable to probe for.
+      [[ "$mod" == @*/* ]] && continue
+      mod_bin="${mod%@*}"
+      [[ -z "$mod_bin" ]] && continue
+      command -v "$mod_bin" >/dev/null 2>&1 && continue
+
+      msg_warn "$mod_bin is installed but not on PATH - reinstalling"
+      if { $STD npm install -g --force "$mod" 2>/dev/null ||
+        $STD npm install -g --force "${mod_bin}@latest" 2>/dev/null; } &&
+        command -v "$mod_bin" >/dev/null 2>&1; then
+        msg_ok "Restored $mod_bin"
+      else
+        msg_error "$mod_bin is not callable and could not be restored"
+        ((failed_modules++)) || true
+      fi
+    done
+
     if ((failed_modules > 0)); then
       msg_warn "$failed_modules Node.js module(s) failed: $NODE_MODULE"
     fi
