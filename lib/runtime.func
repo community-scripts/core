@@ -2197,7 +2197,13 @@ setup_rust() {
       return 7
     }
     export PATH="$CARGO_BIN:$PATH"
-    echo 'export PATH="$HOME/.cargo/bin:$PATH"' >>"$HOME/.profile"
+    # Guarded: this ran on every setup_rust call and appended the same line
+    # again each time. Note it only reaches login shells -- what makes cargo and
+    # its crates visible to a service is the /usr/local/bin symlinks further
+    # down, not this.
+    if ! grep -q '\.cargo/bin' "$HOME/.profile" 2>/dev/null; then
+      echo 'export PATH="$HOME/.cargo/bin:$PATH"' >>"$HOME/.profile"
+    fi
 
     # Verify installation
     if ! command -v rustc >/dev/null 2>&1; then
@@ -2310,6 +2316,46 @@ setup_rust() {
         fi
       fi
     done
+
+    # Everything above decided from `cargo install --list`, and being listed
+    # there is not the same as being runnable -- the same gap that left pnpm
+    # missing after a Node update, where npm still listed it. Two things follow
+    # from that, and both are handled here.
+    #
+    # First, cargo puts its binaries in $CARGO_BIN, which is on PATH only for a
+    # login shell that read $HOME/.profile. A systemd unit reads neither, so a
+    # crate installed for a service was invisible to it. setup_go has always
+    # symlinked into /usr/local/bin for this reason; do the same.
+    if [[ -d "$CARGO_BIN" ]]; then
+      mkdir -p /usr/local/bin
+      local _cb
+      for _cb in "$CARGO_BIN"/*; do
+        [[ -x "$_cb" && ! -d "$_cb" ]] || continue
+        ln -sf "$_cb" "/usr/local/bin/$(basename "$_cb")"
+      done
+      ensure_usr_local_bin_persist
+    fi
+
+    # Second, verify. A crate does not have to be named after its binary --
+    # ripgrep provides rg -- so ask the list itself which binaries each crate
+    # claims, then check those. Output is one unindented "crate vX.Y.Z:" line
+    # followed by indented binary names.
+    local _pair _bin_crate _bin_name
+    while read -r _pair; do
+      _bin_crate="${_pair%% *}"
+      _bin_name="${_pair##* }"
+      [[ -z "$_bin_name" || -z "$_bin_crate" ]] && continue
+      command -v "$_bin_name" >/dev/null 2>&1 && continue
+      msg_warn "$_bin_name from crate $_bin_crate is installed but not on PATH - reinstalling"
+      if $STD cargo install "$_bin_crate" --force 2>/dev/null &&
+        command -v "$_bin_name" >/dev/null 2>&1; then
+        msg_ok "Restored $_bin_name"
+      else
+        msg_error "$_bin_name is not callable and could not be restored"
+      fi
+    done < <(cargo install --list 2>/dev/null |
+      awk '/^[^[:space:]]/ {crate=$1} /^[[:space:]]+[^[:space:]]/ {print crate, $1}')
+
     msg_ok "Processed Rust crates"
   fi
 }
