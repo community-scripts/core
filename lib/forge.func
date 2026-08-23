@@ -463,6 +463,35 @@ _download_source_tarball() {
   return 250
 }
 
+# Empty a target directory before a clean install, without touching anything
+# mounted into it.
+#
+# The list is written out in full before a single entry is removed. Piping find
+# straight into `xargs rm -rf` let rm delete parents while find was still
+# walking their children, so find reported "No such file or directory" for every
+# entry that had just been deleted on purpose -- hundreds of red lines in the
+# middle of a Zigbee2MQTT update that was working correctly.
+#
+# A file rather than an array: node_modules reaches tens of thousands of paths,
+# which is what xargs is for.
+_cs_clean_target_dir() {
+  local dir="${1:?directory}" list
+  [[ -d "$dir" ]] || return 0
+
+  # mountpoint lives in util-linux, which a minimal Alpine may not have. Without
+  # it the -exec below would fail once per directory, and there is nothing to
+  # protect anyway -- so drop the top-level entries and let rm recurse.
+  if ! command -v mountpoint >/dev/null 2>&1; then
+    find "${dir:?}" -mindepth 1 -maxdepth 1 -print0 | xargs -0 rm -rf --
+    return 0
+  fi
+
+  list="$(mktemp)" || return 1
+  find "${dir:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o -print0 >"$list"
+  xargs -0 rm -rf -- <"$list"
+  rm -f "$list"
+}
+
 # ------------------------------------------------------------------------------
 # _deploy_source_tarball <tarball_path> <target> <workdir>
 #
@@ -485,7 +514,7 @@ _deploy_source_tarball() {
 
   mkdir -p "$target"
   if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-    find "${target:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o -print0 | xargs -0 rm -rf --
+    _cs_clean_target_dir "$target"
   fi
 
   tar --no-same-owner -xzf "$tarball" -C "$workdir" || {
@@ -525,7 +554,7 @@ _deploy_unpacked_archive() {
 
   mkdir -p "$target"
   if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-    find "${target:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o -print0 | xargs -0 rm -rf --
+    _cs_clean_target_dir "$target"
   fi
 
   if [[ "$filename" == *.zip ]]; then
@@ -2072,7 +2101,7 @@ fetch_and_deploy_from_url() {
   mkdir -p "$directory"
 
   if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-    find "${directory:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o -print0 | xargs -0 rm -rf --
+    _cs_clean_target_dir "$directory"
   fi
 
   local unpack_tmp
