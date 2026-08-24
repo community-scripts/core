@@ -900,6 +900,112 @@ check_container_os_guard() {
   msg_error "${remediation} — or bypass this check (may break, no support) with: echo \"${rec_os} ${rec_ver}\" > ${ignore_file}"
   return 1
 }
+# Breaking-change advisory guard. Before an update touches anything, ask
+# community-scripts whether an ACTIVE breaking change affects this script and, if
+# so, surface it — most importantly the pull request to read — before any update
+# work begins. This is the shell-side counterpart of the on-site banner: both
+# read the same advisories from the same API (its TTL decides "active"), so a
+# container update warns about exactly what the website shows.
+#
+# It mirrors runtime_script_status_guard on purpose: the same slug derivation and
+# the same fail-open behaviour when the check is unreachable — an update must
+# never be blocked by our own API being down. The difference is that a hit is not
+# fatal. The point is to inform and let the operator decide, defaulting in
+# interactive use to "cancel and review the PR first".
+check_breaking_change_guard() {
+  local script_slug="${SCRIPT_SLUG:-${NSAPP:-}}"
+  script_slug="$(echo "$script_slug" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+  [[ -z "$script_slug" ]] && return 0
+
+  # Opt-out for unattended fleets that have already accounted for advisories.
+  case "${var_ignore_breaking_changes:-}" in
+  1 | yes | true | on) return 0 ;;
+  esac
+
+  local api_url="https://community-scripts.org/api/breaking-changes?slug=${script_slug}"
+  local response
+  if ! response=$(curl -fsSL --connect-timeout 2 --max-time 4 "$api_url" 2>/dev/null); then
+    # Fail open: never block an update because the advisory check was unreachable.
+    return 0
+  fi
+
+  # Empty array -> no active breaking change for this script.
+  if [[ -z "$response" ]] || printf '%s' "$response" | grep -qE '^[[:space:]]*\[[[:space:]]*\][[:space:]]*$'; then
+    return 0
+  fi
+
+  # One JSON object per line so each advisory parses independently. Title and
+  # summary are anchored on their neighbouring keys (…","summary" / …","severity")
+  # rather than the first closing quote, so an embedded \" in a PR title can't
+  # truncate them. URL, number, severity and date never contain quotes, so a
+  # plain capture is enough. No jq: it isn't present on a bare PVE host.
+  local objects
+  objects="$(printf '%s' "$response" | sed 's/},[[:space:]]*{/}\n{/g')"
+
+  local details="" first_pr_url="" count=0 obj
+  while IFS= read -r obj; do
+    [[ -z "$obj" ]] && continue
+    local pr_url pr_number pr_title summary severity merged_at
+    pr_url=$(printf '%s' "$obj" | sed -n 's/.*"pr_url":"\([^"]*\)".*/\1/p')
+    pr_number=$(printf '%s' "$obj" | sed -n 's/.*"pr_number":\([0-9]*\).*/\1/p')
+    pr_title=$(printf '%s' "$obj" | sed -n 's/.*"pr_title":"\(.*\)","summary".*/\1/p')
+    summary=$(printf '%s' "$obj" | sed -n 's/.*"summary":"\(.*\)","severity".*/\1/p')
+    severity=$(printf '%s' "$obj" | sed -n 's/.*"severity":"\([^"]*\)".*/\1/p')
+    merged_at=$(printf '%s' "$obj" | sed -n 's/.*"merged_at":"\([^"]*\)".*/\1/p')
+    # Un-escape the JSON string escapes that appear in human text.
+    pr_title=${pr_title//\\\"/\"}
+    pr_title=${pr_title//\\\//\/}
+    summary=${summary//\\\"/\"}
+    summary=${summary//\\\//\/}
+    merged_at=${merged_at%%[T ]*} # date only
+
+    count=$((count + 1))
+    [[ -z "$first_pr_url" ]] && first_pr_url="$pr_url"
+
+    local headline="${summary:-${pr_title:-Breaking change}}"
+    [[ -n "$severity" ]] && headline+=" [${severity}]"
+    details+="• ${headline}\n"
+    if [[ -n "$pr_number" ]]; then
+      details+="    PR #${pr_number}: ${pr_title}\n"
+    elif [[ -n "$pr_title" ]]; then
+      details+="    ${pr_title}\n"
+    fi
+    [[ -n "$pr_url" ]] && details+="    Review: ${pr_url}\n"
+    [[ -n "$merged_at" ]] && details+="    Merged: ${merged_at}\n"
+    details+="\n"
+  done <<<"$objects"
+
+  [[ "$count" -eq 0 ]] && return 0
+
+  local plural=""
+  [[ "$count" -ne 1 ]] && plural="s"
+
+  # Interactive: stop and require an explicit choice, defaulting to "review first".
+  if [[ "${PHS_SILENT:-0}" != "1" ]] && command -v whiptail &>/dev/null && [ -t 0 ] && [[ "$TERM" != "dumb" ]]; then
+    local body
+    body="${count} active breaking change${plural} may affect this update of ${APP:-$script_slug}.\n\n"
+    body+="${details}"
+    body+="Read the pull request${plural} above before updating.\n\nContinue with the update anyway?"
+    if whiptail --backtitle "Proxmox VE Helper Scripts" \
+      --title "⚠ BREAKING CHANGE — ${APP:-$script_slug}" \
+      --yesno "$(printf '%b' "$body")" 22 78 --defaultno \
+      --yes-button "Continue" --no-button "Cancel & review" 3>&1 1>&2 2>&3; then
+      msg_warn "Continuing update of ${APP:-$script_slug} despite an active breaking change — review ${first_pr_url:-the PR} if you have not."
+      return 0
+    fi
+    msg_error "Update cancelled — review the breaking change first: ${first_pr_url:-https://community-scripts.org/scripts/${script_slug}}"
+    return 1
+  fi
+
+  # Non-interactive / silent: can't prompt without hanging an unattended run, so
+  # warn loudly and continue. var_ignore_breaking_changes already skips this.
+  msg_warn "Breaking change advisory for ${APP:-$script_slug} — ${count} active:"
+  printf '%b' "$details" | while IFS= read -r l; do
+    [[ -n "$l" ]] && msg_warn "  $l"
+  done
+  msg_warn "Review the pull request before relying on this update."
+  return 0
+}
 start() {
   # Through the resolver, not a bare curl: this way a local checkout and the
   # prefetched copy are used. Hardcoding the URL here meant tools.func and its
@@ -919,6 +1025,7 @@ start() {
     # into the ct script's host-only tail.
     runtime_script_status_guard update || exit 0
     check_container_os_guard || exit 0
+    check_breaking_change_guard || exit 0
     update_script
     run_addon_updates
     update_motd_ip
@@ -942,6 +1049,7 @@ start() {
     # into the ct script's host-only tail.
     runtime_script_status_guard update || exit 0
     check_container_os_guard || exit 0
+    check_breaking_change_guard || exit 0
     update_script
     run_addon_updates
     update_motd_ip
@@ -984,6 +1092,7 @@ start() {
     # into the ct script's host-only tail.
     runtime_script_status_guard update || exit 0
     check_container_os_guard || exit 0
+    check_breaking_change_guard || exit 0
     update_script
     run_addon_updates
     update_motd_ip
