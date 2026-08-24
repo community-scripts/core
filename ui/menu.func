@@ -909,9 +909,22 @@ check_container_os_guard() {
 #
 # It mirrors runtime_script_status_guard on purpose: the same slug derivation and
 # the same fail-open behaviour when the check is unreachable — an update must
-# never be blocked by our own API being down. The difference is that a hit is not
-# fatal. The point is to inform and let the operator decide, defaulting in
-# interactive use to "cancel and review the PR first".
+# never be blocked by our own API being down. The difference is that a hit is
+# usually not fatal. The point is to inform and let the operator decide,
+# defaulting in interactive use to "cancel and review the PR first".
+#
+# Two refinements on top of a plain warning:
+#   * Per-container memory. Each advisory the operator proceeds past is recorded
+#     by PR number in a local ledger (/usr/local/community-scripts/
+#     breaking-changes.seen). A still-active (within-TTL) advisory is shown once;
+#     a later update in the same 30-day window is not nagged about it again. Only
+#     an advisory this container has not yet handled is surfaced.
+#   * Blocking advisories. An advisory the PR author marked action="block" is not
+#     a warning but a stop: interactively it offers no one-keypress Continue, and
+#     unattended it aborts the update. var_force_breaking_update=1 is the explicit
+#     escape hatch (distinct from var_ignore_breaking_changes, which mutes the
+#     check entirely). This is the one case where a reachable hit is fatal — never
+#     an unreachable one, so a flaky API still can't wedge a fleet.
 check_breaking_change_guard() {
   local script_slug="${SCRIPT_SLUG:-${NSAPP:-}}"
   script_slug="$(echo "$script_slug" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
@@ -942,16 +955,20 @@ check_breaking_change_guard() {
   local objects
   objects="$(printf '%s' "$response" | sed 's/},[[:space:]]*{/}\n{/g')"
 
-  local details="" first_pr_url="" count=0 obj
+  local seen_file="/usr/local/community-scripts/breaking-changes.seen"
+  local details="" first_pr_url="" count=0 obj new_prs="" blocking=0
   while IFS= read -r obj; do
     [[ -z "$obj" ]] && continue
-    local pr_url pr_number pr_title summary severity merged_at
+    local pr_url pr_number pr_title summary severity merged_at action steps_raw
     pr_url=$(printf '%s' "$obj" | sed -n 's/.*"pr_url":"\([^"]*\)".*/\1/p')
     pr_number=$(printf '%s' "$obj" | sed -n 's/.*"pr_number":\([0-9]*\).*/\1/p')
     pr_title=$(printf '%s' "$obj" | sed -n 's/.*"pr_title":"\(.*\)","summary".*/\1/p')
     summary=$(printf '%s' "$obj" | sed -n 's/.*"summary":"\(.*\)","severity".*/\1/p')
     severity=$(printf '%s' "$obj" | sed -n 's/.*"severity":"\([^"]*\)".*/\1/p')
     merged_at=$(printf '%s' "$obj" | sed -n 's/.*"merged_at":"\([^"]*\)".*/\1/p')
+    action=$(printf '%s' "$obj" | sed -n 's/.*"action":"\([^"]*\)".*/\1/p')
+    # pre_update_steps is a JSON string array; capture what's between the [ ].
+    steps_raw=$(printf '%s' "$obj" | sed -n 's/.*"pre_update_steps":\[\([^]]*\)\].*/\1/p')
     # Un-escape the JSON string escapes that appear in human text.
     pr_title=${pr_title//\\\"/\"}
     pr_title=${pr_title//\\\//\/}
@@ -959,11 +976,22 @@ check_breaking_change_guard() {
     summary=${summary//\\\//\/}
     merged_at=${merged_at%%[T ]*} # date only
 
+    # Skip advisories this container has already been shown and proceeded past
+    # (recorded by PR number). This is what stops a within-TTL advisory from
+    # re-warning on every update in its 30-day window once it has been handled.
+    if [[ -n "$pr_number" ]] && [[ -f "$seen_file" ]] &&
+      grep -qxF "$pr_number" "$seen_file" 2>/dev/null; then
+      continue
+    fi
+
     count=$((count + 1))
     [[ -z "$first_pr_url" ]] && first_pr_url="$pr_url"
+    [[ -n "$pr_number" ]] && new_prs+=" $pr_number"
+    [[ "$action" == "block" ]] && blocking=1
 
     local headline="${summary:-${pr_title:-Breaking change}}"
     [[ -n "$severity" ]] && headline+=" [${severity}]"
+    [[ "$action" == "block" ]] && headline+=" [BLOCKS UPDATE]"
     details+="• ${headline}\n"
     if [[ -n "$pr_number" ]]; then
       details+="    PR #${pr_number}: ${pr_title}\n"
@@ -972,6 +1000,18 @@ check_breaking_change_guard() {
     fi
     [[ -n "$pr_url" ]] && details+="    Review: ${pr_url}\n"
     [[ -n "$merged_at" ]] && details+="    Merged: ${merged_at}\n"
+    if [[ -n "$steps_raw" ]]; then
+      details+="    Before updating:\n"
+      local step steps_lines
+      steps_lines="$(printf '%s' "$steps_raw" | sed 's/","/\n/g')"
+      while IFS= read -r step; do
+        step=${step#\"}
+        step=${step%\"}
+        step=${step//\\\"/\"}
+        step=${step//\\\//\/}
+        [[ -n "$step" ]] && details+="      - ${step}\n"
+      done <<<"$steps_lines"
+    fi
     details+="\n"
   done <<<"$objects"
 
@@ -980,31 +1020,77 @@ check_breaking_change_guard() {
   local plural=""
   [[ "$count" -ne 1 ]] && plural="s"
 
-  # Interactive: stop and require an explicit choice, defaulting to "review first".
+  # Explicit, deliberate override: proceed even past a blocking advisory. Meant
+  # for an operator who has read the PR, or an unattended fleet that has already
+  # accounted for it. Distinct from var_ignore_breaking_changes (which mutes the
+  # check entirely) — this still shows the advisory, it just doesn't stop.
+  local force=0
+  case "${var_force_breaking_update:-}" in
+  1 | yes | true | on) force=1 ;;
+  esac
+
+  local proceed=0
+
+  # Interactive: stop and require an explicit choice.
   if [[ "${PHS_SILENT:-0}" != "1" ]] && command -v whiptail &>/dev/null && [ -t 0 ] && [[ "$TERM" != "dumb" ]]; then
     local body
     body="${count} active breaking change${plural} may affect this update of ${APP:-$script_slug}.\n\n"
     body+="${details}"
-    body+="Read the pull request${plural} above before updating.\n\nContinue with the update anyway?"
-    if whiptail --backtitle "Proxmox VE Helper Scripts" \
-      --title "⚠ BREAKING CHANGE — ${APP:-$script_slug}" \
-      --yesno "$(printf '%b' "$body")" 22 78 --defaultno \
-      --yes-button "Continue" --no-button "Cancel & review" 3>&1 1>&2 2>&3; then
-      msg_warn "Continuing update of ${APP:-$script_slug} despite an active breaking change — review ${first_pr_url:-the PR} if you have not."
-      return 0
+    if [[ "$blocking" -eq 1 ]] && [[ "$force" -ne 1 ]]; then
+      # A blocking advisory: no one-keypress "Continue". Inform and stop.
+      body+="This update is BLOCKED until you address the change above.\n"
+      body+="Read the pull request${plural}, then re-run once ready. To override on\n"
+      body+="an unattended host, set var_force_breaking_update=1."
+      whiptail --backtitle "Proxmox VE Helper Scripts" \
+        --title "⛔ BREAKING CHANGE BLOCKS UPDATE — ${APP:-$script_slug}" \
+        --msgbox "$(printf '%b' "$body")" 22 78
+      msg_error "Update blocked by a breaking change — review ${first_pr_url:-the PR} and re-run. Override with var_force_breaking_update=1."
+      proceed=0
+    else
+      body+="Read the pull request${plural} above before updating.\n\nContinue with the update anyway?"
+      if whiptail --backtitle "Proxmox VE Helper Scripts" \
+        --title "⚠ BREAKING CHANGE — ${APP:-$script_slug}" \
+        --yesno "$(printf '%b' "$body")" 22 78 --defaultno \
+        --yes-button "Continue" --no-button "Cancel & review" 3>&1 1>&2 2>&3; then
+        msg_warn "Continuing update of ${APP:-$script_slug} despite an active breaking change — review ${first_pr_url:-the PR} if you have not."
+        proceed=1
+      else
+        msg_error "Update cancelled — review the breaking change first: ${first_pr_url:-https://community-scripts.org/scripts/${script_slug}}"
+        proceed=0
+      fi
     fi
-    msg_error "Update cancelled — review the breaking change first: ${first_pr_url:-https://community-scripts.org/scripts/${script_slug}}"
-    return 1
+  else
+    # Non-interactive / silent: can't prompt without hanging an unattended run, so
+    # warn loudly. A blocking advisory still aborts (unless forced); a plain one
+    # continues. var_ignore_breaking_changes already skips this entirely.
+    msg_warn "Breaking change advisory for ${APP:-$script_slug} — ${count} active:"
+    printf '%b' "$details" | while IFS= read -r l; do
+      [[ -n "$l" ]] && msg_warn "  $l"
+    done
+    if [[ "$blocking" -eq 1 ]] && [[ "$force" -ne 1 ]]; then
+      msg_error "Update blocked by a breaking change. Review the PR, then re-run. Override with var_force_breaking_update=1."
+      proceed=0
+    else
+      msg_warn "Review the pull request before relying on this update."
+      proceed=1
+    fi
   fi
 
-  # Non-interactive / silent: can't prompt without hanging an unattended run, so
-  # warn loudly and continue. var_ignore_breaking_changes already skips this.
-  msg_warn "Breaking change advisory for ${APP:-$script_slug} — ${count} active:"
-  printf '%b' "$details" | while IFS= read -r l; do
-    [[ -n "$l" ]] && msg_warn "  $l"
-  done
-  msg_warn "Review the pull request before relying on this update."
-  return 0
+  if [[ "$proceed" -eq 1 ]]; then
+    # Record the advisories we showed so a re-update inside the TTL window isn't
+    # nagged about them again. Done on proceed rather than after a verified
+    # update because most ct scripts exit inside update_script and never return
+    # here — and by this point the operator has seen and accepted the change.
+    if [[ -n "$new_prs" ]]; then
+      mkdir -p /usr/local/community-scripts 2>/dev/null
+      local n
+      for n in $new_prs; do
+        grep -qxF "$n" "$seen_file" 2>/dev/null || echo "$n" >>"$seen_file"
+      done
+    fi
+    return 0
+  fi
+  return 1
 }
 start() {
   # Through the resolver, not a bare curl: this way a local checkout and the
