@@ -2176,11 +2176,7 @@ EOF
 #   RUST_CRATES     - Comma-separated list of crates (e.g. "cargo-edit,wasm-pack@0.12.1")
 # ------------------------------------------------------------------------------
 
-# Put $HOME/.cargo/bin on PATH for every shell, not just login ones.
-#
-# The guard inside means a shell that already has it does not get it twice, and
-# the -d test means a container where rust was removed does not carry a dead
-# entry around.
+# $HOME/.cargo/bin on PATH for every shell, not just login ones.
 _cs_write_cargo_profile() {
   local cargo_bin="${HOME:-/root}/.cargo/bin"
   cat >/etc/profile.d/99-cargo.sh <<EOF
@@ -2219,11 +2215,8 @@ setup_rust() {
       echo 'export PATH="$HOME/.cargo/bin:$PATH"' >>"$HOME/.profile"
     fi
 
-    # And in /etc/profile.d, which is what ensure_profile_loaded reads before an
-    # update runs. $HOME/.profile reaches login shells only, so a script that
-    # compiles on update found no cargo at all -- installed, working, invisible.
-    # The /usr/local/bin symlinks further down cover services; this covers the
-    # update path.
+    # ensure_profile_loaded reads /etc/profile.d before an update; .profile
+    # alone reaches login shells only.
     _cs_write_cargo_profile
 
     # Verify installation
