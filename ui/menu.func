@@ -948,10 +948,8 @@ check_breaking_change_guard() {
   fi
 
   # One JSON object per line so each advisory parses independently. Title and
-  # summary are anchored on their neighbouring keys (…","summary" / …","severity")
-  # rather than the first closing quote, so an embedded \" in a PR title can't
-  # truncate them. URL, number, severity and date never contain quotes, so a
-  # plain capture is enough. No jq: it isn't present on a bare PVE host.
+  # summary are anchored on their neighbouring keys, so an embedded quote in a
+  # PR title cannot truncate them. No jq: not present on a bare PVE host.
   local objects
   objects="$(printf '%s' "$response" | sed 's/},[[:space:]]*{/}\n{/g')"
 

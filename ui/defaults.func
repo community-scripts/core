@@ -355,13 +355,11 @@ base_settings() {
   CT_TIMEZONE=${var_timezone:-"$timezone"}
   [[ "${CT_TIMEZONE:-}" == Etc/* ]] && CT_TIMEZONE="host" # pct doesn't accept Etc/* zones
 
-  # Inside a container the OS is a fact, not a default. A script that supports
-  # both Debian and Alpine only asks on the host, so an update run arrives here
-  # with var_os unset -- and falling straight through to "debian 12" made
-  # check_container_os_guard compare that against the running Alpine and report
-  # a mismatch that was not one.
-  #
-  # pveversion is how start() itself separates host from container.
+  # Inside a container the OS is a fact, not a default. A dual-OS script only
+  # asks on the host, so an update arrived here with var_os unset and fell
+  # through to "debian 12" -- which check_container_os_guard then reported as a
+  # mismatch against the running Alpine. pveversion is how start() itself
+  # separates host from container.
   if [[ -z "${var_os:-}" || -z "${var_version:-}" ]] &&
     ! command -v pveversion >/dev/null 2>&1 && [[ -r /etc/os-release ]]; then
     [[ -z "${var_os:-}" ]] && var_os="$(. /etc/os-release 2>/dev/null && echo "${ID:-}")"
@@ -872,16 +870,12 @@ _load_vars_file_to_map() {
   local file="$1"
   [ -f "$file" ] || return 0
 
-  # -gA here, not `declare -A` at file scope.
-  #
-  # Every engine file is sourced from inside _cs_source_func, so a file-scope
-  # declare runs in that function's scope and is gone the moment it returns.
-  # _VARS_IN then came back as an *indexed* array, where bash evaluates the
-  # subscript arithmetically: _VARS_IN[var_timezone] resolves the variable,
-  # finds America/Chicago, evaluates that as a division, and reports
-  # "America/Chicago: division by 0". Values without a slash were quieter and
-  # worse -- every key evaluated to 0, so each one overwrote the last and the
-  # .vars diff compared a single entry against itself.
+  # -gA, not `declare -A` at file scope: every engine file is sourced from
+  # inside _cs_source_func, so a file-scope declare dies with that function.
+  # _VARS_IN then came back indexed, where bash evaluates the subscript
+  # arithmetically -- _VARS_IN[var_timezone] resolved to America/Chicago and
+  # reported "division by 0". Values without a slash were quieter and worse:
+  # every key evaluated to 0 and overwrote the last.
   declare -gA _VARS_IN
   _VARS_IN=() # Clear array
   local line key val

@@ -32,10 +32,8 @@
 #
 # ==============================================================================
 
-# Retry options for engine fetches. Repeated in each file that bootstraps
-# itself over the network rather than shared, because there is nowhere to put
-# a shared copy that does not itself need downloading first. core/build.func
-# carries the full reasoning.
+# Repeated per file rather than shared: there is nowhere to put a shared copy
+# that does not itself need downloading first. See core/build.func.
 _CS_CURL_RETRY=(--retry 3 --retry-delay 1 --retry-connrefused --connect-timeout 10)
 
 # ==============================================================================

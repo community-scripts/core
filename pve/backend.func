@@ -360,13 +360,9 @@ $PCT_OPTIONS_STRING"
   -timezone $_pct_timezone"
   fi
 
-  # The password deliberately stays out of PCT_OPTIONS.
-  #
-  # That string is expanded unquoted at every pct create, which is how the
-  # other options get split into arguments. A password is the one value a user
-  # can put anything into, so word splitting and globbing would reach it: a
-  # space made two arguments, and a * was replaced by a matching filename.
-  # It goes in as its own quoted argument instead.
+  # The password stays out of PCT_OPTIONS: that string is expanded unquoted, so
+  # word splitting and globbing would reach it -- a space made two arguments, a
+  # * matched a filename. It goes in as its own quoted argument.
   _PW_ARGS=()
   [[ -n "${PW:-}" ]] && _PW_ARGS=(--password "$PW")
 
@@ -3102,17 +3098,11 @@ description() {
   local script_slug
   script_slug="$(printf '%s' "${APP}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
 
-  # A script under test asks for feedback here too: the description is visible
-  # in the Proxmox UI without logging into the container at all, and it stays
-  # visible long after the install output has scrolled away.
-  #
-  # Built from the same elements as the block below -- centred div, styled
-  # paragraph, shields.io badge, link -- because those are known to survive
-  # Proxmox's rendering of the notes field. A bordered box would look better
-  # and might simply be dropped.
-  #
-  # cs_testing_state() has already rejected anything that is not a plain https
-  # URL, so an ampersand is the only character still needing an entity here.
+  # A script under test asks for feedback here too: the description shows in the
+  # Proxmox UI without entering the container and outlives the install output.
+  # Same elements as below, which are known to survive Proxmox's rendering.
+  # cs_testing_state() has already rejected anything but a plain https URL, so
+  # only an ampersand needs an entity.
   local _testing_block=""
   if [[ -n "${CS_TESTING_URL:-}" ]]; then
     local _url_html="${CS_TESTING_URL//&/&amp;}"

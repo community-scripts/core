@@ -84,10 +84,9 @@ _tm_payload() {
   gpu_model=$(json_escape "${GPU_MODEL:-}")
   cpu_model=$(json_escape "${CPU_MODEL:-}")
 
-  # What the container actually got, not what the host happens to own. This used
-  # to carry detect_gpu's verdict -- "igpu", "dgpu", "unknown" -- which describes
-  # the host's hardware and is already in gpu_vendor and gpu_model. Whether the
-  # devices were handed to the container is a different question, and the one the
+  # What the container got, not what the host owns. This carried detect_gpu's
+  # verdict, which describes host hardware and is already in gpu_vendor and
+  # gpu_model. Whether the devices reached the container is the question the
   # field name asks.
   local gpu_passthrough="no"
   [[ "${var_gpu:-no}" == "yes" || "${ENABLE_GPU:-no}" == "yes" ]] && gpu_passthrough="yes"
@@ -215,13 +214,10 @@ post_to_api() {
 
   TELEMETRY_TYPE="${TELEMETRY_TYPE:-lxc}"
 
-  # Start the clock here, at the first thing a run reports about itself.
-  #
-  # start_install_timer runs much later -- just before lxc-attach, so after ID
-  # selection, storage selection, the template download and container creation.
-  # Everything the host did was outside the measurement, and any run that ended
-  # before that point reported a duration of zero. From here it measures what the
-  # field name promises: how long the run took.
+  # Start the clock at the first thing a run reports about itself.
+  # start_install_timer runs much later, after ID and storage selection, the
+  # template download and container creation -- so all of that was outside the
+  # measurement and anything failing earlier reported zero.
   [[ -z "${INSTALL_START_TIME:-}" ]] && export INSTALL_START_TIME="$(date +%s)"
 
   local payload

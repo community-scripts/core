@@ -46,18 +46,11 @@ detect_repo_source() {
 
   local content="" owner_repo=""
 
-  # Method 0: COMMUNITY_SCRIPTS_URL, which build.func has already resolved from
-  # a local checkout, that checkout's git remote, the environment, or the
-  # default. It IS the scripts base, so it answers directly instead of being
-  # inferred.
-  #
-  # This became necessary rather than merely better: a ct script used to embed
-  # its own repository URL, which the scraping below found. The bootstrap line
-  # now names only the engine, so every modern script scraped as
-  # "community-scripts/core" and was attributed as external -- all of ProxmoxVED
-  # and all of Incus. A fork was mis-attributed the same way, and
-  # cs_testing_state, which keys the development warning off ProxmoxVED, never
-  # fired.
+  # Method 0: COMMUNITY_SCRIPTS_URL, already resolved by build.func. It IS the
+  # scripts base, so it answers directly instead of being inferred. Necessary,
+  # not merely better: the bootstrap line now names only the engine, so the
+  # scraping below read every modern script as "community-scripts/core" and
+  # attributed all of ProxmoxVED and Incus as external.
   if [[ -n "${COMMUNITY_SCRIPTS_URL:-}" ]]; then
     owner_repo=$(echo "$COMMUNITY_SCRIPTS_URL" |
       grep -oE 'raw\.githubusercontent\.com/[^/]+/[^/]+' |
@@ -250,13 +243,9 @@ telemetry_collect_sysinfo() {
   [[ -z "${RAM_SPEED+x}" ]] && detect_ram
   [[ -z "${HAS_ARM:-}" ]] && detect_arm
 
-  # One vocabulary, not two. dpkg says amd64/arm64 and uname says x86_64/aarch64,
-  # so which one a run reported depended on whether dpkg existed -- an Alpine
-  # host landed in a different bucket from a Debian one for the same hardware.
-  # The first data carrying this field showed all four names side by side.
-  #
-  # Normalised to dpkg's spelling, because that is what the rest of the project
-  # already uses: var_arm64, the container templates, the release assets.
+  # One vocabulary: dpkg says amd64/arm64, uname says x86_64/aarch64, so which a
+  # run reported depended on whether dpkg existed. Normalised to dpkg's spelling,
+  # which var_arm64, the templates and the release assets already use.
   TM_ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m 2>/dev/null || echo unknown)"
   case "$TM_ARCH" in
   x86_64) TM_ARCH="amd64" ;;

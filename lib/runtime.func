@@ -1216,11 +1216,9 @@ setup_nodejs() {
   local wants_corepack=0
   local node_setup_ok_msg=""
 
-  # Corepack must run fully non-interactive. Without this it prints
-  # "Corepack is about to download X. Do you want to continue? [Y/n]" and blocks
-  # the whole install waiting for keyboard input - both here and in the calling
-  # script's later `corepack prepare` / `corepack <pm>` calls, which run in this
-  # same shell and inherit the export.
+  # Corepack must run fully non-interactive, or it blocks on "about to download
+  # X. Continue? [Y/n]" -- here and in the calling script's later corepack calls,
+  # which inherit the export.
   export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
   # ALWAYS clean up legacy installations first (nvm, etc.) to prevent conflicts
@@ -1525,13 +1523,10 @@ setup_nodejs() {
     fi
   fi
 
-  # pnpm v10+ blocks dependency build scripts by default. Do NOT force
-  # `dangerouslyAllowAllBuilds` globally: pnpm implements that flag as an empty
-  # `neverBuiltDependencies`, which then clashes with any project that ships its
-  # own `onlyBuiltDependencies` (every create-t3-app based app, e.g. Split Pro)
-  # and aborts with ERR_PNPM_CONFIG_CONFLICT_BUILT_DEPENDENCIES. Instead relax the
-  # strict check so an unapproved build is a warning, not a fatal error; scripts
-  # that truly need every build script executed enable that themselves.
+  # pnpm v10+ blocks dependency build scripts. Not dangerouslyAllowAllBuilds:
+  # pnpm implements it as an empty neverBuiltDependencies, which clashes with any
+  # project shipping its own onlyBuiltDependencies. Relax the strict check
+  # instead, so an unapproved build warns rather than aborts.
   if command -v pnpm >/dev/null 2>&1; then
     pnpm config set --global strictDepBuilds false >/dev/null 2>&1 || true
   fi

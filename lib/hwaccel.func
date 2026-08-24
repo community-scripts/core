@@ -14,17 +14,11 @@
 _TOOLS_HWACCEL_LOADED=1
 
 # Install a best-effort package list without letting one absentee take the rest.
-#
-# apt is all-or-nothing: name twelve packages, have one of them renamed or
-# missing on this release, and none of the other eleven get installed. Every
-# driver list in this file is best-effort by design -- the caller wants whatever
-# is available -- but each was written as `apt -y install a b c … || msg_warn`,
-# one absent package away from installing nothing at all and leaving the
-# container without acceleration while reporting only a warning.
-#
-# The batch is still tried first: that is one apt run instead of twelve, and it
-# is what normally happens. Only when it fails does this go package by package,
-# which is also the only way to say which one was actually missing.
+# apt is all-or-nothing, so one package missing on a release meant none of the
+# other eleven were installed and the container ran without acceleration on a
+# single warning line. The batch is still tried first -- one apt run, and the
+# normal case -- and only a failure falls back to one at a time, which is also
+# the only way to name the package that was actually missing.
 _cs_apt_install_optional() {
   (($#)) || return 0
   $STD apt -y install "$@" 2>/dev/null && return 0
@@ -151,14 +145,9 @@ setup_hwaccel() {
   local -a SELECTED_INDICES=()
   local install_nvidia_drivers="yes"
 
-  # What this picks is a driver stack, not a card. Two NVIDIA cards install the
-  # same libraries either way, so there is nothing to decide -- and the host has
-  # already asked which cards to pass through, making this a second prompt for a
-  # question already answered. It enumerates through lspci, which sees every GPU
-  # on the host regardless of what was passed in, so it appeared even after the
-  # host selection had narrowed things down.
-  #
-  # A genuinely mixed set, Intel alongside NVIDIA, is still a real choice.
+  # Picks a driver stack, not a card: two NVIDIA cards install the same
+  # libraries, and the host already asked which to pass through. lspci sees every
+  # GPU regardless, so this asked twice. A mixed set is still a real choice.
   local unique_types
   unique_types="$(printf '%s\n' "${GPU_TYPES[@]}" | sort -u | wc -l)"
 
@@ -873,20 +862,11 @@ NVIDIA_PIN
     fi
   fi
 
-  # Report what actually happened, not that the function reached its end.
-  #
-  # This used to print "NVIDIA GPU configured" unconditionally. A user running
-  # Debian 13 with a 580 host driver reported exactly the failure that hides
-  # behind it: every install path above had found nothing, `dpkg -l | grep -i
-  # nvidia` came back empty, and the install still finished on a green line.
-  #
-  # ldconfig rather than dpkg, because the library can legitimately arrive by
-  # bind mount from the host as well as by package. What matters is whether a
-  # CUDA program can link it, not who put it there.
-  #
-  # Deliberately not a non-zero return: hardware acceleration is optional for
-  # most applications, and install scripts run under an ERR trap, so failing
-  # here would abort installs that used to complete without a GPU.
+  # Report what happened, not that the function reached its end -- this printed
+  # "NVIDIA GPU configured" even when every path above had found nothing.
+  # ldconfig rather than dpkg: the library can arrive by bind mount too, and what
+  # matters is whether a CUDA program can link it. Not a non-zero return, since
+  # acceleration is optional and install scripts run under an ERR trap.
   if ldconfig -p 2>/dev/null | grep -q 'libcuda\.so\.1'; then
     msg_ok "NVIDIA GPU configured (host driver ${nvidia_host_version})"
   else
@@ -894,16 +874,11 @@ NVIDIA_PIN
     msg_warn "The host driver is ${nvidia_host_version}. CUDA workloads will fail until a matching userspace library is present."
   fi
 
-  # nvidia-smi gets its own check because installing it can succeed and still
-  # leave nothing behind: in NVIDIA's CUDA repositories the package is an empty
-  # transitional stub -- 610.57.04-1 declares no Depends and ships no binary --
-  # so dpkg reports it installed while `nvidia-smi` is not on PATH. A user hit
-  # exactly that and assumed the driver install had failed.
-  #
-  # CUDA itself does not need it: libnvidia-ml1 above carries NVML, which is what
-  # libraries actually call. So this reports rather than tries harder; pulling the
-  # package that does ship the binary would drag the full driver stack, kernel
-  # DKMS included, into a container that shares the host's kernel.
+  # nvidia-smi separately: in NVIDIA's CUDA repos the package is an empty
+  # transitional stub, so dpkg reports it installed while the binary is absent.
+  # CUDA does not need it -- libnvidia-ml1 carries NVML -- so this reports rather
+  # than pulling the package that ships it, which would drag the full driver
+  # stack, DKMS included, into a container sharing the host kernel.
   if ! command -v nvidia-smi >/dev/null 2>&1; then
     msg_warn "nvidia-smi is not available: the CUDA repository ships it as an empty transitional package"
     msg_warn "CUDA workloads are unaffected. For the tool itself, use the matching .run installer with --no-kernel-module."

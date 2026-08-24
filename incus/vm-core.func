@@ -19,10 +19,8 @@ _INCUS_VM_CORE_LOADED=1
 
 _CORE_BASE="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
 
-# Retry options for engine fetches. Repeated in each file that bootstraps
-# itself over the network rather than shared, because there is nowhere to put
-# a shared copy that does not itself need downloading first. core/build.func
-# carries the full reasoning.
+# Repeated per file rather than shared: there is nowhere to put a shared copy
+# that does not itself need downloading first. See core/build.func.
 _CS_CURL_RETRY=(--retry 3 --retry-delay 1 --retry-connrefused --connect-timeout 10)
 
 # Prefer the dispatcher's resolver so a local checkout and forks keep working.
@@ -805,10 +803,8 @@ incus_vm_create() {
   [[ "${STATEFUL:-no}" == "yes" ]] && args+=(--config "migration.stateful=true")
 
   # limits.cpu.allowance, limits.cpu.priority, limits.memory.swap and
-  # linux.kernel_modules are container-only -- the host's own
-  # /1.0/metadata/configuration marks them "condition: container". Setting them
-  # on a VM is accepted silently and does nothing, so they live on the
-  # container path instead. A VM has its own kernel and its own scheduler.
+  # linux.kernel_modules are container-only per the host's own metadata.
+  # Setting them on a VM is accepted silently and does nothing.
   [[ -n "${AUTOSTART_DELAY:-}" ]] && args+=(--config "boot.autostart.delay=${AUTOSTART_DELAY}")
   [[ -n "${SNAPSHOT_PATTERN:-}" ]] && args+=(--config "snapshots.pattern=${SNAPSHOT_PATTERN}")
 

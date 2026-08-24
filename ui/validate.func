@@ -61,19 +61,15 @@ get_current_ip() {
 update_motd_ip() {
   MOTD_FILE="/etc/motd"
 
-  # install.func declares this path as a `local`, so nothing carries it out of
-  # the install run -- and an update never goes through install.func at all. It
-  # was read below as if it were a global, which under set -u ended the update
-  # with "PROFILE_FILE: unbound variable". The path is a constant, so name it
-  # here the way MOTD_FILE is, while still honouring an inherited value.
+  # install.func declares this as a `local`, and an update never goes through
+  # install.func at all -- read here as a global it ended the update with
+  # "PROFILE_FILE: unbound variable". A constant, so name it like MOTD_FILE.
   local profile_file="${PROFILE_FILE:-/etc/profile.d/00_lxc-details.sh}"
 
   # Only touch /etc/motd when it is the one motd_ssh wrote. A container created
-  # before that ran still carries the distribution's own file -- on Debian the
-  # paragraph about the programs being free software -- and appending to it left
-  # a stray coloured IP line under that boilerplate after every update, with the
-  # real details following underneath from profile.d. The profile branch below
-  # has always checked whose file it is; this one never did.
+  # before that still carries the distribution's own file, and appending to it
+  # left a stray IP line under that boilerplate. The profile branch below has
+  # always checked whose file it is; this one never did.
   if [ -f "$MOTD_FILE" ] && grep -q "LXC Container" "$MOTD_FILE" 2>/dev/null; then
     # Remove existing IP Address lines to prevent duplication
     sed -i '/IP Address:/d' "$MOTD_FILE"
@@ -172,13 +168,10 @@ validate_container_id() {
     return 1
   fi
 
-  # Ask the cluster first.
-  #
-  # /etc/pve/qemu-server and /etc/pve/lxc are symlinks into this node's own
-  # directory under /etc/pve/nodes/, so checking them alone only ever sees
-  # local guests. On a cluster the wizard would then hand out an ID already in
-  # use on another node, and pct create fails long after the choice was made.
-  # Harmless on a single node, which still has the cluster structure.
+  # Ask the cluster first: /etc/pve/qemu-server and /etc/pve/lxc are symlinks
+  # into this node's own directory, so checking them alone only sees local
+  # guests. On a cluster the wizard then hands out an ID already in use
+  # elsewhere and pct create fails long after the choice was made.
   if command -v pvesh &>/dev/null; then
     local cluster_ids
     cluster_ids=$(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null |

@@ -408,12 +408,10 @@ _eh_print_log_tail() {
 # ------------------------------------------------------------------------------
 # _eh_hint_missing_command() - name what could not be run, and where it comes from
 #
-# Deliberately installs nothing. This runs from a trap, after the fact, with no
-# idea what the script was in the middle of -- and a handler that quietly put
-# the missing tool back would have masked the setup_nodejs defect that deleted
-# pnpm, leaving every other container just as broken with nobody the wiser.
-# Provisioning belongs where the tool is provisioned. What the handler can do is
-# save the user working out which of the words on the line was the missing one.
+# Installs nothing. This runs from a trap, after the fact, and a handler that
+# quietly put the tool back would have masked the setup_nodejs defect that
+# deleted pnpm. Provisioning belongs where the tool is provisioned; naming the
+# missing word is what the handler can usefully do.
 #
 # Arguments: exit_code, command
 # ------------------------------------------------------------------------------

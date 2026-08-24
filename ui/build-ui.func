@@ -48,13 +48,10 @@ _BUILD_UI_FUNC_LOADED=1
 # - Captures app-declared resource defaults (CPU, RAM, Disk)
 # ------------------------------------------------------------------------------
 variables() {
-  # var_os becomes PCT_OSTYPE, which becomes the template search string
-  # "<os>-<version>". Proxmox publishes archlinux-base, not "arch linux-base",
-  # so a var_os carrying a space -- an app display name that leaked into it, a
-  # hand-edited .vars -- does not fail here. It fails four steps later as "No
-  # template found", and then again as a `pveam download` with an empty name.
-  # Normalise it at the point it enters, and say so rather than repairing
-  # silently.
+  # var_os becomes PCT_OSTYPE and then the template search string. Proxmox
+  # publishes archlinux-base, not "arch linux-base", so a var_os carrying a
+  # space fails four steps later as "No template found" and again as a pveam
+  # download with an empty name. Normalise where it enters, and say so.
   if [[ -n "${var_os:-}" && "$var_os" =~ [[:space:][:upper:]] ]]; then
     local _os_raw="$var_os"
     var_os="${var_os,,}"
@@ -119,10 +116,8 @@ variables() {
 # See docs/DEV_MODE.md for details
 COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
 
-# Retry options for engine fetches. Repeated in each file that bootstraps
-# itself over the network rather than shared, because there is nowhere to put
-# a shared copy that does not itself need downloading first. core/build.func
-# carries the full reasoning.
+# Repeated per file rather than shared: there is nowhere to put a shared copy
+# that does not itself need downloading first. See core/build.func.
 _CS_CURL_RETRY=(--retry 3 --retry-delay 1 --retry-connrefused --connect-timeout 10)
 
 # Prefer the dispatcher's resolver; the fallback must use the ENGINE base,

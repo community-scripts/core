@@ -464,16 +464,11 @@ _download_source_tarball() {
 }
 
 # Empty a target directory before a clean install, without touching anything
-# mounted into it.
-#
-# The list is written out in full before a single entry is removed. Piping find
-# straight into `xargs rm -rf` let rm delete parents while find was still
-# walking their children, so find reported "No such file or directory" for every
-# entry that had just been deleted on purpose -- hundreds of red lines in the
-# middle of a Zigbee2MQTT update that was working correctly.
-#
-# A file rather than an array: node_modules reaches tens of thousands of paths,
-# which is what xargs is for.
+# mounted into it. The list is written out in full before anything is removed:
+# piping find straight into `xargs rm -rf` let rm delete parents while find was
+# still walking their children, so find reported hundreds of "No such file or
+# directory" for entries deleted on purpose. A file rather than an array,
+# because node_modules reaches tens of thousands of paths.
 _cs_clean_target_dir() {
   local dir="${1:?directory}" list
   [[ -d "$dir" ]] || return 0

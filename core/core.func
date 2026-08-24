@@ -149,20 +149,12 @@ ensure_profile_loaded() {
   [[ -n "${_PROFILE_LOADED:-}" ]] && return
   command -v pveversion &>/dev/null && return
 
-  # Source all profile.d scripts to ensure PATH is complete.
-  #
-  # Output is discarded because these are sourced for their PATH side effects,
-  # not to be seen. 00_lxc-details.sh in particular starts with a clear-screen
-  # escape and then echoes the whole login banner, so sourcing it mid-update
-  # painted the MOTD over the screen a moment before header_info wiped it again.
-  # Redirecting also makes its own `[ -t 1 ]` guard false, so the escape is
-  # skipped rather than merely swallowed.
-  # A profile script that ends on a false conditional -- Arch ships several,
-  # debuginfod.sh and perlbin.sh among them -- makes `source` return that
-  # status. As the final command of an && list it is not exempt from errexit, so
-  # it took the whole update with it. Nothing went wrong: these are sourced for
-  # their PATH side effects, and what their last line evaluated to is not our
-  # business.
+  # Sourced for their PATH side effects, output discarded: 00_lxc-details.sh
+  # starts with a clear-screen escape and echoes the whole login banner, and the
+  # redirect also makes its own `[ -t 1 ]` guard false. A script ending on a
+  # false conditional makes `source` return that status, which as the final
+  # command of an && list is not exempt from errexit -- that took whole updates
+  # with it.
   if [[ -d /etc/profile.d ]]; then
     for script in /etc/profile.d/*.sh; do
       [[ -r "$script" ]] || continue
@@ -213,15 +205,11 @@ write_update_entrypoint() {
   core_url="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
   website="${COMMUNITY_SCRIPTS_WEBSITE_URL:-https://community-scripts.org}"
 
-  # Write to a temp file in the same directory, then atomically mv it into place.
-  # Crucial for the migration case: /usr/bin/update is usually THE script currently
-  # running when this is called, and it grows from a one-liner to this longer file.
-  # Overwriting it in place makes the running shell resume reading at its old byte
-  # offset — now inside the new, longer content — which executes garbage ("line 2:
-  # command not found") and re-runs the update. mv gives the new content a fresh
-  # inode; the running shell keeps reading the old, now-unlinked inode to a clean
-  # EOF. mktemp + mv + chmod are all present on busybox and coreutils alike, so
-  # this stays portable across Alpine, Fedora, Debian, Ubuntu and Arch.
+  # Temp file in the same directory, then an atomic mv. /usr/bin/update is
+  # usually the script currently running, and it grows from a one-liner to this.
+  # Overwriting in place makes the running shell resume at its old byte offset,
+  # now inside longer content, and execute garbage. mv gives the new content a
+  # fresh inode and the running shell reads the old one to a clean EOF.
   local tmp
   tmp="$(mktemp /usr/bin/.update.XXXXXX 2>/dev/null)" || tmp="/usr/bin/.update.tmp.$$"
 

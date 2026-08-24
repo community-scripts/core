@@ -568,10 +568,9 @@ incus_is_unattended() {
 incus_fatal() {
   incus_msg_error "$1"
   # kill -INT $$ alone does not stop a non-interactive bash script: the signal
-  # is delivered but execution continues, so every caller that assumed "fatal
-  # ends here" carried on into a broken state. Observed on a real Incus host --
-  # a hostname conflict was reported and the create was attempted anyway.
-  # Signal first (reaches the main shell from a subshell), then exit for real.
+  # arrives but execution continues, so callers assuming "fatal ends here" ran
+  # on into a broken state. Signal first, to reach the main shell from a
+  # subshell, then exit.
   kill -INT $$ 2>/dev/null || true
   exit 1
 }
