@@ -2176,6 +2176,22 @@ EOF
 #   RUST_CRATES     - Comma-separated list of crates (e.g. "cargo-edit,wasm-pack@0.12.1")
 # ------------------------------------------------------------------------------
 
+# Put $HOME/.cargo/bin on PATH for every shell, not just login ones.
+#
+# The guard inside means a shell that already has it does not get it twice, and
+# the -d test means a container where rust was removed does not carry a dead
+# entry around.
+_cs_write_cargo_profile() {
+  local cargo_bin="${HOME:-/root}/.cargo/bin"
+  cat >/etc/profile.d/99-cargo.sh <<EOF
+case ":\$PATH:" in
+*:${cargo_bin}:*) ;;
+*) [ -d "${cargo_bin}" ] && export PATH="${cargo_bin}:\$PATH" ;;
+esac
+EOF
+  chmod +x /etc/profile.d/99-cargo.sh
+}
+
 setup_rust() {
   local RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-stable}"
   local RUST_PROFILE="${RUST_PROFILE:-default}"
@@ -2198,12 +2214,17 @@ setup_rust() {
     }
     export PATH="$CARGO_BIN:$PATH"
     # Guarded: this ran on every setup_rust call and appended the same line
-    # again each time. Note it only reaches login shells -- what makes cargo and
-    # its crates visible to a service is the /usr/local/bin symlinks further
-    # down, not this.
+    # again each time.
     if ! grep -q '\.cargo/bin' "$HOME/.profile" 2>/dev/null; then
       echo 'export PATH="$HOME/.cargo/bin:$PATH"' >>"$HOME/.profile"
     fi
+
+    # And in /etc/profile.d, which is what ensure_profile_loaded reads before an
+    # update runs. $HOME/.profile reaches login shells only, so a script that
+    # compiles on update found no cargo at all -- installed, working, invisible.
+    # The /usr/local/bin symlinks further down cover services; this covers the
+    # update path.
+    _cs_write_cargo_profile
 
     # Verify installation
     if ! command -v rustc >/dev/null 2>&1; then
