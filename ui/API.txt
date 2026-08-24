@@ -82,6 +82,7 @@ echo_default
 edit_default_storage
 ensure_global_default_vars_file
 ensure_profile_loaded
+ensure_recorded_toolchains
 ensure_storage_selection_for_vars_file
 ensure_tput
 ensure_whiptail

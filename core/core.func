@@ -136,6 +136,39 @@ icons() {
   HOURGLASS="${TAB}⏳${TAB}"
 }
 
+# Re-provision a toolchain the container was built with but no longer has.
+#
+# Every setup_* records what it installed under /var/cache/app-versions. When the
+# binary that record promises is gone, a script that compiles on update dies at
+# exit 127 with its service already stopped. 144 ct scripts call a toolchain in
+# their update path without ensuring it first, so this belongs here.
+ensure_recorded_toolchains() {
+  local cache=/var/cache/app-versions
+  [[ -d "$cache" ]] || return 0
+
+  local rec tool bin fn
+  for rec in "$cache"/*_version.txt; do
+    [[ -r "$rec" ]] || continue
+    tool="$(basename "$rec")"
+    tool="${tool%_version.txt}"
+    case "$tool" in
+    rust) bin=cargo fn=setup_rust ;;
+    go) bin=go fn=setup_go ;;
+    nodejs) bin=node fn=setup_nodejs ;;
+    uv) bin=uv fn=setup_uv ;;
+    composer) bin=composer fn=setup_composer ;;
+    yq) bin=yq fn=setup_yq ;;
+    ruby) bin=ruby fn=setup_ruby ;;
+    *) continue ;;
+    esac
+    command -v "$bin" >/dev/null 2>&1 && continue
+    declare -f "$fn" >/dev/null 2>&1 || continue
+    msg_warn "${bin} is recorded for this container but missing - reinstalling"
+    "$fn" || msg_error "Could not restore ${bin}"
+  done
+  return 0
+}
+
 # ------------------------------------------------------------------------------
 # ensure_profile_loaded()
 #

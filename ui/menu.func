@@ -1104,6 +1104,7 @@ start() {
     VERBOSE="no"
     set_std_mode
     ensure_profile_loaded
+    ensure_recorded_toolchains
     get_lxc_ip
     # Move legacy containers onto the helper-based /usr/bin/update the next time
     # they update. No-op once migrated; preserves the container's original source.
@@ -1131,6 +1132,7 @@ start() {
     VERBOSE="no"
     set_std_mode
     ensure_profile_loaded
+    ensure_recorded_toolchains
     get_lxc_ip
     # Move legacy containers onto the helper-based /usr/bin/update the next time
     # they update. No-op once migrated; preserves the container's original source.
@@ -1177,6 +1179,7 @@ start() {
       ;;
     esac
     ensure_profile_loaded
+    ensure_recorded_toolchains
     get_lxc_ip
     # Move legacy containers onto the helper-based /usr/bin/update the next time
     # they update. No-op once migrated; preserves the container's original source.
