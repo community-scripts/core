@@ -1700,7 +1700,10 @@ EOF
   # Update entrypoint. write_update_entrypoint (core.func) generates a bootstrap
   # that pulls the shared update helper, so a script removed upstream explains
   # itself instead of failing `update` with a raw 404.
-  local update_script_name="${var_os:-$app}"
+  # $app (NSAPP), not var_os: var_os is set on every container, so an app
+  # container wrote UPDATE_SCRIPT_NAME=debian and `update` pulled ct/debian.sh --
+  # which reported "no update available" for Vaultwarden.
+  local update_script_name="${app:-${var_os:-}}"
   if declare -f write_update_entrypoint >/dev/null 2>&1; then
     write_update_entrypoint "$app" "$update_script_name"
   else

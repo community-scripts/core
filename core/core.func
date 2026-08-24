@@ -271,7 +271,7 @@ migrate_update_entrypoint() {
   fi
 
   # Fall back to the update environment when the legacy line could not be parsed.
-  [[ -z "${name:-}" ]] && name="${var_os:-${NSAPP:-${app:-}}}"
+  [[ -z "${name:-}" ]] && name="${NSAPP:-${app:-${var_os:-}}}"
   [[ -z "$name" ]] && return 0
 
   write_update_entrypoint "$slug" "$name" "$base" 2>/dev/null || true
