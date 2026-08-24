@@ -52,6 +52,7 @@ base_settings
 build_error_string
 catch_errors
 categorize_error
+check_breaking_change_guard
 check_container_os_guard
 check_container_resources
 check_container_storage
