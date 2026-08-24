@@ -170,6 +170,19 @@ ensure_profile_loaded() {
     done
   fi
 
+  # ~/.profile as well, for the same reason the rest of this function exists.
+  #
+  # rustup's installer, and setup_rust after it, record $HOME/.cargo/bin there
+  # and nowhere else. A login shell reads it; the `bash -c "$(curl …)"` that
+  # /usr/bin/update runs does not -- so an update that compiles from source died
+  # with "cargo: command not found" on a container where cargo was installed and
+  # perfectly fine. Reported against Vaultwarden, but nothing about it is
+  # specific to Vaultwarden: any script whose update step calls a toolchain
+  # binary meets the same wall.
+  if [[ -r "${HOME:-/root}/.profile" ]]; then
+    source "${HOME:-/root}/.profile" >/dev/null 2>&1 || true
+  fi
+
   # Also ensure /usr/local/bin is in PATH (common install location)
   if [[ ":$PATH:" != *":/usr/local/bin:"* ]]; then
     export PATH="/usr/local/bin:$PATH"
