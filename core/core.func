@@ -179,6 +179,97 @@ ensure_profile_loaded() {
 }
 
 # ------------------------------------------------------------------------------
+# write_update_entrypoint()
+#
+# Generates /usr/bin/update as a small self-hosting bootstrap. Instead of pulling
+# the app script directly (which fails with a raw 404 once a script is removed
+# upstream), the bootstrap pulls the shared update helper (misc/update.sh). The
+# helper asks the website whether this app can still be updated before touching
+# anything, and explains a removal instead of erroring out.
+#
+# Called at install time and refreshed on every update (see
+# migrate_update_entrypoint), so containers move onto the new mechanism the next
+# time they update — no per-container migration step needed.
+#
+#   $1 = script slug (for the website status lookup, e.g. "plex")
+#   $2 = update script name (the ct/<name>.sh to pull, e.g. "plex" or an OS name)
+#   $3 = (optional) script base URL; defaults to COMMUNITY_SCRIPTS_URL. Passing it
+#        explicitly lets migration preserve the source a container was built from.
+# ------------------------------------------------------------------------------
+write_update_entrypoint() {
+  local slug="${1:-}" name="${2:-}" base_override="${3:-}"
+  # Without a script name there is nothing to pull; leave any existing entry as-is.
+  [[ -z "$name" ]] && return 0
+
+  local base core_url website
+  base="${base_override:-${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}}"
+  core_url="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
+  website="${COMMUNITY_SCRIPTS_WEBSITE_URL:-https://community-scripts.org}"
+
+  # First heredoc is unquoted: the resolved values are baked in as the exports the
+  # bootstrap then reads. Second heredoc is quoted so its ${...} stay literal.
+  cat >/usr/bin/update <<EOF
+#!/usr/bin/env bash
+# Community-Scripts update entrypoint (generated - do not edit by hand).
+# Regenerated on install and on every successful update.
+export SCRIPT_SLUG="${slug}"
+export UPDATE_SCRIPT_NAME="${name}"
+export COMMUNITY_SCRIPTS_URL="${base}"
+export COMMUNITY_SCRIPTS_CORE_URL="${core_url}"
+export COMMUNITY_SCRIPTS_WEBSITE_URL="${website}"
+EOF
+  cat >>/usr/bin/update <<'EOF'
+# Pull the shared helper; it decides whether this app can still be updated. If it
+# cannot be fetched, fall back to the legacy direct pull so `update` still works.
+_cs_helper="$(curl -fsSL --connect-timeout 10 "${COMMUNITY_SCRIPTS_CORE_URL}/misc/update.sh" 2>/dev/null)"
+if [[ -n "$_cs_helper" ]]; then
+  bash -c "$_cs_helper"
+else
+  echo "Update helper unavailable - falling back to direct update."
+  bash -c "$(curl -fsSL "${COMMUNITY_SCRIPTS_URL}/ct/${UPDATE_SCRIPT_NAME}.sh")"
+fi
+EOF
+  chmod +x /usr/bin/update
+}
+
+# ------------------------------------------------------------------------------
+# migrate_update_entrypoint()
+#
+# Moves containers still carrying the old direct-pull /usr/bin/update onto the new
+# bootstrap. Safe to call on every update. It is conservative: if the entrypoint
+# already uses the helper it does nothing, and it preserves the exact script base
+# URL the container was built from by reading it out of the legacy entrypoint,
+# rather than guessing from the current environment.
+# ------------------------------------------------------------------------------
+migrate_update_entrypoint() {
+  # Already on the helper-based bootstrap? Nothing to do.
+  if [[ -f /usr/bin/update ]] && grep -q "misc/update.sh" /usr/bin/update 2>/dev/null; then
+    return 0
+  fi
+
+  local slug name base=""
+  slug="${SCRIPT_SLUG:-${NSAPP:-${app:-}}}"
+  slug="$(echo "$slug" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+
+  # Prefer the base + script name recorded in the legacy entrypoint, so the
+  # migrated container keeps pulling from the same repo it always did.
+  if [[ -f /usr/bin/update ]]; then
+    local legacy
+    legacy="$(grep -oE 'https?://[^"]+/ct/[^"]+\.sh' /usr/bin/update 2>/dev/null | head -1)"
+    if [[ -n "$legacy" ]]; then
+      base="${legacy%/ct/*}"
+      name="$(basename "${legacy%.sh}")"
+    fi
+  fi
+
+  # Fall back to the update environment when the legacy line could not be parsed.
+  [[ -z "${name:-}" ]] && name="${var_os:-${NSAPP:-${app:-}}}"
+  [[ -z "$name" ]] && return 0
+
+  write_update_entrypoint "$slug" "$name" "$base" 2>/dev/null || true
+}
+
+# ------------------------------------------------------------------------------
 # default_vars()
 #
 # - Sets default retry and wait variables used for system actions

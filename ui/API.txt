@@ -119,6 +119,7 @@ log_msg
 log_section
 maxkeys_check
 maybe_offer_save_app_defaults
+migrate_update_entrypoint
 msg_custom
 msg_debug
 msg_dev
@@ -189,3 +190,4 @@ validate_timezone
 validate_vlan_tag
 variables
 write_errinfo
+write_update_entrypoint

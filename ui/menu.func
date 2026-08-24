@@ -1107,6 +1107,9 @@ start() {
     set_std_mode
     ensure_profile_loaded
     get_lxc_ip
+    # Move legacy containers onto the helper-based /usr/bin/update the next time
+    # they update. No-op once migrated; preserves the container's original source.
+    migrate_update_entrypoint
     # exit, not return, for the same reason as below: returning falls through
     # into the ct script's host-only tail.
     runtime_script_status_guard update || exit 0
@@ -1131,6 +1134,9 @@ start() {
     set_std_mode
     ensure_profile_loaded
     get_lxc_ip
+    # Move legacy containers onto the helper-based /usr/bin/update the next time
+    # they update. No-op once migrated; preserves the container's original source.
+    migrate_update_entrypoint
     # exit, not return, for the same reason as below: returning falls through
     # into the ct script's host-only tail.
     runtime_script_status_guard update || exit 0
@@ -1174,6 +1180,9 @@ start() {
     esac
     ensure_profile_loaded
     get_lxc_ip
+    # Move legacy containers onto the helper-based /usr/bin/update the next time
+    # they update. No-op once migrated; preserves the container's original source.
+    migrate_update_entrypoint
     # exit, not return, for the same reason as below: returning falls through
     # into the ct script's host-only tail.
     runtime_script_status_guard update || exit 0

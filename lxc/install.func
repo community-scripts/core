@@ -1706,11 +1706,19 @@ $endif
 EOF
   fi
 
-  # Create update script
-  # Use var_os for OS-based containers, otherwise use app name
+  # Create update entrypoint. This no longer pulls the app script directly:
+  # write_update_entrypoint (core.func) generates a small bootstrap that pulls the
+  # shared update helper, so a script removed upstream explains itself instead of
+  # failing `update` with a raw 404. Use var_os for OS-based containers (the ct
+  # script to pull is named after the OS), otherwise the app slug.
   local update_script_name="${var_os:-$app}"
-  echo "bash -c \"\$(curl -fsSL ${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}/ct/${update_script_name}.sh)\"" >/usr/bin/update
-  chmod +x /usr/bin/update
+  if declare -f write_update_entrypoint >/dev/null 2>&1; then
+    write_update_entrypoint "$app" "$update_script_name"
+  else
+    # Defensive fallback if core.func is not loaded: legacy direct-pull entrypoint.
+    echo "bash -c \"\$(curl -fsSL ${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}/ct/${update_script_name}.sh)\"" >/usr/bin/update
+    chmod +x /usr/bin/update
+  fi
 
   # Inject SSH authorized keys if provided
   if [[ -n "${SSH_AUTHORIZED_KEY:-}" ]]; then
