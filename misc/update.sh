@@ -103,7 +103,8 @@ state="$(json_str "$info" state)"
 message="$(json_str "$info" message)"
 
 case "$state" in
-deleted | unknown)
+deleted)
+  # An explicit removal (is_deleted=true): the record still exists and says so.
   msg_err "${NAME}: this script has been removed from community-scripts."
   if [[ -n "$message" ]]; then
     echo
@@ -118,14 +119,15 @@ deleted | unknown)
   run_addon_updates
   exit 0
   ;;
-active | disabled | "")
-  # active updates normally; disabled falls through so the in-script status guard
-  # surfaces the disable reason (one source of truth) and stops if appropriate.
-  run_app_update
-  exit $?
-  ;;
 *)
-  # Unknown/newer state value: be permissive and update as before.
+  # active | disabled | unknown | anything else -> update normally.
+  #
+  # "unknown" means no catalog record for this slug, NOT that the script was
+  # removed (removals are flagged is_deleted, which is the case above). Base-OS
+  # LXCs (alpine, debian, ubuntu, fedora, arch, ...) and any untracked script land
+  # here, so we must NOT refuse them - fail open to the normal update, exactly as
+  # the legacy entrypoint did. "disabled" also updates so the in-script status
+  # guard can surface the disable reason (one source of truth) and stop if needed.
   run_app_update
   exit $?
   ;;

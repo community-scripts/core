@@ -206,9 +206,21 @@ write_update_entrypoint() {
   core_url="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
   website="${COMMUNITY_SCRIPTS_WEBSITE_URL:-https://community-scripts.org}"
 
+  # Write to a temp file in the same directory, then atomically mv it into place.
+  # Crucial for the migration case: /usr/bin/update is usually THE script currently
+  # running when this is called, and it grows from a one-liner to this longer file.
+  # Overwriting it in place makes the running shell resume reading at its old byte
+  # offset — now inside the new, longer content — which executes garbage ("line 2:
+  # command not found") and re-runs the update. mv gives the new content a fresh
+  # inode; the running shell keeps reading the old, now-unlinked inode to a clean
+  # EOF. mktemp + mv + chmod are all present on busybox and coreutils alike, so
+  # this stays portable across Alpine, Fedora, Debian, Ubuntu and Arch.
+  local tmp
+  tmp="$(mktemp /usr/bin/.update.XXXXXX 2>/dev/null)" || tmp="/usr/bin/.update.tmp.$$"
+
   # First heredoc is unquoted: the resolved values are baked in as the exports the
   # bootstrap then reads. Second heredoc is quoted so its ${...} stay literal.
-  cat >/usr/bin/update <<EOF
+  cat >"$tmp" <<EOF
 #!/usr/bin/env bash
 # Community-Scripts update entrypoint (generated - do not edit by hand).
 # Regenerated on install and on every successful update.
@@ -218,7 +230,7 @@ export COMMUNITY_SCRIPTS_URL="${base}"
 export COMMUNITY_SCRIPTS_CORE_URL="${core_url}"
 export COMMUNITY_SCRIPTS_WEBSITE_URL="${website}"
 EOF
-  cat >>/usr/bin/update <<'EOF'
+  cat >>"$tmp" <<'EOF'
 # Pull the shared helper; it decides whether this app can still be updated. If it
 # cannot be fetched, fall back to the legacy direct pull so `update` still works.
 _cs_helper="$(curl -fsSL --connect-timeout 10 "${COMMUNITY_SCRIPTS_CORE_URL}/misc/update.sh" 2>/dev/null)"
@@ -229,7 +241,8 @@ else
   bash -c "$(curl -fsSL "${COMMUNITY_SCRIPTS_URL}/ct/${UPDATE_SCRIPT_NAME}.sh")"
 fi
 EOF
-  chmod +x /usr/bin/update
+  chmod +x "$tmp"
+  mv -f "$tmp" /usr/bin/update
 }
 
 # ------------------------------------------------------------------------------
