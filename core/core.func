@@ -1231,13 +1231,23 @@ get_header() {
       return 0
     fi
 
-    local cached="/usr/local/community-scripts/headers/${rel}"
+    # Not the hardcoded /usr/local path: a non-root operator on an Incus host
+    # cannot create it, so the fetch below had nowhere to write and every
+    # banner silently vanished. community_scripts_dir() already falls back to
+    # ~/.config, which is where that run's logs were going anyway.
+    local cache_root
+    cache_root="$(declare -f community_scripts_dir >/dev/null 2>&1 && community_scripts_dir || echo /usr/local/community-scripts)"
+    local cached="${cache_root}/headers/${rel}"
     if [[ -s "$cached" ]]; then
       cat "$cached" 2>/dev/null || true
       return 0
     fi
 
-    mkdir -p "$(dirname "$cached")"
+    if ! mkdir -p "$(dirname "$cached")" 2>/dev/null; then
+      # Nothing writable anywhere: still draw the banner, just uncached.
+      curl -fsSL --connect-timeout 5 --max-time 15 "${core_url}/headers/${rel}" 2>/dev/null && return 0
+      continue
+    fi
     # No retry here, unlike every other engine fetch: this one only decides
     # whether an ASCII banner appears, and the loop has several candidates to
     # get through. It does need a bound, though — without one a black-holed
