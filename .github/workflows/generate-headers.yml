@@ -45,11 +45,15 @@ jobs:
           repository: community-scripts/ProxmoxVED
           path: .src/ProxmoxVED
 
+      # Incus is a private repo, so the default GITHUB_TOKEN (scoped to core)
+      # cannot read it. Without a token this step fails and the whole run
+      # aborts before generating anything, which froze headers/ for weeks.
       - name: Checkout Incus
         uses: actions/checkout@v4
         with:
           repository: community-scripts/Incus
           path: .src/Incus
+          token: ${{ secrets.INCUS_REPO_TOKEN || secrets.PAT_MICHEL || github.token }}
 
       - name: Install figlet
         run: sudo apt-get update -qq && sudo apt-get install -y figlet

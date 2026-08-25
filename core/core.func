@@ -508,6 +508,20 @@ _pve_version() {
   cat "$cache" 2>/dev/null
 }
 
+# PVEVERSION carries the product name on Incus ("Incus 7.3") because telemetry
+# reports it verbatim as pve_version. A fixed "PVE Version" prefix therefore
+# printed "PVE Version Incus 7.3" on Incus hosts.
+_cs_host_version_line() {
+  local v="${PVEVERSION:-unknown}"
+  if [[ "$v" == Incus* ]]; then
+    v="${v#Incus}"
+    v="${v# }"
+    printf 'Incus Version %s' "${v:-unknown}"
+  else
+    printf 'PVE Version %s' "$v"
+  fi
+}
+
 _pveam_available() {
   local dir cache
   dir="$(_cs_runtime_cache_dir)" || {
