@@ -868,7 +868,7 @@ check_container_os_guard() {
     # there is no upgrade path between them, so the version-mismatch wording
     # produced impossible advice like "upgrade the container OS to debian 26.04".
     dialog_title="WRONG OS"
-    mismatch_detail="This container runs ${cur_os} ${cur_ver}, but ${APP:-this script} is built for ${rec_os}.\n\nThese are different distributions - ${cur_os} cannot be upgraded to ${rec_os}, and their version numbers are unrelated.\n\nRecommended: create a new ${rec_os} ${rec_ver} container and install ${APP:-the application} there."
+    mismatch_detail="This container runs ${cur_os} ${cur_ver}, but this script targets ${rec_os} ${rec_ver}.\n\n${cur_os^} and ${rec_os^} are different distributions: there is no upgrade path between them, and their version numbers are unrelated.\n\nRecommended: create a new ${rec_os} ${rec_ver} container and install ${APP:-the application} there."
     remediation="Create a new ${rec_os} ${rec_ver} container instead - ${cur_os} cannot be upgraded to ${rec_os}"
   elif [[ "$downgraded_target" -eq 1 ]]; then
     mismatch_detail="Your container runs ${cur_os} ${cur_ver}, which is newer than what this script now targets (${rec_os} ${rec_ver}).\n\nThe target was likely lowered on purpose, e.g. because ${APP:-the app} had problems on newer OS versions - check the GitHub issues for ${APP:-this app} for details.\n\nContinuing on ${cur_ver} often still works, but isn't guaranteed. If you are unsure, ask in our Discord (https://discord.gg/3AnUqsXnmK) before continuing."

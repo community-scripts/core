@@ -250,9 +250,15 @@ incus_check() {
       incus_msg_error "Incus daemon is not running."
       incus_msg_error "Run: systemctl start incus"
       ;;
-    *"ermission denied"* | *"not authorized"* | *"nauthorized"*)
+    *"ermission denied"* | *"needed permissions"* | *"not authorized"* | *"nauthorized"*)
       incus_msg_error "No permission to reach the Incus daemon as $(id -un)."
-      incus_msg_error "Run: sudo usermod -aG incus-admin $(id -un) - then log out and back in"
+      # A fresh usermod does not reach an already-open login session, so the
+      # same command can work in one terminal and fail in another.
+      if id -nG 2>/dev/null | tr ' ' '\n' | grep -qx incus-admin; then
+        incus_msg_error "You are in incus-admin, but this shell started before that - run: newgrp incus-admin (or log out and back in)"
+      else
+        incus_msg_error "Run: sudo usermod -aG incus-admin $(id -un) - then log out and back in, or start the shell with: newgrp incus-admin"
+      fi
       ;;
     *"not been initialized"* | *"o storage pool"*)
       incus_msg_error "Incus is installed but not initialised."
