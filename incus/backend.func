@@ -1005,8 +1005,12 @@ INNEREOF" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || { msg_error "Failed to push f
   # reported as a success against an empty container.
   set +Eeuo pipefail
   trap - ERR
+  # The trailing touch is a completion sentinel: all 552 install scripts run to
+  # cleanup_lxc/customize and none exits early, so the marker appears if and
+  # only if the script reached its end.
   incus exec "${CT_NAME}" -- bash -c "${_run_env}
-${_install_script}" 2>&1 | tee -a "${LOGFILE:-$INCUS_BUILD_LOG}" || lxc_exit=$?
+${_install_script}
+touch /root/.install-${SESSION_ID}.done" 2>&1 | tee -a "${LOGFILE:-$INCUS_BUILD_LOG}" || lxc_exit=$?
   set -Eeuo pipefail
   declare -f error_handler &>/dev/null && trap 'error_handler' ERR || true
 
@@ -1018,6 +1022,20 @@ ${_install_script}" 2>&1 | tee -a "${LOGFILE:-$INCUS_BUILD_LOG}" || lxc_exit=$?
     fi
   fi
   [[ "$install_exit_code" -eq 0 && "$lxc_exit" -ne 0 ]] && install_exit_code=$lxc_exit
+
+  # A shell killed mid-run - by the kernel, or by the terminal fault the pty
+  # experiment caused - never reaches its ERR trap, so no .failed flag is
+  # written and `incus exec` still reports 0. Without the sentinel that counted
+  # as success, and the operator got a URL pointing at an empty container.
+  if [[ "$install_exit_code" -eq 0 && -n "${SESSION_ID:-}" ]]; then
+    if incus_ct_exec test -f "/root/.install-${SESSION_ID}.done" 2>/dev/null; then
+      incus_ct_exec rm -f "/root/.install-${SESSION_ID}.done" 2>/dev/null || true
+    else
+      msg_error "Install script stopped before it finished - nothing reported it"
+      msg_custom "ℹ️" "${YW}" "Output: incus exec ${CT_NAME} -- tail -50 /root/.install-${SESSION_ID}.log"
+      install_exit_code=1
+    fi
+  fi
   INCUS_LAST_INSTALL_EXIT=$install_exit_code
 }
 
