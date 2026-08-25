@@ -309,6 +309,12 @@ _cs_prefetch_engine || true
 
 _cs_source_func "lxc/platform.func"
 
+# Before anything asks which platform this is: the client has to be resolvable,
+# or an Incus host detects as a plain container and the ct script below runs its
+# update path against the host.
+declare -f ensure_incus_on_path >/dev/null 2>&1 && ensure_incus_on_path
+true
+
 # Inside a container the OS is a fact, not a choice. A dual-OS script branches
 # on var_os near the top of the file and only offers the menu on a host, so an
 # update took the Debian arm and told an Alpine container it needed 6 GB and

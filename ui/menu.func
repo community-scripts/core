@@ -1096,10 +1096,24 @@ start() {
   # five parts were six network requests between the header and the menu,
   # every run, whatever else had already been fetched.
   _cs_source_func "lib/tools.func"
+
+  # Every branch after the first updates the system it is running on. Missing
+  # pveversion used to be taken as proof of being inside a container, but an
+  # Incus host has none either, so a create run fell through and ran apt-get
+  # against the host. Only refuse on a positively identified host, so an
+  # environment we cannot classify still updates as before.
+  local _cs_platform=""
+  declare -f detect_lxc_platform >/dev/null 2>&1 && _cs_platform="$(detect_lxc_platform)"
+
   if command -v pveversion >/dev/null 2>&1; then
     runtime_script_status_guard install || return 0
     install_script || return 0
     return 0
+  elif [[ "$_cs_platform" == "pve" || "$_cs_platform" == "incus" ]]; then
+    msg_error "This is a ${_cs_platform} host, not a container - refusing to update it"
+    msg_custom "ℹ️" "${YW}" "The engine could not load the ${_cs_platform} backend, so ${APP:-this script} never got to the create path"
+    msg_custom "ℹ️" "${YW}" "Retry with: LXC_PLATFORM=${_cs_platform} bash -c \"\$(curl -fsSL <script-url>)\""
+    exit 1
   elif [ ! -z ${PHS_SILENT+x} ] && [[ "${PHS_SILENT}" == "1" ]]; then
     VERBOSE="no"
     set_std_mode
