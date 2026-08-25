@@ -607,8 +607,10 @@ vm_check_image() {
   [[ "$image" != *:* ]] && remote="local"
 
   msg_info "Checking image ${image} for a VM variant"
-  if incus image list "${remote}:" type=virtual-machine --format csv -c l 2>/dev/null |
-    tr ',' '\n' | grep -qx "$fingerprint"; then
+  # Filter on the remote instead of scanning the alias column: incus truncates
+  # that column ("debian/13 (3 more)"), so an exact match missed variants that
+  # were present and every run continued on a warning instead.
+  if [[ -n "$(LC_ALL=C incus image list "${remote}:${fingerprint}" type=virtual-machine --format csv -c l 2>/dev/null)" ]]; then
     msg_ok "Image ${image} has a VM variant"
     return 0
   fi
