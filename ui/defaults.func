@@ -358,10 +358,22 @@ base_settings() {
   # Inside a container the OS is a fact, not a default. A dual-OS script only
   # asks on the host, so an update arrived here with var_os unset and fell
   # through to "debian 12" -- which check_container_os_guard then reported as a
-  # mismatch against the running Alpine. pveversion is how start() itself
-  # separates host from container.
-  if [[ -z "${var_os:-}" || -z "${var_version:-}" ]] &&
-    ! command -v pveversion >/dev/null 2>&1 && [[ -r /etc/os-release ]]; then
+  # mismatch against the running Alpine.
+  #
+  # Ask the platform, not `command -v pveversion`: an Incus host has none
+  # either, so the host's own /etc/os-release was copied into var_os/var_version
+  # and the guard announced a container running "ubuntu 26.04" that was really
+  # the host. Fall back to the old test only when the helper is not loaded.
+  local _cs_in_container=0
+  if declare -f detect_lxc_platform >/dev/null 2>&1; then
+    case "$(detect_lxc_platform)" in
+    container | incus-container) _cs_in_container=1 ;;
+    esac
+  elif ! command -v pveversion >/dev/null 2>&1; then
+    _cs_in_container=1
+  fi
+  if [[ "$_cs_in_container" -eq 1 ]] && [[ -z "${var_os:-}" || -z "${var_version:-}" ]] &&
+    [[ -r /etc/os-release ]]; then
     [[ -z "${var_os:-}" ]] && var_os="$(. /etc/os-release 2>/dev/null && echo "${ID:-}")"
     [[ -z "${var_version:-}" ]] && var_version="$(. /etc/os-release 2>/dev/null && echo "${VERSION_ID:-}")"
   fi
