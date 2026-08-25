@@ -109,29 +109,37 @@ incus_pick_default_network() {
   nets=$(incus network list -f csv,noheader 2>/dev/null | cut -d, -f1 | sed '/^\s*$/d' | grep -v '^lo$' || true)
   [[ -z "$nets" ]] && { echo "incusbr0"; return; }
 
+  # Managed bridges only. `incus network list` also reports plain host
+  # interfaces as type physical, and attaching one moves the host's NIC into
+  # the container - which an unprivileged container cannot start with, and
+  # which would cut the host off if it could. Preferring physical here is how
+  # enp1s0 became the default and forklxc refused to launch. Picking the
+  # uplink is a decision for the operator, never a default.
   local n cfg
+  local -a lan=() nated=()
   while IFS= read -r n; do
-    [[ -z "$n" || "$n" == "incusbr0" ]] && continue
-    cfg=$(incus network show "$n" 2>/dev/null || true)
-    if echo "$cfg" | grep -qE '^type:\s*(physical|macvlan|sriov)$'; then
-      echo "$n"
-      return
+    [[ -z "$n" ]] && continue
+    cfg=$(LC_ALL=C incus network show "$n" 2>/dev/null || true)
+    grep -qE '^managed:[[:space:]]*true$' <<<"$cfg" || continue
+    grep -qE '^type:[[:space:]]*bridge$' <<<"$cfg" || continue
+    # No NAT usually means the bridge hands out LAN addresses, which is what
+    # most people want; incusbr0 and friends are the NATed fallback.
+    if grep -qE '^[[:space:]]+ipv[46]\.nat:[[:space:]]*"?true"?' <<<"$cfg"; then
+      nated+=("$n")
+    else
+      lan+=("$n")
     fi
   done <<<"$nets"
 
-  while IFS= read -r n; do
-    [[ -z "$n" || "$n" == "incusbr0" ]] && continue
-    cfg=$(incus network show "$n" 2>/dev/null || true)
-    if echo "$cfg" | grep -q '^type:\s*bridge$' &&
-      ! echo "$cfg" | grep -qE 'ipv4\.nat:\s*"true"|ipv6\.nat:\s*"true"'; then
-      echo "$n"
-      return
-    fi
-  done <<<"$nets"
-
-  while IFS= read -r n; do
-    [[ -n "$n" && "$n" != "incusbr0" ]] && { echo "$n"; return; }
-  done <<<"$nets"
+  for n in "${lan[@]}" "${nated[@]}"; do
+    [[ "$n" == "incusbr0" ]] && continue
+    echo "$n"
+    return
+  done
+  for n in "${lan[@]}" "${nated[@]}"; do
+    echo "$n"
+    return
+  done
   echo "incusbr0"
 }
 
