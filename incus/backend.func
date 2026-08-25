@@ -1010,7 +1010,12 @@ INNEREOF" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || { msg_error "Failed to push f
   # only if the script reached its end.
   incus exec "${CT_NAME}" -- bash -c "${_run_env}
 ${_install_script}
-touch /root/.install-${SESSION_ID}.done" 2>&1 | tee -a "${LOGFILE:-$INCUS_BUILD_LOG}" || lxc_exit=$?
+touch /root/.install-${SESSION_ID}.done" 2>&1 |
+    tee >(sed -u 's/.*\r//' >>"${LOGFILE:-$INCUS_BUILD_LOG}")
+  # PIPESTATUS, not $?: the line above turns pipefail off, so $? is tee's
+  # status - always 0. Every non-zero exit from the container was discarded
+  # here, which is why a half-finished install reported success.
+  lxc_exit=${PIPESTATUS[0]}
   set -Eeuo pipefail
   declare -f error_handler &>/dev/null && trap 'error_handler' ERR || true
 
@@ -1337,6 +1342,7 @@ export INSTALL_LOG='/root/.install-${SESSION_ID}.log'
 export REPO_SOURCE='${REPO_SOURCE:-}'
 export REPO_SLUG='${REPO_SLUG:-}'
 export TELEMETRY_PLATFORM='incus'
+export CS_ANIMATION_OK='$([ -t 1 ] && echo 1 || echo 0)'
 EOF
 }
 

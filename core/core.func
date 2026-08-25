@@ -1418,13 +1418,12 @@ EOF
 # ------------------------------------------------------------------------------
 is_verbose_mode() {
   local verbose="${VERBOSE:-${var_verbose:-no}}"
-  local tty_status
-  if [[ -t 2 ]]; then
-    tty_status="interactive"
-  else
-    tty_status="not-a-tty"
-  fi
-  [[ "$verbose" != "no" || ! -t 2 ]]
+  [[ "$verbose" != "no" ]] && return 0
+  # A non-terminal stderr normally means an animation would be invisible. That
+  # is wrong inside a container: `incus exec` proxies the stream to the
+  # operator's terminal, so the frames do arrive. The host sets
+  # CS_ANIMATION_OK when a terminal is on the far end, and only then.
+  [[ ! -t 2 && "${CS_ANIMATION_OK:-0}" != "1" ]]
 }
 
 # ------------------------------------------------------------------------------
