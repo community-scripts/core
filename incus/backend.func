@@ -409,8 +409,15 @@ incus_create_lxc_container() {
   # (e.g. kernel.keys.maxkeys is not writable from an unprivileged user
   # namespace), so a plain set can silently persist a config that aborts the
   # next boot. Apply best-effort and verify with a self-healing restart below.
+  # kernel.keys.maxkeys cannot be written from an unprivileged user namespace -
+  # lxc aborts the start with "Permission denied - Failed to setup sysctl
+  # parameters kernel.keys.maxkeys to 2000". This was set for CT_TYPE=1, which
+  # IS the unprivileged case, so every unprivileged create paid a failed start
+  # plus a rollback to reach the state it would have had anyway. Privileged
+  # only, and only when the host default is actually below what we want.
   local optional_sysctl_pending=0
-  if [[ "${CT_TYPE:-1}" == "1" ]]; then
+  if [[ "${CT_TYPE:-1}" == "0" ]] &&
+    (($(cat /proc/sys/kernel/keys/maxkeys 2>/dev/null || echo 2000) < 2000)); then
     if incus config set "${CT_NAME}" linux.sysctl.kernel.keys.maxkeys=2000 >>"$LOGFILE" 2>&1; then
       optional_sysctl_pending=1
     fi
@@ -462,11 +469,11 @@ incus_create_lxc_container() {
       [[ -n "${IPV6_GATE:-}" ]] && { _incus_device_set ipv6.gateway "${IPV6_GATE}" "Could not apply IPv6 gateway" && net_reconfigure=1 || true; }
       ;;
     none | disable)
-      # Bridges without stateful DHCP / security.ipv6_filtering (e.g. a default
-      # incusbr0) reject ipv6.address on the NIC — even the value 'none'. The
-      # actual in-container disable is handled by the sysctl in tools.func, so
-      # only force a restart if the NIC key was genuinely applied.
-      _incus_device_set ipv6.address none "Could not disable IPv6 on nic" && net_reconfigure=1 || true
+      # Incus only accepts ipv6.address=none on a NIC when the bridge has
+      # security.ipv6_filtering, so on a default incusbr0 this always failed
+      # and warned about something it does not actually control. verb_ip6() in
+      # tools.func does the real disabling from inside the container, so leave
+      # the device alone and save the restart.
       ;;
     esac
   else

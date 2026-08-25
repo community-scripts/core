@@ -140,7 +140,14 @@ echo_default() {
     echo -e "${INFO}${BOLD}${DGN}Architecture: ${BGN}arm64${CL}"
   fi
   if [[ -n "${var_gpu:-}" && "${var_gpu}" == "yes" ]]; then
-    echo -e "${GPU}${BOLD}${DGN}GPU Passthrough: ${BGN}Enabled${CL}"
+    # Say what will actually happen. A host with no DRM or NVIDIA nodes - an
+    # arm64 board, say - has nothing to pass through, and announcing "Enabled"
+    # only to report "no GPU devices found" later reads like a failure.
+    if compgen -G '/dev/dri/*' >/dev/null 2>&1 || compgen -G '/dev/nvidia*' >/dev/null 2>&1; then
+      echo -e "${GPU}${BOLD}${DGN}GPU Passthrough: ${BGN}Enabled${CL}"
+    else
+      echo -e "${GPU}${BOLD}${DGN}GPU Passthrough: ${BGN}Requested - no GPU devices on this host${CL}"
+    fi
   fi
   if [ "$VERBOSE" == "yes" ]; then
     echo -e "${SEARCH}${BOLD}${DGN}Verbose Mode: ${BGN}Enabled${CL}"

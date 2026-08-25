@@ -280,7 +280,11 @@ _incus_sync_from_pve_settings() {
   case "${IPV6_METHOD:-auto}" in
   auto | dhcp) IPV6_ADDR="auto" ;;
   static) IPV6_ADDR="${IPV6_ADDR:-}" ;;
-  none | disable) IPV6_ADDR="none"; IPV6_METHOD="none" ;;
+  # Keep the method: "none" means do not assign one, "disable" means actively
+  # turn IPv6 off in the container. Collapsing both to "none" meant verb_ip6()
+  # in tools.func, which only fires on "disable", never ran on Incus - so
+  # "disable" left the container with a working IPv6 address.
+  none | disable) IPV6_ADDR="none" ;;
   esac
 }
 
