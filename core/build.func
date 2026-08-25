@@ -181,13 +181,13 @@ _cs_download() {
   local url="${1:?url}"
   local t0 code
   if [[ ",${dev_mode:-}," == *,net,* ]] && command -v curl >/dev/null 2>&1; then
-    t0=${EPOCHREALTIME/./}
+    t0=${EPOCHREALTIME/[.,]/}
     local body
     body="$(curl -fsSL "${_CS_CURL_RETRY[@]}" -w '
 %{http_code}' "$url" 2>/dev/null)"
     code="${body##*$'
 '}"
-    _cs_net_log "$code" "$((( ${EPOCHREALTIME/./} - t0 ) / 1000))" "$url"
+    _cs_net_log "$code" "$((( ${EPOCHREALTIME/[.,]/} - t0 ) / 1000))" "$url"
     printf '%s' "${body%$'
 '*}"
     return 0
@@ -274,7 +274,7 @@ _cs_prefetch_engine() {
   done
   [[ -z "$dir" ]] && return 1
 
-  local _cs_t0=${EPOCHREALTIME/./}
+  local _cs_t0=${EPOCHREALTIME/[.,]/}
   local args=() rel
   for rel in "${_CS_ENGINE_FILES[@]}"; do
     mkdir -p "${dir}/${rel%/*}" 2>/dev/null || true
@@ -294,7 +294,7 @@ _cs_prefetch_engine() {
       missing=$((missing + 1))
     fi
   done
-  _cs_net_log "200" "$(( ( ${EPOCHREALTIME/./} - _cs_t0 ) / 1000 ))"     "prefetch: ${kept} files, ${missing} missing -> ${dir}"
+  _cs_net_log "200" "$(( ( ${EPOCHREALTIME/[.,]/} - _cs_t0 ) / 1000 ))"     "prefetch: ${kept} files, ${missing} missing -> ${dir}"
   if ((kept == 0)); then
     rm -rf "$dir" 2>/dev/null
     return 1
