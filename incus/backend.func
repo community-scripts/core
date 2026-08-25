@@ -997,17 +997,15 @@ INNEREOF" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || { msg_error "Failed to push f
   _run_env="$(_incus_build_install_env)"
   _run_env+=$'\nsource /dev/stdin <<<"$(cat /tmp/incus-functions)"'
 
-  # Without a pty `incus exec` hands the script no terminal, so a prompt is
-  # printed but cannot be answered. Force one when there is a terminal to give
-  # away; an unattended run has none and must stay non-interactive.
-  local -a _exec_tty=()
-  if [[ "${PHS_SILENT:-0}" != "1" ]] && [ -t 0 ]; then
-    _exec_tty=(-t)
-  fi
-
+  # Deliberately NO pty here. Forcing one with `incus exec -t` looks like the
+  # fix for install scripts that prompt, but apt saves and restores stdin's
+  # terminal attributes around every dpkg call: on that pty tcsetattr returned
+  # EIO ("Setting in Stop via TCSAFLUSH for stdin failed"), killing the shell
+  # mid-install. It died before silent() could record anything, so the run was
+  # reported as a success against an empty container.
   set +Eeuo pipefail
   trap - ERR
-  incus exec "${CT_NAME}" ${_exec_tty[@]+"${_exec_tty[@]}"} -- bash -c "${_run_env}
+  incus exec "${CT_NAME}" -- bash -c "${_run_env}
 ${_install_script}" 2>&1 | tee -a "${LOGFILE:-$INCUS_BUILD_LOG}" || lxc_exit=$?
   set -Eeuo pipefail
   declare -f error_handler &>/dev/null && trap 'error_handler' ERR || true
