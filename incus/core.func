@@ -239,10 +239,30 @@ incus_check() {
     exit 1
   fi
 
-  # Check if incus daemon is accessible
-  if ! incus info &>/dev/null; then
-    incus_msg_error "Incus daemon is not running or not accessible."
-    incus_msg_error "Run: systemctl start incus"
+  # Check if incus daemon is accessible. The probe's own error is what tells
+  # a stopped daemon apart from a permission problem or an uninitialised
+  # install, so keep it instead of always advising "systemctl start incus".
+  local probe_err probe_rc=0
+  probe_err="$(LC_ALL=C incus info 2>&1 >/dev/null)" || probe_rc=$?
+  if ((probe_rc != 0)); then
+    case "$probe_err" in
+    *"onnection refused"* | *"o such file or directory"* | *"ailed to connect"*)
+      incus_msg_error "Incus daemon is not running."
+      incus_msg_error "Run: systemctl start incus"
+      ;;
+    *"ermission denied"* | *"not authorized"* | *"nauthorized"*)
+      incus_msg_error "No permission to reach the Incus daemon as $(id -un)."
+      incus_msg_error "Run: sudo usermod -aG incus-admin $(id -un) - then log out and back in"
+      ;;
+    *"not been initialized"* | *"o storage pool"*)
+      incus_msg_error "Incus is installed but not initialised."
+      incus_msg_error "Run: incus admin init"
+      ;;
+    *)
+      incus_msg_error "Cannot query the Incus daemon (incus info exited ${probe_rc})."
+      incus_msg_error "${probe_err:-no error output - try running: incus info}"
+      ;;
+    esac
     exit 1
   fi
 

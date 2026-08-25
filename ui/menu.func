@@ -862,8 +862,15 @@ check_container_os_guard() {
     return 0
   fi
 
-  local mismatch_detail remediation
-  if [[ "$downgraded_target" -eq 1 ]]; then
+  local mismatch_detail remediation dialog_title="OS VERSION MISMATCH"
+  if [[ "$cur_os" != "$rec_os" ]]; then
+    # Two different distributions. Their version numbers are not comparable and
+    # there is no upgrade path between them, so the version-mismatch wording
+    # produced impossible advice like "upgrade the container OS to debian 26.04".
+    dialog_title="WRONG OS"
+    mismatch_detail="This container runs ${cur_os} ${cur_ver}, but ${APP:-this script} is built for ${rec_os}.\n\nThese are different distributions - ${cur_os} cannot be upgraded to ${rec_os}, and their version numbers are unrelated.\n\nRecommended: create a new ${rec_os} ${rec_ver} container and install ${APP:-the application} there."
+    remediation="Create a new ${rec_os} ${rec_ver} container instead - ${cur_os} cannot be upgraded to ${rec_os}"
+  elif [[ "$downgraded_target" -eq 1 ]]; then
     mismatch_detail="Your container runs ${cur_os} ${cur_ver}, which is newer than what this script now targets (${rec_os} ${rec_ver}).\n\nThe target was likely lowered on purpose, e.g. because ${APP:-the app} had problems on newer OS versions - check the GitHub issues for ${APP:-this app} for details.\n\nContinuing on ${cur_ver} often still works, but isn't guaranteed. If you are unsure, ask in our Discord (https://discord.gg/3AnUqsXnmK) before continuing."
     remediation="This script now targets the older ${rec_os} ${rec_ver}. Check the GitHub issues for ${APP:-this app}, or ask in Discord (https://discord.gg/3AnUqsXnmK) if you are unsure"
   else
@@ -873,7 +880,7 @@ check_container_os_guard() {
 
   if [[ "${PHS_SILENT:-0}" != "1" ]] && command -v whiptail &>/dev/null && [ -t 0 ] && [[ "$TERM" != "dumb" ]]; then
     local choice
-    choice=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "OS VERSION MISMATCH" --menu \
+    choice=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "$dialog_title" --menu \
       "${mismatch_detail}\n\nIf you continue anyway, it may break — no support is provided in that case.\n\nContinue anyway?" \
       20 70 3 \
       "1" "No  (cancel update)" \
