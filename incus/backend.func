@@ -986,15 +986,28 @@ INNEREOF" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || { msg_error "Failed to push f
     msg_ok "DNS override applied"
   fi
 
-  msg_info "Starting application installation"
+  # Not msg_info: that starts a spinner, and nothing here ever stopped it. The
+  # install script below runs for minutes and prints its own output, including
+  # prompts - the spinner kept redrawing over them, which is why Immich's
+  # machine-learning menu could not be read and the keystroke landed in the
+  # spinner line. A static line, and the script owns the terminal from here.
+  msg_custom "🚀" "${GN}" "Starting application installation"
   local _install_script _run_env lxc_exit=0 install_exit_code=0
   _install_script="$(_cs_fetch_text "install/${var_install}.sh")"
   _run_env="$(_incus_build_install_env)"
   _run_env+=$'\nsource /dev/stdin <<<"$(cat /tmp/incus-functions)"'
 
+  # Without a pty `incus exec` hands the script no terminal, so a prompt is
+  # printed but cannot be answered. Force one when there is a terminal to give
+  # away; an unattended run has none and must stay non-interactive.
+  local -a _exec_tty=()
+  if [[ "${PHS_SILENT:-0}" != "1" ]] && [ -t 0 ]; then
+    _exec_tty=(-t)
+  fi
+
   set +Eeuo pipefail
   trap - ERR
-  incus_ct_exec bash -c "${_run_env}
+  incus exec "${CT_NAME}" ${_exec_tty[@]+"${_exec_tty[@]}"} -- bash -c "${_run_env}
 ${_install_script}" 2>&1 | tee -a "${LOGFILE:-$INCUS_BUILD_LOG}" || lxc_exit=$?
   set -Eeuo pipefail
   declare -f error_handler &>/dev/null && trap 'error_handler' ERR || true
