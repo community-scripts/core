@@ -325,6 +325,14 @@ _bootstrap() {
   COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
   COMMUNITY_SCRIPTS_CORE_URL="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
 
+  # A TMPDIR pointing at something that does not exist kills every mktemp in the
+  # engine. pam_systemd sets /tmp/user/<uid> on some hosts and the directory is
+  # not there in a fresh container, so the first mktemp -d returned 1 and took
+  # the install with it.
+  if [[ -n "${TMPDIR:-}" && ! -d "$TMPDIR" ]]; then
+    mkdir -p "$TMPDIR" 2>/dev/null || unset TMPDIR
+  fi
+
   # Mark container context BEFORE error handling starts: error_handler/on_exit
   # must write local failure artifacts instead of talking to the telemetry API
   # (the host is the single telemetry reporter).
@@ -411,6 +419,15 @@ pkg_update() {
     if ! $STD apt-get update; then
       local failed_mirror
       failed_mirror=$(grep -m1 -oP '(?<=URIs: https?://)[^/]+' /etc/apt/sources.list.d/debian.sources 2>/dev/null || grep -m1 -oP '(?<=deb https?://)[^/]+' /etc/apt/sources.list 2>/dev/null || echo "unknown")
+      # A mirror change cannot fix a resolver problem, and probing them all takes
+      # one to two minutes before reporting "possible CDN synchronization issue".
+      if ! getent hosts deb.debian.org >/dev/null 2>&1 &&
+        ! getent hosts archive.ubuntu.com >/dev/null 2>&1; then
+        msg_error "apt-get update failed and no Debian/Ubuntu host resolves - this is DNS, not the mirror"
+        msg_custom "${INFO:-i}" "${YW:-}" "Check /etc/resolv.conf and that /etc is traversable (o+x)"
+        return 1
+      fi
+
       msg_warn "apt-get update failed (${failed_mirror}), trying alternate mirrors..."
       local distro
       distro=$(. /etc/os-release 2>/dev/null && echo "$ID" || echo "debian")
@@ -1097,6 +1114,17 @@ setting_up_container() {
   # Only attempt in privileged containers (unprivileged cannot chown /)
   if [[ "$(stat -c '%U' /)" != "root" ]]; then
     (chown root:root / 2>/dev/null) || true
+  fi
+
+  # apt fetches as the _apt user, so /etc without o+x means _apt cannot reach
+  # resolv.conf: root pings fine while apt reports "Temporary failure resolving".
+  # A host umask of 027 leaves new containers like this; the PVE GUI's own
+  # containers get 755, so it is collateral rather than intent.
+  local _etc_mode
+  _etc_mode="$(stat -c '%a' /etc 2>/dev/null || echo 755)"
+  if [[ "$_etc_mode" =~ ^[0-7]+$ ]] && (( (8#$_etc_mode & 1) == 0 )); then
+    chmod o+x /etc 2>/dev/null || true
+    msg_warn "/etc was ${_etc_mode}, which stops apt and every other service resolving names - set to $(stat -c '%a' /etc)"
   fi
 
   # Wait for network
