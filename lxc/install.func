@@ -1127,6 +1127,22 @@ setting_up_container() {
     msg_warn "/etc was ${_etc_mode}, which stops apt and every other service resolving names - set to $(stat -c '%a' /etc)"
   fi
 
+  # Debian records the zone name in /etc/timezone, and install scripts read it
+  # (immich, tracearr). PVE templates ship it, the linuxcontainers images used
+  # on Incus ship only the /etc/localtime symlink - so `cat /etc/timezone`
+  # aborted the install after everything else had already been built. Only
+  # fills the gap: where the file exists, nothing here runs.
+  if [[ ! -s /etc/timezone ]]; then
+    local _tz="${tz:-}"
+    if [[ -n "$_tz" && "$_tz" != "host" && -f "/usr/share/zoneinfo/$_tz" ]]; then
+      ln -sf "/usr/share/zoneinfo/$_tz" /etc/localtime 2>/dev/null || true
+    else
+      _tz="$(readlink -f /etc/localtime 2>/dev/null | sed -n 's#.*/zoneinfo/##p')"
+      [[ -z "$_tz" ]] && _tz="Etc/UTC"
+    fi
+    echo "$_tz" >/etc/timezone 2>/dev/null || true
+  fi
+
   # Wait for network
   local i
   for ((i = RETRY_NUM; i > 0; i--)); do
