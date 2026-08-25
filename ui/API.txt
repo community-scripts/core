@@ -2,6 +2,7 @@ _build_current_app_vars_tmp
 _build_vars_diff
 _container_write_failure
 _cs_clear
+_cs_host_version_line
 _cs_os_family
 _cs_run_os_section
 _cs_runtime_cache_dir
