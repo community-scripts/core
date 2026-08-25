@@ -40,6 +40,23 @@ _incus_nic_supports_ip() {
   esac
 }
 
+# Restart the container, tolerating optional boot-time configs (e.g.
+# linux.sysctl.kernel.keys.maxkeys) that some hosts/kernels reject for the
+# container's privilege level. Such configs pass 'config set' but abort the
+# container at *start* time, so a plain restart would leave it stopped. On
+# failure, roll those configs back and retry so the container is never left
+# dead. Returns non-zero only if it still cannot start.
+_incus_restart_ct() {
+  local logf="${LOGFILE:-$INCUS_BUILD_LOG}"
+  if incus restart "${CT_NAME}" >>"$logf" 2>&1; then
+    return 0
+  fi
+  msg_warn "Container failed to start with current config — rolling back optional sysctls"
+  _incus_soft incus config unset "${CT_NAME}" linux.sysctl.kernel.keys.maxkeys >>"$logf" 2>&1
+  _incus_soft incus stop -f "${CT_NAME}" >>"$logf" 2>&1
+  incus start "${CT_NAME}" >>"$logf" 2>&1
+}
+
 _incus_resolve_launch_image() {
   # Tries images:OS/VER (+ /cloud, codename alias, local cache). Sets INCUS_LAUNCH_IMAGE.
   local os="${IMAGE_OS:-debian}" ver="${IMAGE_VERSION:-13}" alias=""
@@ -365,9 +382,16 @@ incus_create_lxc_container() {
   INCUS_BUILD_OK=0
   export INCUS_CT_CREATED INCUS_ORPHAN_HANDLED INCUS_BUILD_OK CT_NAME CTID
 
-  # Optional configs that some Incus versions reject at launch time.
+  # Optional boot-time configs that some hosts/kernels reject for this
+  # container type. They fail when the container *starts*, not at 'config set'
+  # (e.g. kernel.keys.maxkeys is not writable from an unprivileged user
+  # namespace), so a plain set can silently persist a config that aborts the
+  # next boot. Apply best-effort and verify with a self-healing restart below.
+  local optional_sysctl_pending=0
   if [[ "${CT_TYPE:-1}" == "1" ]]; then
-    _incus_soft incus config set "${CT_NAME}" linux.sysctl.kernel.keys.maxkeys=2000 >>"$LOGFILE" 2>&1
+    if incus config set "${CT_NAME}" linux.sysctl.kernel.keys.maxkeys=2000 >>"$LOGFILE" 2>&1; then
+      optional_sysctl_pending=1
+    fi
   fi
 
   msg_ok "LXC Container ${CT_NAME} was successfully created."
@@ -416,8 +440,11 @@ incus_create_lxc_container() {
       [[ -n "${IPV6_GATE:-}" ]] && { _incus_device_set ipv6.gateway "${IPV6_GATE}" "Could not apply IPv6 gateway" && net_reconfigure=1 || true; }
       ;;
     none | disable)
-      _incus_device_set ipv6.address none "Could not disable IPv6 on nic" || true
-      net_reconfigure=1
+      # Bridges without stateful DHCP / security.ipv6_filtering (e.g. a default
+      # incusbr0) reject ipv6.address on the NIC — even the value 'none'. The
+      # actual in-container disable is handled by the sysctl in tools.func, so
+      # only force a restart if the NIC key was genuinely applied.
+      _incus_device_set ipv6.address none "Could not disable IPv6 on nic" && net_reconfigure=1 || true
       ;;
     esac
   else
@@ -431,12 +458,24 @@ incus_create_lxc_container() {
     _incus_soft incus config set "${CT_NAME}" "user.tags=${TAGS}" >>"$LOGFILE" 2>&1
   fi
 
-  if [[ "$net_reconfigure" -eq 1 ]]; then
-    msg_info "Reconfiguring network settings"
-    if ! incus restart "${CT_NAME}" >>"$LOGFILE" 2>&1; then
-      msg_warn "Restart after network reconfiguration failed"
+  # Restart when network devices changed, or to verify an optional boot-time
+  # sysctl we set above (so a rejected one is rolled back now rather than
+  # bricking a later reboot with boot.autostart=true).
+  if [[ "$net_reconfigure" -eq 1 || "$optional_sysctl_pending" -eq 1 ]]; then
+    if [[ "$net_reconfigure" -eq 1 ]]; then
+      msg_info "Reconfiguring network settings"
+    else
+      msg_info "Verifying container configuration"
     fi
-    msg_ok "Network settings applied"
+    if _incus_restart_ct; then
+      if [[ "$net_reconfigure" -eq 1 ]]; then
+        msg_ok "Network settings applied"
+      else
+        msg_ok "Container configuration verified"
+      fi
+    else
+      msg_warn "Container restart failed after configuration changes"
+    fi
   fi
 }
 
