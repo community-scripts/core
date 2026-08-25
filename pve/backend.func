@@ -144,6 +144,21 @@ _pct_create() {
   return $rc
 }
 
+# Restart after a config change, and say something useful when it fails. The
+# two call sites used to be `pct start "$CTID" >/dev/null 2>&1`, so a failure
+# aborted the run under errexit with a bare 255 and the output discarded - six
+# runs across four apps in the telemetry, none of them diagnosable. pct can
+# also return 0 and leave the container stopped, so ask for the real state.
+_pct_restart() {
+  local ctid="$1" what="$2" err
+  err="$(pct start "$ctid" 2>&1)" || true
+  [[ "$(pct status "$ctid" 2>/dev/null)" == "status: running" ]] && return 0
+  msg_error "Container ${ctid} did not start after ${what}"
+  [[ -n "$err" ]] && msg_custom "ℹ️" "${YW}" "$err"
+  msg_custom "ℹ️" "${YW}" "See: pct config ${ctid} and journalctl -u pve-container@${ctid}"
+  return 1
+}
+
 # ------------------------------------------------------------------------------
 # build_container()
 #
@@ -388,6 +403,18 @@ $PCT_OPTIONS_STRING"
   export CONTAINER_STORAGE="${var_container_storage:-}"
   [[ -n "${HTTP_PROXY:-}" ]] && export HTTP_PROXY HTTPS_PROXY="$HTTP_PROXY" http_proxy="$HTTP_PROXY" https_proxy="$HTTP_PROXY"
   [[ -n "${HTTP_NO_PROXY:-}" ]] && export NO_PROXY="$HTTP_NO_PROXY" no_proxy="$HTTP_NO_PROXY"
+
+  # Every storage path below shells out to pvesm. Where that binary is missing
+  # this is not a Proxmox host at all, and the `pvesm ... 2>/dev/null | awk`
+  # pipelines just returned a bare 127 with the diagnostic thrown away - the
+  # single largest group in our telemetry. Say what actually happened instead.
+  if ! command -v pvesm >/dev/null 2>&1; then
+    msg_error "pvesm is not available - this backend expects a Proxmox VE host"
+    if declare -f detect_lxc_platform >/dev/null 2>&1; then
+      msg_custom "ℹ️" "${YW}" "Detected platform: $(detect_lxc_platform). Override with LXC_PLATFORM=pve|incus if that is wrong"
+    fi
+    exit 1
+  fi
 
   # Validate storage space only if CONTAINER_STORAGE is already set
   # (Storage selection happens in create_lxc_container for some modes)
@@ -802,7 +829,7 @@ EOF
       chown root:root "$rootfs_path" 2>/dev/null || true
     fi
     pct unmount "$CTID" >/dev/null 2>&1 || true
-    pct start "$CTID" >/dev/null 2>&1
+    _pct_restart "$CTID" "the rootfs ownership fix" || exit 227
     sleep 3
   fi
 
@@ -1775,7 +1802,7 @@ fix_gpu_gids() {
   sed -i -E "s|(dev[0-9]+: /dev/kfd),gid=[0-9]+|\1,gid=${render_gid}|g" "$LXC_CONFIG"
 
   # Restart container
-  pct start "$CTID" >/dev/null 2>&1
+  _pct_restart "$CTID" "GPU passthrough configuration" || exit 227
   sleep 2
 
   msg_ok "GPU passthrough configured (video:${video_gid}, render:${render_gid})"
