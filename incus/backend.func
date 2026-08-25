@@ -125,7 +125,10 @@ incus_storage_pool_free_gb() {
   local info free_bytes total_bytes used_bytes free_raw total_raw used_raw
 
   # Prefer machine-readable bytes when available (Incus --bytes).
-  info=$(incus storage info --bytes "$pool" 2>/dev/null || true)
+  # LC_ALL=C: incus translates this output. A German host reports "Gesamter
+  # Speicherplatz" and "Speicherplatz in Benutzung", so the awk below matched
+  # nothing and a 357GB pool looked unmeasurable.
+  info=$(LC_ALL=C incus storage info --bytes "$pool" 2>/dev/null || true)
   free_raw=$(echo "$info" | awk -F': *' '/space free:/ {print $2; exit}')
   if [[ -n "$free_raw" ]]; then
     free_bytes="$(_incus_parse_size_to_bytes "$free_raw" 2>/dev/null || true)"
@@ -133,7 +136,7 @@ incus_storage_pool_free_gb() {
 
   # Older/human output often has only "space used" + "total space" (no free line).
   if [[ -z "${free_bytes:-}" ]]; then
-    info=$(incus storage info "$pool" 2>/dev/null || true)
+    info=$(LC_ALL=C incus storage info "$pool" 2>/dev/null || true)
     free_raw=$(echo "$info" | awk -F': *' '/space free:/ {print $2; exit}')
     total_raw=$(echo "$info" | awk -F': *' '/total space:/ {print $2; exit}')
     used_raw=$(echo "$info" | awk -F': *' '/space used:/ {print $2; exit}')
@@ -145,6 +148,16 @@ incus_storage_pool_free_gb() {
       if [[ -n "${total_bytes:-}" && -n "${used_bytes:-}" && "$total_bytes" -ge "$used_bytes" ]]; then
         free_bytes=$((total_bytes - used_bytes))
       fi
+    fi
+  fi
+
+  # A dir pool is just a path, so ask the filesystem when incus says nothing.
+  # Does not help lvm or zfs, where source is not a path.
+  if [[ -z "${free_bytes:-}" ]]; then
+    local src
+    src="$(LC_ALL=C incus storage get "$pool" source 2>/dev/null || true)"
+    if [[ -n "$src" && -d "$src" ]]; then
+      free_bytes="$(df -PB1 "$src" 2>/dev/null | awk 'NR==2 {print $4}')"
     fi
   fi
 
@@ -178,8 +191,13 @@ resolve_storage_preselect() {
   incus storage info "$preselect" &>/dev/null || return 1
   STORAGE_RESULT="$preselect"
   local free_gb
-  free_gb=$(incus_storage_pool_free_gb "$preselect" 2>/dev/null || echo "?")
-  STORAGE_INFO="Free: ~${free_gb}GB"
+  free_gb=$(incus_storage_pool_free_gb "$preselect" 2>/dev/null || true)
+  # "Free: ~?GB" reads like a broken template. Say what is actually known.
+  if [[ -n "$free_gb" ]]; then
+    STORAGE_INFO="Free: ~${free_gb}GB"
+  else
+    STORAGE_INFO="Free: unknown"
+  fi
   return 0
 }
 
@@ -474,7 +492,12 @@ incus_create_lxc_container() {
         msg_ok "Container configuration verified"
       fi
     else
-      msg_warn "Container restart failed after configuration changes"
+      # Everything past this point needs incus exec. Warning and carrying on
+      # over a stopped container is what turned one failed restart into three
+      # unrelated-looking errors further down.
+      msg_error "Container ${CT_NAME} is not running after configuration changes"
+      msg_custom "ℹ️" "${YW}" "See: incus info --show-log ${CT_NAME}"
+      return 1
     fi
   fi
 }
