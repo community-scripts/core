@@ -54,7 +54,11 @@ _incus_restart_ct() {
   msg_warn "Container failed to start with current config — rolling back optional sysctls"
   _incus_soft incus config unset "${CT_NAME}" linux.sysctl.kernel.keys.maxkeys >>"$logf" 2>&1
   _incus_soft incus stop -f "${CT_NAME}" >>"$logf" 2>&1
-  incus start "${CT_NAME}" >>"$logf" 2>&1
+  _incus_soft incus start "${CT_NAME}" >>"$logf" 2>&1
+  # A failed restart leaves incus disagreeing with itself - the same recovery
+  # logged "already stopped" from stop and "already running" from start - so
+  # the exit code proves nothing here. Ask what the state actually is.
+  [[ "$(LC_ALL=C incus list "${CT_NAME}" -c s --format csv 2>/dev/null | head -1)" == "RUNNING" ]]
 }
 
 _incus_resolve_launch_image() {
