@@ -620,11 +620,21 @@ vm_check_image() {
   fatal "Image ${image} not found. Try: incus image list images: type=virtual-machine"
 }
 
+# Returns a free instance name on stdout. The container path has picked the
+# next free name since it was written; this one aborted instead, so a second
+# debian VM on a host that already had a debian container was refused outright.
+# incus_container_exists uses `incus info`, which covers VMs and containers
+# alike, so the two paths cannot hand out the same name.
 check_hostname_conflict() {
   local name="${1:-$HN}"
-  if incus info "$name" >/dev/null 2>&1; then
-    fatal "An instance named '${name}' already exists on this host"
-  fi
+  incus_container_exists "$name" || {
+    printf '%s' "$name"
+    return 0
+  }
+  local alt
+  alt="$(incus_get_next_name "$name")"
+  msg_warn "Instance '${name}' already exists — using '${alt}'"
+  printf '%s' "$alt"
 }
 
 # ==============================================================================
@@ -741,7 +751,8 @@ incus_vm_create() {
   kvm_check
   image="$(_vm_resolve_cloud_image "$image")"
   vm_check_image "$image"
-  check_hostname_conflict "$vm_name"
+  vm_name="$(check_hostname_conflict "$vm_name")"
+  HN="$vm_name"
 
   _INCUS_VM_NAME="$vm_name"
 
