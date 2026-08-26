@@ -24,4 +24,10 @@ own git remote and branch into a raw content base, so working in a fork or on a
 branch picks itself up without any configuration. Loaded by
 [`core/build.func`](../core/build.func) when running from a local checkout.
 
+GitHub remotes only — the SSH, HTTPS and `git@` forms all map. Anything else
+returns non-zero, which the caller reads as "no origin detected" and falls
+through to the defaults. A checkout hosted elsewhere still works; it just needs
+`COMMUNITY_SCRIPTS_URL` set by hand, because that is a plain base URL and the
+loader never inspects the host.
+
 CT scripts do not source this directly.

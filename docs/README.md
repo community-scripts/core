@@ -24,6 +24,7 @@ follows from there.
 | [`api/`](../api/) | Telemetry reporting | [api.md](api.md) |
 | [`vm/`](../vm/) | Cloud-init generation for VMs | [vm.md](vm.md) |
 | [`pve/`](../pve/), [`incus/`](../incus/) | The two platform backends | [backends.md](backends.md) |
+| [`misc/`](../misc/) | The `update` helper an installed app calls | [updates.md](updates.md) |
 | [`headers/`](../headers/) | Generated figlet banners | [headers.md](headers.md) |
 | [`tools/`](../tools/) | `run.sh`, the fork and branch runner | [loading.md](loading.md#running-against-a-fork) |
 | [`images/`](../images/) | Logos used in container MOTD and VM output | — |
@@ -44,8 +45,9 @@ test asks for feedback, and what it changes.
 new file goes, which files are loaders, and when an `API.txt` has to be
 regenerated.
 
-[proxmoxve-migration.md](proxmoxve-migration.md) tracks what stands between this
-engine and ProxmoxVE, which has not moved over yet.
+[updates.md](updates.md) covers what happens when a user runs `update` inside a
+container — the entrypoint, the website lookup and the two guards that can stop
+an update before it starts.
 
 ## Every file
 
@@ -68,7 +70,7 @@ engine and ProxmoxVE, which has not moved over yet.
 | [`lib/hwaccel.func`](../lib/hwaccel.func) | GPU detection and hardware acceleration |
 | [`lib/alpine.func`](../lib/alpine.func) | The Alpine helper library, loaded instead of the above |
 | [`lxc/install.func`](../lxc/install.func) | In-container bootstrap, every distro including Alpine |
-| [`lxc/platform.func`](../lxc/platform.func) | Proxmox VE / Incus / in-container detection |
+| [`lxc/platform.func`](../lxc/platform.func) | Proxmox VE / Incus / in-container detection, and the writable state directory |
 | [`host/preflight.func`](../host/preflight.func) | Optional host readiness checks, off by default |
 | [`host/validate.func`](../host/validate.func) | MAC, VLAN and MTU checks shared by both platforms |
 | [`host/source-origin.func`](../host/source-origin.func) | Git remote to raw content base |
@@ -86,3 +88,4 @@ engine and ProxmoxVE, which has not moved over yet.
 | [`incus/core.func`](../incus/core.func) | Incus messaging and compatibility layer |
 | [`incus/tools.func`](../incus/tools.func) | Incus-side helper wrappers |
 | [`incus/vm-core.func`](../incus/vm-core.func) | VM creation on Incus |
+| [`misc/update.sh`](../misc/update.sh) | The `update` helper: decides whether an app can still be updated before pulling anything |

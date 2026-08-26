@@ -37,6 +37,9 @@ Two things worth knowing:
 - Several host facts are memoised in files under a runtime cache directory
   rather than in shell variables, because every call site is a `$( )` or a
   pipe — that is, a subshell, where a variable assignment would be discarded.
+- `write_update_entrypoint` and `migrate_update_entrypoint` generate the
+  `/usr/bin/update` a finished container carries. See [updates.md](updates.md).
+- `get_header` renders the figlet banner. See [headers.md](headers.md).
 
 ## [`error_handler.func`](../core/error_handler.func)
 

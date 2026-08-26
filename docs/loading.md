@@ -27,7 +27,8 @@ location is deliberate — conflating the two is what used to break local
 1. **Local checkout** — used when found, so development needs no network at all
 2. **Git origin** — a checkout's own remote and branch become its raw base, so a
    fork or branch is picked up automatically
-   ([`host/source-origin.func`](../host/source-origin.func))
+   ([`host/source-origin.func`](../host/source-origin.func)). GitHub remotes
+   only; a checkout hosted anywhere else needs the URL set by hand.
 3. **Defaults** — `community-scripts/core@main` for the engine,
    `community-scripts/ProxmoxVED@main` for the scripts
 
@@ -64,11 +65,26 @@ would notice, which is exactly why it is checked rather than trusted.
 
 ## Platform detection
 
+Tested in this order:
+
 | Environment | Detected by | Backend |
 | ----------- | ----------- | ------- |
-| Proxmox VE host | `pveversion` present | `pve/backend.func` |
-| Incus host | `incus` CLI and a reachable daemon | `incus/build.func` |
 | Inside an Incus container | `/dev/incus/sock` or the Community Scripts MOTD | update mode |
+| Proxmox VE host | `pveversion` present | `pve/backend.func` |
+| Incus host | the `incus` client, plus either a reachable daemon or `/var/lib/incus` | `incus/build.func` |
+| Anything else | — | update mode |
+
+The order matters, and the third row is why. A host is accepted without a
+reachable daemon: `incus info` needs both a running daemon and group membership,
+and a non-root operator is guaranteed neither, so a host whose daemon was down
+used to read as "container" — and the ct script then offered to *update* the
+host instead of building on it. Testing the container markers first stops that
+relaxation from swallowing a container that happens to carry the client.
+
+The client is not always on `PATH` either: a non-login shell misses `/snap/bin`,
+and sudo's `secure_path` can drop it. `_lxc_incus_bin` looks in the usual
+locations, and `ensure_incus_on_path` puts the directory back so every later
+`incus` call in the engine resolves too.
 
 Override with `LXC_PLATFORM` when debugging. See
 [`lxc/platform.func`](../lxc/platform.func).
