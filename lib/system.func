@@ -605,7 +605,7 @@ is_tool_installed() {
     ;;
   mongodb | mongod)
     if command -v mongod >/dev/null 2>&1; then
-      installed_version=$(mongod --version 2>/dev/null | awk '/db version/{print $3}' | cut -d. -f1,2)
+      installed_version=$(mongod --version 2>/dev/null | awk '/db version/{print $3}' | sed 's/^v//' | cut -d. -f1,2)
     fi
     ;;
   node | nodejs)
@@ -659,6 +659,39 @@ is_tool_installed() {
 }
 
 # ------------------------------------------------------------------------------
+# Checks whether purging the given package glob(s) would also remove packages
+# outside those globs (i.e. reverse dependents, such as an app depending on
+# mongodb-org-server). Uses `apt-get -s` (simulate) with the stable apt-get
+# output format, not `apt`, whose output is explicitly unstable for scripting.
+# Returns 0 (safe to purge) or 1 (unsafe - prints the unexpected packages).
+# Usage: _purge_is_safe 'mongodb*' ['other-glob*' ...]
+# ------------------------------------------------------------------------------
+_purge_is_safe() {
+  local -a globs=("$@")
+  local -a collateral=()
+  local pkg glob matched
+  local sim_out
+  sim_out=$(apt-get -s purge -y "${globs[@]}" 2>/dev/null) || return 0
+  while IFS= read -r pkg; do
+    [[ -z "$pkg" ]] && continue
+    matched=0
+    for glob in "${globs[@]}"; do
+      # shellcheck disable=SC2053
+      [[ "$pkg" == $glob ]] && {
+        matched=1
+        break
+      }
+    done
+    ((matched)) || collateral+=("$pkg")
+  done < <(awk '/^(Remv|Purg) /{print $2}' <<<"$sim_out")
+  if ((${#collateral[@]} > 0)); then
+    msg_warn "Refusing purge of '${globs[*]}': would also remove ${collateral[*]}"
+    return 1
+  fi
+  return 0
+}
+
+# ------------------------------------------------------------------------------
 # Remove old tool version completely (purge + cleanup repos)
 # Usage: remove_old_tool_version "mariadb" "repository-name"
 # ------------------------------------------------------------------------------
@@ -669,11 +702,13 @@ remove_old_tool_version() {
   case "$tool_name" in
   mariadb)
     stop_all_services "mariadb"
+    _purge_is_safe 'mariadb*' || return 1
     $STD apt purge -y 'mariadb*' >/dev/null 2>&1 || true
     cleanup_tool_keyrings "mariadb"
     ;;
   mysql)
     stop_all_services "mysql"
+    _purge_is_safe 'mysql*' || return 1
     $STD apt purge -y 'mysql*' >/dev/null 2>&1 || true
     # Keep data directory for safety (remove manually if needed)
     # rm -rf /var/lib/mysql 2>/dev/null || true
@@ -681,12 +716,14 @@ remove_old_tool_version() {
     ;;
   mongodb)
     stop_all_services "mongod"
+    _purge_is_safe 'mongodb*' || return 1
     $STD apt purge -y 'mongodb*' >/dev/null 2>&1 || true
     # Keep data directory for safety (remove manually if needed)
     # rm -rf /var/lib/mongodb 2>/dev/null || true
     cleanup_tool_keyrings "mongodb"
     ;;
   node | nodejs)
+    _purge_is_safe nodejs npm || return 1
     $STD apt purge -y nodejs npm >/dev/null 2>&1 || true
     # Clean up npm global modules
     if command -v npm >/dev/null 2>&1; then
@@ -699,23 +736,27 @@ remove_old_tool_version() {
     ;;
   php)
     stop_all_services "php.*-fpm"
+    _purge_is_safe 'php*' || return 1
     $STD apt purge -y 'php*' >/dev/null 2>&1 || true
     rm -rf /etc/php 2>/dev/null || true
     cleanup_tool_keyrings "deb.sury.org-php" "php"
     ;;
   postgresql)
     stop_all_services "postgresql"
+    _purge_is_safe 'postgresql*' || return 1
     $STD apt purge -y 'postgresql*' >/dev/null 2>&1 || true
     # Keep data directory for safety (can be removed manually if needed)
     # rm -rf /var/lib/postgresql 2>/dev/null || true
     cleanup_tool_keyrings "postgresql" "pgdg"
     ;;
   java)
+    _purge_is_safe 'temurin*' 'adoptium*' 'openjdk*' || return 1
     $STD apt purge -y 'temurin*' 'adoptium*' 'openjdk*' >/dev/null 2>&1 || true
     cleanup_tool_keyrings "adoptium"
     ;;
   ruby)
     cleanup_legacy_install "ruby"
+    _purge_is_safe 'ruby*' || return 1
     $STD apt purge -y 'ruby*' >/dev/null 2>&1 || true
     ;;
   rust)
@@ -727,6 +768,7 @@ remove_old_tool_version() {
     ;;
   clickhouse)
     stop_all_services "clickhouse-server"
+    _purge_is_safe 'clickhouse*' || return 1
     $STD apt purge -y 'clickhouse*' >/dev/null 2>&1 || true
     # Keep data directory for safety (remove manually if needed)
     # rm -rf /var/lib/clickhouse 2>/dev/null || true

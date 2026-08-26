@@ -65,7 +65,10 @@ setup_clickhouse() {
   if [[ -n "$CURRENT_VERSION" && "$CURRENT_VERSION" != "$CLICKHOUSE_VERSION" ]]; then
     msg_info "Upgrade ClickHouse from $CURRENT_VERSION to $CLICKHOUSE_VERSION"
     stop_all_services "clickhouse-server"
-    remove_old_tool_version "clickhouse"
+    remove_old_tool_version "clickhouse" || {
+      msg_error "Aborting ClickHouse upgrade: another package depends on it"
+      return 1
+    }
   else
     msg_info "Setup ClickHouse $CLICKHOUSE_VERSION"
   fi
@@ -288,7 +291,10 @@ EOF
   # Scenario 2b: Different version installed - clean upgrade
   if [[ -n "$CURRENT_VERSION" ]] && ! version_matches_spec "$CURRENT_VERSION" "$MARIADB_VERSION"; then
     msg_info "Upgrade MariaDB from $CURRENT_VERSION to $MARIADB_VERSION"
-    remove_old_tool_version "mariadb"
+    remove_old_tool_version "mariadb" || {
+      msg_error "Aborting MariaDB upgrade: another package depends on it"
+      return 1
+    }
   fi
 
   # Scenario 3: Fresh install or version change with specific version
@@ -818,7 +824,10 @@ setup_mongodb() {
   # Scenario 2: Different version installed - clean upgrade
   if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" != "$MONGO_VERSION" ]]; then
     msg_info "Upgrade MongoDB from $INSTALLED_VERSION to $MONGO_VERSION"
-    remove_old_tool_version "mongodb"
+    remove_old_tool_version "mongodb" || {
+      msg_error "Aborting MongoDB upgrade: another package depends on it (e.g. an app using it)"
+      return 1
+    }
   else
     msg_info "Setup MongoDB $MONGO_VERSION"
   fi
@@ -1008,7 +1017,10 @@ setup_mysql() {
   # Scenario 2: Different version installed - clean upgrade
   if [[ -n "$CURRENT_VERSION" ]] && ! version_matches_spec "$CURRENT_VERSION" "$MYSQL_VERSION"; then
     msg_info "Upgrade MySQL from $CURRENT_VERSION to $MYSQL_VERSION"
-    remove_old_tool_version "mysql"
+    remove_old_tool_version "mysql" || {
+      msg_error "Aborting MySQL upgrade: another package depends on it"
+      return 1
+    }
   else
     msg_info "Setup MySQL $MYSQL_VERSION"
   fi
