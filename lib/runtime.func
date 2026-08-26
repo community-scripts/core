@@ -875,7 +875,10 @@ setup_go() {
   # Scenario 2: Different version or not installed
   if [[ -n "$CURRENT_VERSION" && "$CURRENT_VERSION" != "$GO_VERSION" ]]; then
     msg_info "Upgrade Go from $CURRENT_VERSION to $GO_VERSION"
-    remove_old_tool_version "go"
+    remove_old_tool_version "go" || {
+      msg_error "Aborting Go upgrade: another package depends on it"
+      return 1
+    }
   else
     msg_info "Setup Go $GO_VERSION"
   fi
@@ -1253,7 +1256,10 @@ setup_nodejs() {
     if [[ -n "$CURRENT_NODE_VERSION" && "$CURRENT_NODE_VERSION" != "$NODE_VERSION" ]]; then
       msg_info "Upgrade Node.js from $CURRENT_NODE_VERSION to $NODE_VERSION"
       node_setup_ok_msg="Upgrade Node.js to $NODE_VERSION"
-      remove_old_tool_version "nodejs"
+      remove_old_tool_version "nodejs" || {
+        msg_error "Aborting Node.js upgrade: another package depends on it"
+        return 1
+      }
     else
       msg_info "Setup Node.js $NODE_VERSION"
       node_setup_ok_msg="Setup Node.js $NODE_VERSION"
