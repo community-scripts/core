@@ -59,8 +59,8 @@ list_available_apps() {
     return 0
   fi
 
-  # Method 2: Gitea API (returns JSON array of files)
-  local api_url="https://git.community-scripts.org/api/v1/repos/community-scripts/ProxmoxVED/contents/install"
+  # Method 2: GitHub contents API (returns JSON array of files)
+  local api_url="https://api.github.com/repos/community-scripts/ProxmoxVED/contents/install"
   local api_response
   api_response=$(curl -fsSL --connect-timeout 10 --max-time 30 "$api_url" 2>/dev/null) || true
 

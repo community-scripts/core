@@ -17,7 +17,7 @@ _CS_SOURCE_ORIGIN_LOADED=1
 cs_git_remote_to_raw_base() {
   # arg: git remote URL, branch → stdout: raw content base (no trailing slash)
   local remote="${1:-}" branch="${2:-main}"
-  local owner repo host
+  local owner repo
 
   [[ -z "$remote" ]] && return 1
   remote="${remote%.git}"
@@ -30,20 +30,6 @@ cs_git_remote_to_raw_base() {
     repo="${BASH_REMATCH[2]}"
     echo "https://raw.githubusercontent.com/${owner}/${repo}/${branch}"
     return 0
-  fi
-
-  # Gitea: https://git.community-scripts.org/owner/repo
-  # raw:   https://git.community-scripts.org/owner/repo/raw/branch/<branch>
-  if [[ "$remote" =~ https?://([^/]+)/([^/]+)/([^/]+)$ ]]; then
-    host="${BASH_REMATCH[1]}"
-    owner="${BASH_REMATCH[2]}"
-    repo="${BASH_REMATCH[3]}"
-    case "$host" in
-    git.community-scripts.org | gitea.* | *.gitea.*)
-      echo "https://${host}/${owner}/${repo}/raw/branch/${branch}"
-      return 0
-      ;;
-    esac
   fi
 
   return 1

@@ -11,7 +11,7 @@
 # execution helpers used throughout the Community-Scripts ecosystem.
 #
 # Usage:
-#   source <(curl -fsSL https://git.community-scripts.org/.../core.func)
+#   source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/core/main/core/core.func)
 #   load_functions
 #
 # ==============================================================================

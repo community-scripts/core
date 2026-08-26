@@ -19,7 +19,7 @@ _API_SYSINFO_LOADED=1
 # ------------------------------------------------------------------------------
 # detect_repo_source()
 #
-# - Dynamically detects which GitHub/Gitea repo the scripts were loaded from
+# - Dynamically detects which GitHub repo the scripts were loaded from
 # - Inspects /proc/$$/cmdline and $0 to find the source URL
 # - Maps detected repo to one of three canonical values:
 #   * "ProxmoxVE"  — official community-scripts/ProxmoxVE (production)
