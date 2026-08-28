@@ -1856,8 +1856,12 @@ prompt_select() {
     return 0
   fi
 
-  # Check if running in a TTY
-  if [[ ! -t 0 ]]; then
+  # The read below takes /dev/tty, not stdin, so a piped or exhausted stdin says
+  # nothing about whether the operator can answer. Testing -t 0 here meant that
+  # `curl ... | bash` silently took the default without ever printing the menu --
+  # which on a mixed-GPU host handed the container the iGPU and never said so.
+  # Ask whenever a terminal is reachable at all.
+  if [[ ! -r /dev/tty ]]; then
     echo "${options[$((default - 1))]}"
     return 0
   fi
