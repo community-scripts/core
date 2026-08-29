@@ -867,8 +867,26 @@ NVIDIA_PIN
   # ldconfig rather than dpkg: the library can arrive by bind mount too, and what
   # matters is whether a CUDA program can link it. Not a non-zero return, since
   # acceleration is optional and install scripts run under an ERR trap.
-  if ldconfig -p 2>/dev/null | grep -q 'libcuda\.so\.1'; then
-    msg_ok "NVIDIA GPU configured (host driver ${nvidia_host_version})"
+  # Libraries alone are not enough, and this is the half that used to be missed:
+  # lspci sees every GPU on the host whether or not it was passed through, so
+  # this function will happily install the userspace stack for a card the
+  # container cannot reach. That reported success while torch.cuda.is_available()
+  # stayed False, and the real fault -- no device nodes -- went unmentioned.
+  local -a nvidia_nodes=()
+  local _nvdev
+  for _nvdev in /dev/nvidia*; do
+    [[ -c "$_nvdev" ]] && nvidia_nodes+=("$_nvdev")
+  done
+
+  local have_libcuda=0
+  ldconfig -p 2>/dev/null | grep -q 'libcuda\.so\.1' && have_libcuda=1
+
+  if [[ $have_libcuda -eq 1 && ${#nvidia_nodes[@]} -gt 0 ]]; then
+    msg_ok "NVIDIA GPU configured (host driver ${nvidia_host_version}, ${#nvidia_nodes[@]} device nodes)"
+  elif [[ ${#nvidia_nodes[@]} -eq 0 ]]; then
+    msg_error "NVIDIA GPU not usable: no /dev/nvidia* device nodes in this container"
+    msg_warn "The userspace driver is in place, but the devices were never passed through."
+    msg_warn "On the host, check the container config lists /dev/nvidia0, /dev/nvidiactl and /dev/nvidia-uvm."
   else
     msg_error "NVIDIA GPU not usable: libcuda.so.1 is not available in this container"
     msg_warn "The host driver is ${nvidia_host_version}. CUDA workloads will fail until a matching userspace library is present."

@@ -100,8 +100,15 @@ jobs:
             [[ ${#lines[@]} -eq 0 ]] && continue
 
             while read -r fn; do
-              read -r from to < <(function_range "$file" "$fn")
-              [[ -z "${from:-}" ]] && continue
+              # Most shared functions are absent from this particular file, so
+              # function_range prints nothing and read returns 1. Actions runs
+              # every step under `bash -e`, which the set -uo pipefail above does
+              # not undo, so that killed the step on the first miss -- before the
+              # summary was ever written. Silently, for every run that got here.
+              from=""
+              to=""
+              read -r from to < <(function_range "$file" "$fn") || true
+              [[ -z "$from" ]] && continue
               for ln in "${lines[@]}"; do
                 if [[ "$ln" -ge "$from" && "$ln" -le "$to" ]]; then
                   hits+="${fn} (${file})"$'\n'

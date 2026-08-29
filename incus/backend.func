@@ -654,80 +654,117 @@ incus_configure_device_passthrough() {
     fi
 
     if [[ "$gpu_count" -gt 0 ]]; then
-      selected_gpu="${available_gpus[0]}"
+      # Several types can be attached together, and picking exactly one used to
+      # default to the first -- always INTEL, by collection order. On a host with
+      # an iGPU beside a discrete card that silently attached the iGPU only.
+      local -a selected_types=("${available_gpus[@]}")
       if [[ "$gpu_count" -gt 1 ]]; then
-        if declare -f prompt_select >/dev/null 2>&1; then
-          selected_gpu=$(prompt_select "Which GPU type to passthrough?" 1 60 "${available_gpus[@]}")
+        echo -e "\n${INFO} Multiple GPU types detected:"
+        local gi
+        for gi in "${!available_gpus[@]}"; do
+          echo "  $((gi + 1))) ${available_gpus[$gi]}"
+        done
+        echo "  A) Pass through ALL of them"
+
+        local type_selection=""
+        read -r -t 60 -p "Select GPU type(s) (1-${gpu_count}, comma-separated, A=all) [timeout 60s, default=all]: " type_selection </dev/tty || type_selection=""
+        type_selection="${type_selection^^}"
+
+        if [[ -n "$type_selection" && "$type_selection" != "A" ]]; then
+          local -a gnums=()
+          local gnum
+          IFS=',' read -ra gnums <<<"$type_selection"
+          selected_types=()
+          for gnum in "${gnums[@]}"; do
+            gnum="${gnum// /}"
+            if [[ "$gnum" =~ ^[0-9]+$ ]] && ((gnum >= 1 && gnum <= gpu_count)); then
+              selected_types+=("${available_gpus[$((gnum - 1))]}")
+            fi
+          done
+          # A spare device is harmless; a missing one is the bug being fixed.
+          if [[ ${#selected_types[@]} -eq 0 ]]; then
+            msg_warn "No valid selection - passing through all detected GPUs"
+            selected_types=("${available_gpus[@]}")
+          fi
         fi
       fi
-      selected_gpu="${selected_gpu^^}"
 
-      local sel added=0 failed=0 idx=0
-      case "$selected_gpu" in
-      INTEL)
-        for sel in "${INTEL_GPUS[@]}"; do
-          if _incus_add_gpu_physical "gpu${idx}" "$sel"; then
-            added=$((added + 1))
-          else
-            failed=$((failed + 1))
-            msg_warn "Could not add Intel GPU (${sel})"
+      # idx is shared across types so the device names stay unique.
+      local sel added failed idx=0
+      local -a configured_types=()
+      for selected_gpu in "${selected_types[@]}"; do
+        added=0
+        failed=0
+        case "$selected_gpu" in
+        INTEL)
+          for sel in "${INTEL_GPUS[@]}"; do
+            if _incus_add_gpu_physical "gpu${idx}" "$sel"; then
+              added=$((added + 1))
+            else
+              failed=$((failed + 1))
+              msg_warn "Could not add Intel GPU (${sel})"
+            fi
+            idx=$((idx + 1))
+          done
+          # Vendor fallback if PCI/id adds failed entirely
+          if [[ "$added" -eq 0 ]]; then
+            _incus_add_gpu_physical "gpu0" "vendorid=8086" && added=1 || true
           fi
-          idx=$((idx + 1))
-        done
-        # Vendor fallback if PCI/id adds failed entirely
-        if [[ "$added" -eq 0 ]]; then
-          _incus_add_gpu_physical "gpu0" "vendorid=8086" && added=1 || true
-        fi
-        if [[ "$added" -gt 0 ]]; then
-          export GPU_TYPE="INTEL"
-          msg_ok "Intel GPU passthrough configured (${added})"
-        fi
-        ;;
-      AMD)
-        for sel in "${AMD_GPUS[@]}"; do
-          if _incus_add_gpu_physical "gpu${idx}" "$sel"; then
-            added=$((added + 1))
-          else
-            failed=$((failed + 1))
-            msg_warn "Could not add AMD GPU (${sel})"
+          if [[ "$added" -gt 0 ]]; then
+            configured_types+=("INTEL")
+            msg_ok "Intel GPU passthrough configured (${added})"
           fi
-          idx=$((idx + 1))
-        done
-        if [[ "$added" -eq 0 ]]; then
-          _incus_add_gpu_physical "gpu0" "vendorid=1002" && added=1 || true
-        fi
-        if [[ "$added" -gt 0 ]]; then
-          export GPU_TYPE="AMD"
-          msg_ok "AMD GPU passthrough configured (${added})"
-        fi
-        ;;
-      NVIDIA)
-        for sel in "${NVIDIA_GPUS[@]}"; do
-          if _incus_add_gpu_physical "gpu${idx}" "$sel"; then
-            added=$((added + 1))
-          else
-            failed=$((failed + 1))
-            msg_warn "Could not add NVIDIA GPU (${sel})"
+          ;;
+        AMD)
+          for sel in "${AMD_GPUS[@]}"; do
+            if _incus_add_gpu_physical "gpu${idx}" "$sel"; then
+              added=$((added + 1))
+            else
+              failed=$((failed + 1))
+              msg_warn "Could not add AMD GPU (${sel})"
+            fi
+            idx=$((idx + 1))
+          done
+          if [[ "$added" -eq 0 ]]; then
+            _incus_add_gpu_physical "gpu0" "vendorid=1002" && added=1 || true
           fi
-          idx=$((idx + 1))
-        done
-        if [[ "$added" -eq 0 ]]; then
-          _incus_add_gpu_physical "gpu0" "vendorid=10de" && added=1 || true
-        fi
-        # Optional NVIDIA char nodes (driver interface)
-        local ndev nidx=0
-        for ndev in "${NVIDIA_CHAR_DEVS[@]}"; do
-          local nname
-          nname=$(basename "$ndev" | tr -c 'A-Za-z0-9' '_')
-          incus config device add "${CT_NAME}" "nvidia_${nname}_${nidx}" unix-char "source=${ndev}" "path=${ndev}" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || true
-          nidx=$((nidx + 1))
-        done
-        if [[ "$added" -gt 0 || "$nidx" -gt 0 ]]; then
-          export GPU_TYPE="NVIDIA"
-          msg_ok "NVIDIA GPU passthrough configured (gpu=${added}, char=${nidx})"
-        fi
-        ;;
-      esac
+          if [[ "$added" -gt 0 ]]; then
+            configured_types+=("AMD")
+            msg_ok "AMD GPU passthrough configured (${added})"
+          fi
+          ;;
+        NVIDIA)
+          for sel in "${NVIDIA_GPUS[@]}"; do
+            if _incus_add_gpu_physical "gpu${idx}" "$sel"; then
+              added=$((added + 1))
+            else
+              failed=$((failed + 1))
+              msg_warn "Could not add NVIDIA GPU (${sel})"
+            fi
+            idx=$((idx + 1))
+          done
+          if [[ "$added" -eq 0 ]]; then
+            _incus_add_gpu_physical "gpu0" "vendorid=10de" && added=1 || true
+          fi
+          # Optional NVIDIA char nodes (driver interface)
+          local ndev nidx=0
+          for ndev in "${NVIDIA_CHAR_DEVS[@]}"; do
+            local nname
+            nname=$(basename "$ndev" | tr -c 'A-Za-z0-9' '_')
+            incus config device add "${CT_NAME}" "nvidia_${nname}_${nidx}" unix-char "source=${ndev}" "path=${ndev}" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || true
+            nidx=$((nidx + 1))
+          done
+          if [[ "$added" -gt 0 || "$nidx" -gt 0 ]]; then
+            configured_types+=("NVIDIA")
+            msg_ok "NVIDIA GPU passthrough configured (gpu=${added}, char=${nidx})"
+          fi
+          ;;
+        esac
+      done
+
+      # Space separated, so a reader can test for one type without caring how
+      # many others came with it.
+      export GPU_TYPE="${configured_types[*]}"
 
       if [[ -z "${GPU_TYPE:-}" ]]; then
         msg_warn "GPU passthrough requested but no device could be attached (check permissions / incus info --resources)"

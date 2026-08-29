@@ -21,6 +21,7 @@ _forge_strip_v
 _gh_scan_older_releases
 _gl_scan_older_releases
 _install_uvx_wrapper
+_purge_is_safe
 _resolve_igc_tag
 _setup_amd_apu
 _setup_amd_gpu
