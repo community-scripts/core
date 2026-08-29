@@ -1,0 +1,65 @@
+name: Notify ProxmoxVE changelog
+
+# A fix here reaches every script in ProxmoxVE, so it belongs in that
+# repository's changelog. Its "Create Changelog Pull Request" workflow collects
+# engine pull requests on every run by itself; this only asks it to run now
+# rather than at the next push over there.
+#
+# So this is a nicety, not a dependency. Without CHANGELOG_DISPATCH_TOKEN the
+# step says so and stops, and the entry simply appears with the next changelog
+# batch -- which is why the token is checked rather than assumed. A
+# repository_dispatch needs contents:write on the target, and GITHUB_TOKEN does
+# not carry that for another repository.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: ["main"]
+
+permissions: {}
+
+jobs:
+  notify:
+    if: github.repository == 'community-scripts/core' && github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tell ProxmoxVE to refresh its changelog
+        env:
+          TOKEN: ${{ secrets.CHANGELOG_DISPATCH_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${TOKEN:-}" ]]; then
+            echo "CHANGELOG_DISPATCH_TOKEN is not set."
+            echo "core#${PR_NUMBER} still reaches the ProxmoxVE changelog, with its"
+            echo "next scheduled run rather than now."
+            exit 0
+          fi
+
+          # jq builds the payload: a pull request title is arbitrary text and
+          # would otherwise have to be escaped into JSON by hand.
+          payload="$(jq -n \
+            --arg pr "$PR_NUMBER" \
+            --arg title "$PR_TITLE" \
+            --arg url "$PR_URL" \
+            '{event_type: "core-pr-merged", client_payload: {pr: $pr, title: $title, url: $url}}')"
+
+          status="$(curl -sS -o /tmp/dispatch.out -w '%{http_code}' \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/community-scripts/ProxmoxVE/dispatches \
+            -d "$payload")"
+
+          if [[ "$status" == "204" ]]; then
+            echo "Dispatched core-pr-merged for core#${PR_NUMBER}."
+          else
+            # Not a failure: the entry gets there on its own, and a red cross on
+            # an already merged pull request helps nobody.
+            echo "::warning::Dispatch returned HTTP ${status}; the entry will appear with the next scheduled changelog run."
+            cat /tmp/dispatch.out
+          fi
