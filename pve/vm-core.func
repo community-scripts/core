@@ -1387,6 +1387,43 @@ vm_fetch_image() {
   return 0
 }
 
+# qm resize grows the block device only. The guest's partition normally follows
+# via cloud-init's growpart, so an image built without cloud-init boots with its
+# original root on a much larger disk. virt-resize fixes that offline, before
+# import. Soft failure on purpose: a smaller filesystem is worth less than a
+# failed build.
+vm_expand_image() {
+  local src="${1:?image}" size="${2:?size}" part out
+
+  if ! command -v virt-resize >/dev/null 2>&1; then
+    msg_warn "virt-resize is not available; the guest filesystem keeps its original size"
+    return 1
+  fi
+
+  # The largest partition is the root in every cloud image we ship.
+  part=$(virt-filesystems --parts --long -a "$src" 2>/dev/null |
+    awk 'NR > 1 && $1 ~ /^\/dev\// {print $NF, $1}' | sort -rn | head -1 | awk '{print $2}')
+  if [[ -z "$part" ]]; then
+    msg_warn "Could not find the root partition to expand; leaving the image as it is"
+    return 1
+  fi
+
+  out="${src%.*}-expanded.${src##*.}"
+  if ! qemu-img create -f qcow2 "$out" "$size" >/dev/null 2>&1; then
+    msg_warn "Could not allocate the expanded image; leaving the original"
+    return 1
+  fi
+  if ! virt-resize --expand "$part" "$src" "$out" >/dev/null 2>&1; then
+    rm -f "$out"
+    msg_warn "virt-resize failed on ${part}; the guest filesystem keeps its original size"
+    return 1
+  fi
+
+  mv -f "$out" "$src"
+  msg_ok "Expanded ${CL}${BL}${part}${CL} ${GN}to ${size}"
+  return 0
+}
+
 # Disk first, CD second. An empty disk is not bootable so the installer still
 # runs, and afterwards the disk wins instead of looping back into the installer.
 vm_boot_order() {
