@@ -1321,6 +1321,129 @@ vm_prompt_start_vm() {
   echo -e "${GATEWAY}${BOLD}${DGN}Start VM when completed: ${BGN}${START_VM}${CL}"
 }
 
+# Downloads an image and proves it is the image. Each rule below comes from a
+# specific failure rather than from caution:
+#
+#   - A bad SourceForge mirror serves an HTML notice with status 200, so curl's
+#     exit code says nothing about what landed on disk. Size decides.
+#   - Vendors respin an image without regenerating the checksum they publish,
+#     and the byte count stays identical because the partition layout fixes it.
+#     A hash mismatch alone is therefore not proof of a bad download -- Google's
+#     ChromeOS Flex index did exactly that. Hence --advisory-sha1.
+#   - An archive carries its own CRC, which the extractor checks for free and
+#     which does follow respins. That is the check worth trusting.
+#   - 1.3 GB compressed expanding to 9.5 GB needs both on disk at once, and
+#     discovering that afterwards costs the whole download.
+#
+# vm_fetch_image <url> <target> [--min-bytes N] [--exact-bytes N]
+#                               [--sha256 H] [--sha1 H] [--advisory-sha1 H]
+#                               [--needs-bytes N]
+vm_fetch_image() {
+  local url="${1:?url}" target="${2:?target}"
+  shift 2
+  local min_bytes=0 exact_bytes="" sha256="" sha1="" advisory_sha1="" needs_bytes=""
+  local got avail_mib need_mib entry have
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --min-bytes) min_bytes="$2"; shift 2 ;;
+    --exact-bytes) exact_bytes="$2"; shift 2 ;;
+    --sha256) sha256="$2"; shift 2 ;;
+    --sha1) sha1="$2"; shift 2 ;;
+    --advisory-sha1) advisory_sha1="$2"; shift 2 ;;
+    --needs-bytes) needs_bytes="$2"; shift 2 ;;
+    *) msg_error "vm_fetch_image: unknown option $1"; return 2 ;;
+    esac
+  done
+
+  # Room for the download plus whatever unpacking it needs, with a GiB of
+  # headroom, checked before anything is transferred.
+  need_mib=$(((${needs_bytes:-0} + ${exact_bytes:-0}) / 1048576 + 1024))
+  if ((need_mib > 1024)); then
+    avail_mib=$(df -Pm "$(dirname "$target")" | awk 'NR==2 {print $4}')
+    if ((avail_mib < need_mib)); then
+      msg_error "Need ${need_mib} MiB free in $(dirname "$target"), there is ${avail_mib} MiB"
+      msg_error "Free some space, or point TMPDIR at a filesystem that has room."
+      return 1
+    fi
+  fi
+
+  if ! curl -f#SL --retry 3 --retry-delay 5 -o "$target" "$url"; then
+    rm -f "$target"
+    msg_error "Failed to download $(basename "$url")"
+    return 1
+  fi
+
+  got=$(stat -c%s "$target" 2>/dev/null || echo 0)
+  if [[ -n "$exact_bytes" ]] && ((got != exact_bytes)); then
+    rm -f "$target"
+    msg_error "Downloaded ${got} bytes, expected ${exact_bytes}"
+    return 1
+  fi
+  if ((min_bytes > 0 && got < min_bytes)); then
+    rm -f "$target"
+    msg_error "Downloaded ${got} bytes, which is too small to be the image"
+    msg_error "A mirror most likely served an error page with status 200."
+    return 1
+  fi
+
+  for entry in "sha256|${sha256}|sha256sum" "sha1|${sha1}|sha1sum"; do
+    local algo="${entry%%|*}" rest="${entry#*|}"
+    local want="${rest%%|*}" tool="${rest##*|}"
+    [[ -z "$want" ]] && continue
+    command -v "$tool" >/dev/null 2>&1 || continue
+    have=$("$tool" "$target" | awk '{print $1}')
+    if [[ "$have" != "$want" ]]; then
+      rm -f "$target"
+      msg_error "${algo} mismatch: got ${have}, expected ${want}"
+      return 1
+    fi
+  done
+
+  if [[ -n "$advisory_sha1" ]] && command -v sha1sum >/dev/null 2>&1; then
+    have=$(sha1sum "$target" | awk '{print $1}')
+    if [[ "$have" == "$advisory_sha1" ]]; then
+      msg_ok "Verified sha1 ${CL}${BL}${advisory_sha1}${CL}"
+    else
+      msg_warn "The vendor index lists sha1 ${advisory_sha1}, this file is ${have}"
+      msg_warn "Size is correct, so this is the index lagging a respin -- continuing"
+    fi
+  fi
+
+  return 0
+}
+
+# The order matters more than it looks. An installer ISO listed first wins every
+# reboot, so a finished installation boots straight back into the installer --
+# which is what ZimaOS did. Putting the disk first costs nothing: on the very
+# first start it is empty, the firmware finds nothing bootable there and falls
+# through to the CD, and once the installer has written an ESP the disk takes
+# over by itself. Detaching the ISO becomes tidying up, not a prerequisite.
+vm_boot_order() {
+  local disk="${1:?disk device}" kind="${2:-image}"
+  case "$kind" in
+  installer) echo "${disk};ide2" ;;
+  *) echo "$disk" ;;
+  esac
+}
+
+# Call once the VM exists and is correct. Everything after that point -- cloud
+# init, descriptions, guest agent settings -- is optional, and a failure there
+# must not reach cleanup_vmid. A cloud-init helper that could not be downloaded
+# once destroyed a fully built VM, which is a poor trade for a missing drive.
+vm_mark_created() {
+  VM_CREATED=1
+  trap 'vm_post_create_error $LINENO "$BASH_COMMAND"' ERR
+}
+
+vm_post_create_error() {
+  local rc=$? line="${1:-unknown}" cmd="${2:-unknown}"
+  msg_warn "A step after VM creation failed (line ${line}, exit ${rc}): ${cmd}"
+  msg_warn "VM ${VMID:-?} is left in place -- finish the remaining configuration by hand."
+  declare -f post_update_to_api >/dev/null 2>&1 && post_update_to_api "failed" "$rc"
+  exit "$rc"
+}
+
 vm_apply_storage_layout() {
   local storage_type="$1"
 
