@@ -1250,13 +1250,13 @@ set_description() {
   <h2 style='font-size: 24px; margin: 20px 0;'>${description_title}</h2>
    <p style='margin: 16px 0;'>
     <a href='${donate_url}' target='_blank' rel='noopener noreferrer'>
-      <img src='https://img.shields.io/badge/❤️-Sponsoring%20%26%20Donations-FF5E5B' alt='Sponsoring and donations' />
+      <img src='https://img.shields.io/badge/%E2%9D%A4%EF%B8%8F-Sponsoring%20%26%20Donations-FF5E5B' alt='Sponsoring and donations' />
     </a>
   </p>
 
   <p style='margin: 12px 0;'>
     <a href='${script_url}' target='_blank' rel='noopener noreferrer'>
-      <img src='https://img.shields.io/badge/📦-Open%20Script%20Page-00617f' alt='Open script page' />
+      <img src='https://img.shields.io/badge/%F0%9F%93%A6-Open%20Script%20Page-00617f' alt='Open script page' />
     </a>
   </p>
 
