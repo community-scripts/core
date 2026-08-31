@@ -1387,6 +1387,28 @@ vm_fetch_image() {
   return 0
 }
 
+# One call for provisioning, whichever engine is underneath. Both wizards
+# already fill the same CLOUDINIT_* variables; what differs is the applying --
+# a drive and qm flags here, config keys on Incus. incus/vm-core.func defines
+# its own vm_provision with the same contract.
+#
+# Returns non-zero when it could not provision, and says so, but never takes
+# the VM with it: by this point it exists.
+vm_provision() {
+  local target="${1:?vmid}"
+  [[ "${USE_CLOUD_INIT:-${CLOUDINIT_ENABLE:-no}}" == "yes" ]] || return 0
+
+  if ! load_cloud_init_functions; then
+    msg_warn "Cloud-Init helpers unavailable -- VM created, but not provisioned"
+    return 1
+  fi
+
+  setup_cloud_init "$target" "${STORAGE:?storage}" "${HN:-vm-${target}}" "yes" \
+    "${CLOUDINIT_USER:-}" "${CLOUDINIT_NETWORK_MODE:-dhcp}" \
+    "${CLOUDINIT_IP:-}" "${CLOUDINIT_GW:-}" \
+    "${CLOUDINIT_DNS:-${CLOUDINIT_DNS_SERVERS:-}}"
+}
+
 # qm resize grows the block device only. The guest's partition normally follows
 # via cloud-init's growpart, so an image built without cloud-init boots with its
 # original root on a much larger disk. virt-resize fixes that offline, before

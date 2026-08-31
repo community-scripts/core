@@ -106,6 +106,38 @@ exit_script() {
   exit 1
 }
 
+# One call for provisioning, whichever engine is underneath. Both wizards fill
+# the same CLOUDINIT_* variables; what differs is the applying -- config keys
+# here, a drive and qm flags on Proxmox. pve/vm-core.func defines its own
+# vm_provision with the same contract.
+#
+# The two engines disagreed on one name: CLOUDINIT_SSH_KEYS on Proxmox,
+# CLOUDINIT_SSHKEY here. Both are accepted so a script can use either.
+vm_provision() {
+  local target="${1:?instance}" ud nc
+  [[ "${USE_CLOUD_INIT:-no}" == "yes" ]] || return 0
+
+  CLOUDINIT_SSHKEY="${CLOUDINIT_SSHKEY:-${CLOUDINIT_SSH_KEYS:-}}"
+  CLOUDINIT_SSH_KEYS="${CLOUDINIT_SSH_KEYS:-${CLOUDINIT_SSHKEY:-}}"
+
+  ud="$(_vm_cloud_init_user_data)"
+  # Newer images read cloud-init.*, older ones user.*. Setting both removes the
+  # guesswork about which an image supports.
+  incus config set "$target" cloud-init.user-data "$ud" >/dev/null || return 1
+  incus config set "$target" user.user-data "$ud" >/dev/null 2>&1 || true
+
+  if [[ -n "${CLOUDINIT_VENDOR_DATA:-}" ]]; then
+    incus config set "$target" cloud-init.vendor-data "$CLOUDINIT_VENDOR_DATA" >/dev/null || true
+    incus config set "$target" user.vendor-data "$CLOUDINIT_VENDOR_DATA" >/dev/null 2>&1 || true
+  fi
+
+  if [[ "${CLOUDINIT_NETWORK_MODE:-dhcp}" == "static" && -n "${CLOUDINIT_IP:-}" && -n "${CLOUDINIT_GW:-}" ]]; then
+    nc="$(_vm_cloud_init_network_config)"
+    incus config set "$target" cloud-init.network-config "$nc" >/dev/null || true
+    incus config set "$target" user.network-config "$nc" >/dev/null 2>&1 || true
+  fi
+}
+
 # Call once the instance exists. Everything after is optional and should not
 # take the instance with it when it fails.
 vm_mark_created() {
