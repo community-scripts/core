@@ -32,9 +32,20 @@ _incus_soft() {
 }
 
 _incus_nic_supports_ip() {
-  # Docs: ipv4/ipv6.address on nic — supported for bridge, ovn, macvlan.
-  # physical / sriov: skip (host NIC ownership; keys often rejected).
-  case "${1:-}" in
+  # Takes the network name, not the type: managed-ness matters as much as the
+  # type does. ipv4.address on a NIC is a reservation in the DHCP server Incus
+  # itself runs, and that server only exists for managed networks. On a bridge
+  # the operator built by hand there is nothing to reserve in, so the address
+  # is quietly ignored and the container comes up on the LAN's own DHCP while
+  # the summary claims a static address. Better to say so than to pretend.
+  #
+  # physical / sriov: skip either way (host NIC ownership; keys often rejected).
+  local net="${1:-}" cfg type
+  [[ -z "$net" ]] && return 1
+  cfg=$(LC_ALL=C incus network show "$net" 2>/dev/null) || return 1
+  grep -qE '^managed:[[:space:]]*true$' <<<"$cfg" || return 1
+  type=$(awk '/^type:/ {print $2; exit}' <<<"$cfg")
+  case "$type" in
   bridge | ovn | macvlan) return 0 ;;
   *) return 1 ;;
   esac
@@ -439,7 +450,7 @@ incus_create_lxc_container() {
   local net_type="" net_reconfigure=0
   net_type=$(incus network show "${BRG}" 2>/dev/null | awk '/^type:/ {print $2; exit}')
   local nic_supports_ip=0
-  _incus_nic_supports_ip "$net_type" && nic_supports_ip=1
+  _incus_nic_supports_ip "$BRG" && nic_supports_ip=1
 
   if [[ -n "${MAC:-}" ]]; then
     _incus_device_set hwaddr "${MAC}" "Could not apply MAC (${MAC})" && net_reconfigure=1 || true
@@ -477,7 +488,15 @@ incus_create_lxc_container() {
       ;;
     esac
   else
-    msg_info "Network '${BRG}' type=${net_type:-unknown} — skipping IP device options (use host DHCP/static on physical/sriov)"
+    # An unmanaged bridge is the ordinary case here and not an error: the
+    # container simply takes an address from the LAN's own DHCP. Worth saying
+    # out loud though, because a static address typed into the wizard will not
+    # be applied and the summary would otherwise imply that it was.
+    if [[ -n "${NET:-}" && "${NET}" != "dhcp" ]]; then
+      msg_warn "Network '${BRG}' is not managed by Incus - ${NET} cannot be reserved there. The container will use DHCP from your LAN; set the address inside the container or reserve it on your router."
+    else
+      msg_info "Network '${BRG}' is not managed by Incus (type=${net_type:-unknown}) - addressing is left to your LAN"
+    fi
     if [[ -n "${NET:-}" && "${NET}" != "dhcp" ]]; then
       msg_custom "ℹ️" "${YW}" "Static IPv4 ${NET} was requested but cannot be set as device key on ${net_type:-this} network"
     fi

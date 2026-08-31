@@ -104,39 +104,68 @@ incus_variables() {
 # SECTION 2: NETWORK HELPERS
 # ==============================================================================
 
+# Prints the first member of a bridge that is not a guest interface, so a
+# caller can tell a LAN bridge from a private one. A bridge carrying a physical
+# NIC or a VLAN reaches the network; one holding only veth and tap devices does
+# not. That is what separates a hand-built br0 or br20 from docker0, and it
+# beats matching on names.
+_incus_bridge_uplink() {
+  local br="${1:?bridge}" m
+  while IFS= read -r m; do
+    [[ -z "$m" ]] && continue
+    case "$m" in
+    veth* | tap* | vnet* | vif* | macvtap*) continue ;;
+    esac
+    echo "$m"
+    return 0
+  done < <(ip -o link show master "$br" 2>/dev/null | awk -F'[:@ ]+' '{print $2}')
+  return 1
+}
+
 incus_pick_default_network() {
   local nets
   nets=$(incus network list -f csv,noheader 2>/dev/null | cut -d, -f1 | sed '/^\s*$/d' | grep -v '^lo$' || true)
   [[ -z "$nets" ]] && { echo "incusbr0"; return; }
 
-  # Managed bridges only. `incus network list` also reports plain host
-  # interfaces as type physical, and attaching one moves the host's NIC into
-  # the container - which an unprivileged container cannot start with, and
-  # which would cut the host off if it could. Preferring physical here is how
-  # enp1s0 became the default and forklxc refused to launch. Picking the
-  # uplink is a decision for the operator, never a default.
+  # `incus network list` also reports plain host interfaces as type physical,
+  # and attaching one moves the host's NIC into the container - which an
+  # unprivileged container cannot start with, and which would cut the host off
+  # if it could. Preferring physical here is how enp1s0 became the default and
+  # forklxc refused to launch. Picking the uplink is a decision for the
+  # operator, never a default.
+  #
+  # Unmanaged bridges do belong here though. A br0 or br20 built by hand in
+  # netplan is precisely the bridge people want, and requiring managed:true
+  # discarded it -- which is how an AdGuard container ended up behind NAT on a
+  # host that had a working LAN bridge sitting right next to it.
   local n cfg
-  local -a lan=() nated=()
+  local -a uplink=() lan=() nated=()
   while IFS= read -r n; do
     [[ -z "$n" ]] && continue
     cfg=$(LC_ALL=C incus network show "$n" 2>/dev/null || true)
-    grep -qE '^managed:[[:space:]]*true$' <<<"$cfg" || continue
     grep -qE '^type:[[:space:]]*bridge$' <<<"$cfg" || continue
-    # No NAT usually means the bridge hands out LAN addresses, which is what
-    # most people want; incusbr0 and friends are the NATed fallback.
-    if grep -qE '^[[:space:]]+ipv[46]\.nat:[[:space:]]*"?true"?' <<<"$cfg"; then
-      nated+=("$n")
-    else
-      lan+=("$n")
+
+    if grep -qE '^managed:[[:space:]]*true$' <<<"$cfg"; then
+      # No NAT usually means the bridge hands out LAN addresses, which is what
+      # most people want; incusbr0 and friends are the NATed fallback.
+      if grep -qE '^[[:space:]]+ipv[46]\.nat:[[:space:]]*"?true"?' <<<"$cfg"; then
+        nated+=("$n")
+      else
+        lan+=("$n")
+      fi
+    elif _incus_bridge_uplink "$n" >/dev/null; then
+      uplink+=("$n")
     fi
+    # An unmanaged bridge with no uplink is docker0 or a compose network.
+    # Reachable from nothing that matters, so it is never offered.
   done <<<"$nets"
 
-  for n in "${lan[@]}" "${nated[@]}"; do
+  for n in "${uplink[@]}" "${lan[@]}" "${nated[@]}"; do
     [[ "$n" == "incusbr0" ]] && continue
     echo "$n"
     return
   done
-  for n in "${lan[@]}" "${nated[@]}"; do
+  for n in "${uplink[@]}" "${lan[@]}" "${nated[@]}"; do
     echo "$n"
     return
   done
@@ -219,15 +248,41 @@ get_next_container_identifier() {
 populate_advanced_bridge_menu() {
   BRIDGES=""
   BRIDGE_MENU_OPTIONS=()
-  local nets n
+  local nets n cfg type up label
   nets=$(incus network list -f csv,noheader 2>/dev/null | cut -d, -f1 | sed '/^\s*$/d' | grep -v '^lo$' || true)
   while IFS= read -r n; do
     [[ -z "$n" ]] && continue
+    cfg=$(LC_ALL=C incus network show "$n" 2>/dev/null || true)
+    type=$(awk '/^type:/ {print $2; exit}' <<<"$cfg")
+
+    # The default picker has refused physical interfaces for a while, but this
+    # menu offered them anyway, all labelled alike. Attaching one hands the
+    # host's NIC to the container and takes the host off the network, so it is
+    # not a choice worth presenting.
+    case "$type" in
+    bridge | ovn | macvlan) ;;
+    *) continue ;;
+    esac
+
+    # Every entry used to read "Incus network", which told nobody that
+    # incusbr0 is NAT and unreachable from their LAN. Say which is which.
+    if grep -qE '^managed:[[:space:]]*true$' <<<"$cfg"; then
+      if grep -qE '^[[:space:]]+ipv[46]\.nat:[[:space:]]*"?true"?' <<<"$cfg"; then
+        label="NAT - not reachable from your LAN"
+      else
+        label="Incus network"
+      fi
+    elif up=$(_incus_bridge_uplink "$n"); then
+      label="LAN bridge (uplink: ${up})"
+    else
+      label="private bridge (no uplink)"
+    fi
+
     BRIDGES="${n}"$'\n'"${BRIDGES}"
-    BRIDGE_MENU_OPTIONS+=("$n" "Incus network")
+    BRIDGE_MENU_OPTIONS+=("$n" "$label")
   done <<<"$nets"
   BRIDGES=$(echo "$BRIDGES" | grep -v '^\s*$' | sort -u)
-  [[ -z "$BRIDGES" ]] && BRIDGES="incusbr0"$'\n' && BRIDGE_MENU_OPTIONS=("incusbr0" "Incus network")
+  [[ -z "$BRIDGES" ]] && BRIDGES="incusbr0"$'\n' && BRIDGE_MENU_OPTIONS=("incusbr0" "NAT - not reachable from your LAN")
 }
 
 _incus_sync_from_pve_settings() {
