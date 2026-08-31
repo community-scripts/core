@@ -95,15 +95,42 @@ _cs_clear() {
   fi
 }
 
+# Returns non-zero when the helpers really are unavailable. This used to end in
+# "|| true", so a failed download looked like success and the script carried on
+# to die much later on "setup_cloud_init: command not found" -- at which point
+# the ERR trap destroyed a VM that had already been built correctly.
 load_cloud_init_functions() {
-  if ! declare -f setup_cloud_init >/dev/null 2>&1; then
-    if declare -f _cs_source_func >/dev/null 2>&1; then
-      _cs_source_func "vm/cloud-init.func" 2>/dev/null || true
-    else
-      # shellcheck disable=SC1090
-      source <(curl -fsSL "${_CS_CURL_RETRY[@]}" "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/vm/cloud-init.func") 2>/dev/null || true
-    fi
+  declare -f setup_cloud_init >/dev/null 2>&1 && return 0
+
+  local rel="vm/cloud-init.func" url
+  local base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
+
+  if [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -f "${COMMUNITY_SCRIPTS_CORE_DIR}/${rel}" ]]; then
+    # shellcheck disable=SC1090
+    source "${COMMUNITY_SCRIPTS_CORE_DIR}/${rel}"
+    declare -f setup_cloud_init >/dev/null 2>&1 && return 0
   fi
+
+  if declare -f _cs_source_func >/dev/null 2>&1; then
+    _cs_source_func "$rel" 2>/dev/null || true
+    declare -f setup_cloud_init >/dev/null 2>&1 && return 0
+  fi
+
+  local -a urls=("${base}/${rel}")
+  # raw.githubusercontent has been seen answering 400 for .../main/<path> while
+  # serving the identical blob under .../refs/heads/main/<path>. One helper
+  # being unreachable should not cost a finished VM, so try the long ref form
+  # and a mirror before giving up.
+  [[ "$base" == */main ]] && urls+=("${base%/main}/refs/heads/main/${rel}")
+  urls+=("https://cdn.jsdelivr.net/gh/community-scripts/core@main/${rel}")
+
+  for url in "${urls[@]}"; do
+    # shellcheck disable=SC1090
+    source <(curl -fsSL "${_CS_CURL_RETRY[@]}" "$url" 2>/dev/null) 2>/dev/null || true
+    declare -f setup_cloud_init >/dev/null 2>&1 && return 0
+  done
+
+  return 1
 }
 
 # Function to download & save header files
