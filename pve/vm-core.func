@@ -840,6 +840,9 @@ vm_echo_default_settings() {
   echo -e "${VLANTAG}${BOLD}${DGN}VLAN: ${BGN}${VLAN:-Default}${CL}"
   echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}${MTU:-Default}${CL}"
   echo -e "${GATEWAY}${BOLD}${DGN}Start VM when completed: ${BGN}${START_VM}${CL}"
+  # Reported even on the default path, so it is obvious where the command
+  # output went when someone sets VERBOSE=yes in the environment.
+  echo -e "${SEARCH}${BOLD}${DGN}Verbose Mode: ${BGN}${VERBOSE:-no}${CL}"
   echo -e "${CREATING}${BOLD}${DGN}Creating a ${APP:-${NSAPP}} VM using the above default settings${CL}"
 }
 
@@ -1214,6 +1217,38 @@ vm_prompt_mtu() {
       exit_script
     fi
   done
+}
+
+# VERBOSE decides whether $STD swallows a command's output into the log or lets
+# it through. The machinery for that was all here -- set_std_mode, silent(),
+# is_verbose_mode -- but nothing ever offered to turn it on, so every VM run was
+# silent whether you wanted it or not. VERBOSE=yes in the environment still
+# works and is what load_functions reads at start-up; this is the same switch
+# from inside the wizard.
+#
+# set_std_mode has to run again afterwards: load_functions called it once
+# before this prompt existed, so changing VERBOSE without re-deriving STD would
+# leave the old value in place and the setting would do nothing.
+vm_prompt_verbose() {
+  local default_verbose="${1:-${VERBOSE:-no}}"
+  local default_flag=() rc=0
+
+  if [ "$default_verbose" != "yes" ]; then
+    default_flag=(--defaultno)
+  fi
+
+  whiptail --backtitle "Proxmox VE Helper Scripts" "${default_flag[@]}" --title "VERBOSE MODE" \
+    --yes-button Verbose --no-button Silent \
+    --yesno "Show the full output of every command?\n\nSilent keeps the screen readable and writes the detail to the log instead." 11 58 || rc=$?
+
+  case $rc in
+  0) VERBOSE="yes" ;;
+  1) VERBOSE="no" ;;
+  *) exit_script ;;
+  esac
+
+  set_std_mode
+  echo -e "${SEARCH}${BOLD}${DGN}Verbose Mode: ${BGN}${VERBOSE}${CL}"
 }
 
 vm_prompt_start_vm() {
