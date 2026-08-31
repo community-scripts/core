@@ -5,7 +5,7 @@ name: Notify ProxmoxVE changelog
 # engine pull requests on every run by itself; this only asks it to run now
 # rather than at the next push over there.
 #
-# So this is a nicety, not a dependency. Without CHANGELOG_DISPATCH_TOKEN the
+# So this is a nicety, not a dependency. Without GH_CROSS_REPO_TOKEN the
 # step says so and stops, and the entry simply appears with the next changelog
 # batch -- which is why the token is checked rather than assumed. A
 # repository_dispatch needs contents:write on the target, and GITHUB_TOKEN does
@@ -25,7 +25,7 @@ jobs:
     steps:
       - name: Tell ProxmoxVE to refresh its changelog
         env:
-          TOKEN: ${{ secrets.CHANGELOG_DISPATCH_TOKEN }}
+          TOKEN: ${{ secrets.GH_CROSS_REPO_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -33,7 +33,7 @@ jobs:
           set -euo pipefail
 
           if [[ -z "${TOKEN:-}" ]]; then
-            echo "CHANGELOG_DISPATCH_TOKEN is not set."
+            echo "GH_CROSS_REPO_TOKEN is not set."
             echo "core#${PR_NUMBER} still reaches the ProxmoxVE changelog, with its"
             echo "next scheduled run rather than now."
             exit 0
