@@ -95,10 +95,8 @@ _cs_clear() {
   fi
 }
 
-# Returns non-zero when the helpers really are unavailable. This used to end in
-# "|| true", so a failed download looked like success and the script carried on
-# to die much later on "setup_cloud_init: command not found" -- at which point
-# the ERR trap destroyed a VM that had already been built correctly.
+# Returns non-zero when the helpers are unavailable. A swallowed failure here
+# once let the script run on and die on "setup_cloud_init: command not found".
 load_cloud_init_functions() {
   declare -f setup_cloud_init >/dev/null 2>&1 && return 0
 
@@ -137,13 +135,8 @@ load_cloud_init_functions() {
 get_header() {
   local app_type=${APP_TYPE:-vm}
 
-  # Headers live in core and nowhere else: all three script repos share them
-  # byte for byte, so core's generator walks those repos and writes them here.
-  # The slug is APP lowercased with spaces removed, matching that generator.
-  #
-  # If a VM shows no banner, the cause is almost always upstream of this
-  # function: core's generator reads the APP= line, and most vm scripts never
-  # declare one, so it skips them and there is nothing to fetch.
+  # Headers live only in core; the slug is APP lowercased without spaces, as
+  # its generator writes them. No banner usually means no APP= line to read.
   local slug
   slug=$(echo "${APP,,}" | tr -d ' ')
   [[ -z "$slug" ]] && return 1
@@ -758,15 +751,8 @@ ssh_check() {
 }
 
 exit_script() {
-  # This used to clear the screen before printing, which wiped whatever had
-  # just been written -- including the "Invalid Disk Size" line that explains
-  # why we are here at all. All anyone saw was "User exited script", so a
-  # rejected input looked like a broken script, and the one message that would
-  # have explained it was erased a millisecond after being printed.
-  #
-  # Most callers are validation failures rather than cancellations, hence the
-  # optional reason: blaming the operator for exiting is wrong when they did
-  # not, and it sends people hunting in the wrong place.
+  # No screen clear: it wiped the line explaining why we stopped. Most callers
+  # are validation failures, so they can pass their own reason.
   echo -e "\n${CROSS}${RD}${1:-User exited script}${CL}\n"
   exit
 }
@@ -833,8 +819,7 @@ vm_echo_default_settings() {
   echo -e "${VLANTAG}${BOLD}${DGN}VLAN: ${BGN}${VLAN:-Default}${CL}"
   echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}${MTU:-Default}${CL}"
   echo -e "${GATEWAY}${BOLD}${DGN}Start VM when completed: ${BGN}${START_VM}${CL}"
-  # Reported even on the default path, so it is obvious where the command
-  # output went when someone sets VERBOSE=yes in the environment.
+  # Shown on the default path too, so VERBOSE=yes is visible.
   echo -e "${SEARCH}${BOLD}${DGN}Verbose Mode: ${BGN}${VERBOSE:-no}${CL}"
   echo -e "${CREATING}${BOLD}${DGN}Creating a ${APP:-${NSAPP}} VM using the above default settings${CL}"
 }
@@ -851,14 +836,8 @@ vm_echo_default_settings() {
 # that lists what its defaults are needs a taller box than one asking a bare
 # question.
 # ------------------------------------------------------------------------------
-# whiptail returns 255 both when the user presses ESC and when it cannot draw
-# at all -- no tty, an unusable TERM, or a terminal smaller than the dialog.
-# Every prompt here treats non-zero as "the user cancelled", so a window that
-# was merely too small got reported as "User exited script", blaming the
-# operator for something they did not do. The 3>&1 1>&2 2>&3 dance makes it
-# worse: whiptail's own explanation goes to stderr, which that redirection
-# captures into the result variable and discards, so nothing on screen says
-# what happened. Check once, up front, and name the actual problem.
+# A terminal too small for a dialog used to surface as "User exited script".
+# Check once, up front, and name the real problem.
 vm_check_dialog_env() {
   local cols rows
   # The storage picker is the tallest dialog at 16 rows; the rest need 10.
@@ -886,15 +865,9 @@ vm_check_dialog_env() {
   fi
 }
 
-# Everything in the wizard needs a terminal, which rules out automation and --
-# more to the point -- rules out testing: there has never been a way to run a
-# script's settings path in CI. VM_UNATTENDED=1 takes the script's own defaults
-# and lets the environment override any of them, so a run is reproducible and
-# needs no tty at all.
-#
-# Names are deliberately prefixed. VMID, HN and friends are the script's own
-# working variables and get written to constantly; an operator setting HN in
-# their shell should not silently rename a VM.
+# VM_UNATTENDED=1 takes the script's defaults and lets the environment override
+# them, so a run needs no tty. Names are prefixed because VMID, HN and friends
+# are the script's own working variables.
 vm_apply_env_overrides() {
   [[ -n "${VM_VMID:-}" ]] && VMID="$VM_VMID"
   [[ -n "${VM_DISK_SIZE:-}" ]] && DISK_SIZE="$VM_DISK_SIZE"
@@ -944,24 +917,9 @@ vm_confirm_advanced_settings() {
   vm_dialog yesno "ADVANCED SETTINGS COMPLETE" "$message" --no-button Do-Over "$height" "$width"
 }
 
-# One entry point for every dialog in the VM path. Every wizard fault reported
-# so far came from each prompt rolling its own whiptail call:
-#
-#   - whiptail returns 255 for ESC and for "could not draw at all", and callers
-#     read both as a cancel, so a terminal too short for a dialog was reported
-#     as "User exited script"
-#   - the 3>&1 1>&2 2>&3 swap sends whiptail's error text to the same place as
-#     its result, so the explanation was captured into a variable and discarded
-#   - a running spinner kept painting over the dialog it was waiting on
-#   - dialogs sized wider than the terminal made whiptail refuse silently
-#
-# Fixing that in thirteen places meant thirteen chances to miss one. Fixed
-# here, no prompt can reinvent it.
-#
-# Result of an inputbox/radiolist lands in VM_DIALOG_RESULT, since the return
-# code is needed for the cancel/failure distinction.
-# Returns 0 for OK, 1 for a deliberate cancel. Anything else is fatal and says
-# why, rather than being passed off as something the operator did.
+# One entry point for every dialog. Result lands in VM_DIALOG_RESULT, since the
+# return code carries the distinction: 0 = OK, 1 = cancel, anything else means
+# whiptail could not draw and is fatal with a reason.
 VM_DIALOG_RESULT=""
 
 vm_dialog() {
@@ -969,8 +927,7 @@ vm_dialog() {
   shift 2
   local rc=0 out="" cols rows
 
-  # A spinner writes asynchronously, so whiptail would paint around its last
-  # frame and leave the line stranded on top of the dialog.
+  # A spinner writes asynchronously and would be left stranded on the dialog.
   declare -f stop_spinner >/dev/null 2>&1 && stop_spinner
   VM_DIALOG_RESULT=""
 
@@ -986,9 +943,7 @@ vm_dialog() {
 
   ((rc <= 1)) && return $rc
 
-  # Past this point whiptail did not present a choice at all. On that path the
-  # captured text is whiptail's own complaint rather than a result, so print it
-  # -- it is the sentence that used to be thrown away.
+  # No choice was presented, so the captured text is whiptail's complaint.
   cols=$(tput cols 2>/dev/null || echo "?")
   rows=$(tput lines 2>/dev/null || echo "?")
   msg_error "The '${title}' dialog could not be shown (whiptail exit ${rc})"
@@ -1311,16 +1266,8 @@ vm_prompt_mtu() {
   done
 }
 
-# VERBOSE decides whether $STD swallows a command's output into the log or lets
-# it through. The machinery for that was all here -- set_std_mode, silent(),
-# is_verbose_mode -- but nothing ever offered to turn it on, so every VM run was
-# silent whether you wanted it or not. VERBOSE=yes in the environment still
-# works and is what load_functions reads at start-up; this is the same switch
-# from inside the wizard.
-#
-# set_std_mode has to run again afterwards: load_functions called it once
-# before this prompt existed, so changing VERBOSE without re-deriving STD would
-# leave the old value in place and the setting would do nothing.
+# VERBOSE decides whether $STD sends output to the log or the screen.
+# set_std_mode must run again after: load_functions derived STD once already.
 vm_prompt_verbose() {
   local default_verbose="${1:-${VERBOSE:-no}}"
   local default_flag=()
@@ -1358,19 +1305,10 @@ vm_prompt_start_vm() {
   echo -e "${GATEWAY}${BOLD}${DGN}Start VM when completed: ${BGN}${START_VM}${CL}"
 }
 
-# Downloads an image and proves it is the image. Each rule below comes from a
-# specific failure rather than from caution:
-#
-#   - A bad SourceForge mirror serves an HTML notice with status 200, so curl's
-#     exit code says nothing about what landed on disk. Size decides.
-#   - Vendors respin an image without regenerating the checksum they publish,
-#     and the byte count stays identical because the partition layout fixes it.
-#     A hash mismatch alone is therefore not proof of a bad download -- Google's
-#     ChromeOS Flex index did exactly that. Hence --advisory-sha1.
-#   - An archive carries its own CRC, which the extractor checks for free and
-#     which does follow respins. That is the check worth trusting.
-#   - 1.3 GB compressed expanding to 9.5 GB needs both on disk at once, and
-#     discovering that afterwards costs the whole download.
+# Downloads an image and proves it is the image. A bad mirror serves HTML with
+# status 200, so size decides rather than curl's exit code. Vendors also respin
+# images without updating the published checksum at the same byte count, so
+# --advisory-sha1 reports while --sha256/--sha1 stay fatal.
 #
 # vm_fetch_image <url> <target> [--min-bytes N] [--exact-bytes N]
 #                               [--sha256 H] [--sha1 H] [--advisory-sha1 H]
@@ -1393,8 +1331,7 @@ vm_fetch_image() {
     esac
   done
 
-  # Room for the download plus whatever unpacking it needs, with a GiB of
-  # headroom, checked before anything is transferred.
+  # Download plus unpacked size plus a GiB, checked before transferring.
   need_mib=$(((${needs_bytes:-0} + ${exact_bytes:-0}) / 1048576 + 1024))
   if ((need_mib > 1024)); then
     avail_mib=$(df -Pm "$(dirname "$target")" | awk 'NR==2 {print $4}')
@@ -1450,12 +1387,8 @@ vm_fetch_image() {
   return 0
 }
 
-# The order matters more than it looks. An installer ISO listed first wins every
-# reboot, so a finished installation boots straight back into the installer --
-# which is what ZimaOS did. Putting the disk first costs nothing: on the very
-# first start it is empty, the firmware finds nothing bootable there and falls
-# through to the CD, and once the installer has written an ESP the disk takes
-# over by itself. Detaching the ISO becomes tidying up, not a prerequisite.
+# Disk first, CD second. An empty disk is not bootable so the installer still
+# runs, and afterwards the disk wins instead of looping back into the installer.
 vm_boot_order() {
   local disk="${1:?disk device}" kind="${2:-image}"
   case "$kind" in
@@ -1464,10 +1397,8 @@ vm_boot_order() {
   esac
 }
 
-# Call once the VM exists and is correct. Everything after that point -- cloud
-# init, descriptions, guest agent settings -- is optional, and a failure there
-# must not reach cleanup_vmid. A cloud-init helper that could not be downloaded
-# once destroyed a fully built VM, which is a poor trade for a missing drive.
+# Call once the VM exists. Everything after is optional and must not reach
+# cleanup_vmid -- an undownloadable helper once destroyed a finished VM.
 vm_mark_created() {
   VM_CREATED=1
   trap 'vm_post_create_error $LINENO "$BASH_COMMAND"' ERR
@@ -1514,8 +1445,7 @@ vm_select_storage() {
   local offset=2
   local valid_storage
 
-  # An operator who named a pool has already answered the question, and an
-  # unattended run has no one to ask.
+  # A named pool is already an answer, and an unattended run has nobody to ask.
   if [[ -n "${STORAGE:-}" ]]; then
     if pvesm status -storage "$STORAGE" &>/dev/null; then
       msg_ok "Using ${CL}${BL}$STORAGE${CL} ${GN}for Storage Location."
@@ -1547,21 +1477,14 @@ vm_select_storage() {
   else
     # stop_spinner rather than a hand-rolled kill: kill is asynchronous, so the
     # spinner got one more frame out after the line was cleared, and whiptail
-    # then painted around it. The result was "Validating Storage" sitting on
-    # top of the storage dialog. vm_dialog stops the spinner itself now, but
-    # the width still has to be worked out before the call.
-    #
-    # It follows the longest storage line, which on a host with long pool names
-    # comes out wider than the terminal -- and whiptail refuses to draw rather
-    # than wrapping. Clamp it to what actually fits.
+    # Width follows the longest storage line and can exceed the terminal, at
+    # which point whiptail refuses to draw. Clamp it to what fits.
     local menu_width=$((msg_max_length + 23)) term_cols
     term_cols=$(tput cols 2>/dev/null || echo 0)
     ((term_cols > 0 && menu_width > term_cols)) && menu_width=$term_cols
 
     while [ -z "${STORAGE:+x}" ]; do
-      # Nothing used to look at the exit code here, so whenever whiptail could
-      # not draw, STORAGE stayed empty and this loop spun forever. vm_dialog
-      # separates a cancel from a failure and ends the run on the latter.
+      # Without an exit-code check STORAGE stayed empty and this spun forever.
       if vm_dialog radiolist "Storage Pools" \
         "Which storage pool would you like to use for ${hostname}?\nTo make a selection, use the Spacebar.\n" \
         16 "$menu_width" 6 \

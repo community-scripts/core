@@ -100,21 +100,14 @@ kvm_check() {
 ssh_check() { :; }
 
 exit_script() {
-  # This cleared the screen first, which wiped whatever had just been printed --
-  # including the line explaining why we are here. All anyone saw was "User
-  # exited script", so a rejected value looked like a broken script. Most
-  # callers are validation failures rather than cancellations, hence the
-  # optional reason: blaming the operator for exiting is wrong when they did
-  # not, and it sends people looking in the wrong place.
+  # No screen clear: it wiped the line explaining why we stopped. Callers that
+  # are validation failures can pass their own reason.
   echo -e "\n${CROSS}${RD}${1:-User exited script}${CL}\n"
   exit 1
 }
 
-# Call once the instance exists and is correct. Everything after that point --
-# descriptions, agent waits, extra devices -- is optional, and a failure there
-# should not take the instance with it. The Proxmox path learned this the hard
-# way, when a cloud-init helper that could not be downloaded destroyed a fully
-# built VM.
+# Call once the instance exists. Everything after is optional and should not
+# take the instance with it when it fails.
 vm_mark_created() {
   VM_CREATED=1
   trap 'vm_post_create_error $LINENO "$BASH_COMMAND"' ERR
@@ -165,11 +158,8 @@ if _vm_use_whiptail; then
   prompt_input() {
     local message="${1:-Enter value:}" default="${2:-}" out rc=0
     out=$(whiptail --backtitle "$VM_BACKTITLE" --title "${APP:-VM}"       --inputbox "$message" 10 68 "$default" 3>&1 1>&2 2>&3) || rc=$?
-    # Falling back to the default is the right call -- a dialog that cannot be
-    # drawn should not end the run -- but doing it silently means an operator
-    # gets defaults for everything and never learns why. rc 1 is a deliberate
-    # cancel and stays quiet; anything above that is a failure worth saying out
-    # loud. On stderr, because stdout carries the result.
+    # Defaulting is right, doing it silently is not. rc 1 is a real cancel and
+    # stays quiet; above that, say so on stderr since stdout carries the value.
     ((rc >= 2)) && echo "Dialog could not be shown (whiptail exit ${rc}); using default '${default}'" >&2
     if ((rc != 0)); then
       echo "$default"
@@ -190,8 +180,7 @@ if _vm_use_whiptail; then
       i=$((i + 1))
     done
     out=$(whiptail --backtitle "$VM_BACKTITLE" --title "${APP:-VM}"       --default-item "$default" --menu "$message" 16 68 "${#options[@]}"       "${menu[@]}" 3>&1 1>&2 2>&3) || rc=$?
-    # As in prompt_input: quiet on a deliberate cancel, loud when the dialog
-    # could not be presented at all. Stderr, since stdout carries the choice.
+    # As in prompt_input: quiet on cancel, loud when it could not be shown.
     ((rc >= 2)) && echo "Menu could not be shown (whiptail exit ${rc}); using default '${options[$((default - 1))]}'" >&2
     if ((rc != 0)); then
       echo "${options[$((default - 1))]}"
