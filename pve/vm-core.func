@@ -733,6 +733,68 @@ vm_choose_settings_mode() {
   whiptail --backtitle "Proxmox VE Helper Scripts" --title "SETTINGS" --yesno "$message" --no-button Advanced "$height" "$width"
 }
 
+# ------------------------------------------------------------------------------
+# vm_echo_default_settings()
+#
+# Prints the settings summary from the variables default_settings has just set.
+# Every VM script wrote this block itself and they agreed on thirteen of the
+# fifteen lines; the two that differed were the CPU model label and the app
+# name, both derivable. The labels are computed rather than passed, so a script
+# cannot print "Host" while CPU_TYPE says otherwise.
+# ------------------------------------------------------------------------------
+vm_echo_default_settings() {
+  local cpu_label="KVM64"
+  [[ "${CPU_TYPE:-}" == *host* ]] && cpu_label="Host"
+
+  local cache_label="None"
+  [[ -n "${DISK_CACHE:-}" ]] && cache_label="Write Through"
+
+  # vm_machine_type_label takes the type as an argument, not from the
+  # environment, so MACHINE_TYPE has to be handed over explicitly -- calling it
+  # bare silently reported i440fx for every machine.
+  local machine_label
+  machine_label="$(vm_machine_type_label "${MACHINE_TYPE:-i440fx}")"
+
+  echo -e "${CONTAINERID}${BOLD}${DGN}Virtual Machine ID: ${BGN}${VMID}${CL}"
+  echo -e "${CONTAINERTYPE}${BOLD}${DGN}Machine Type: ${BGN}${machine_label}${CL}"
+  echo -e "${DISKSIZE}${BOLD}${DGN}Disk Size: ${BGN}${DISK_SIZE}${CL}"
+  echo -e "${DISKSIZE}${BOLD}${DGN}Disk Cache: ${BGN}${cache_label}${CL}"
+  echo -e "${HOSTNAME}${BOLD}${DGN}Hostname: ${BGN}${HN}${CL}"
+  echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}${cpu_label}${CL}"
+  echo -e "${CPUCORE}${BOLD}${DGN}CPU Cores: ${BGN}${CORE_COUNT}${CL}"
+  echo -e "${RAMSIZE}${BOLD}${DGN}RAM Size: ${BGN}${RAM_SIZE} MiB${CL}"
+  echo -e "${BRIDGE}${BOLD}${DGN}Bridge: ${BGN}${BRG}${CL}"
+  echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}${MAC}${CL}"
+  echo -e "${VLANTAG}${BOLD}${DGN}VLAN: ${BGN}${VLAN:-Default}${CL}"
+  echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}${MTU:-Default}${CL}"
+  echo -e "${GATEWAY}${BOLD}${DGN}Start VM when completed: ${BGN}${START_VM}${CL}"
+  echo -e "${CREATING}${BOLD}${DGN}Creating a ${APP:-${NSAPP}} VM using the above default settings${CL}"
+}
+
+# ------------------------------------------------------------------------------
+# vm_start_script()
+#
+# The default-or-advanced fork, which was byte for byte the same in every VM
+# script that had been migrated. default_settings and advanced_settings are
+# resolved when this runs rather than when it is defined, so each script still
+# supplies its own.
+#
+# Arguments: the dialog message, and optionally its height and width -- a script
+# that lists what its defaults are needs a taller box than one asking a bare
+# question.
+# ------------------------------------------------------------------------------
+vm_start_script() {
+  if vm_choose_settings_mode "$@"; then
+    header_info
+    echo -e "${DEFAULT}${BOLD}${BL}Using Default Settings${CL}"
+    default_settings
+  else
+    header_info
+    echo -e "${ADVANCED}${BOLD}${RD}Using Advanced Settings${CL}"
+    advanced_settings
+  fi
+}
+
 vm_confirm_advanced_settings() {
   local message="$1"
   local height="${2:-10}"
