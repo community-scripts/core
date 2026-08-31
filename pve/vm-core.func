@@ -886,7 +886,44 @@ vm_check_dialog_env() {
   fi
 }
 
+# Everything in the wizard needs a terminal, which rules out automation and --
+# more to the point -- rules out testing: there has never been a way to run a
+# script's settings path in CI. VM_UNATTENDED=1 takes the script's own defaults
+# and lets the environment override any of them, so a run is reproducible and
+# needs no tty at all.
+#
+# Names are deliberately prefixed. VMID, HN and friends are the script's own
+# working variables and get written to constantly; an operator setting HN in
+# their shell should not silently rename a VM.
+vm_apply_env_overrides() {
+  [[ -n "${VM_VMID:-}" ]] && VMID="$VM_VMID"
+  [[ -n "${VM_DISK_SIZE:-}" ]] && DISK_SIZE="$VM_DISK_SIZE"
+  [[ -n "${VM_DISK_CACHE:-}" ]] && DISK_CACHE="$VM_DISK_CACHE"
+  [[ -n "${VM_HOSTNAME:-}" ]] && HN="$VM_HOSTNAME"
+  [[ -n "${VM_CORES:-}" ]] && CORE_COUNT="$VM_CORES"
+  [[ -n "${VM_RAM:-}" ]] && RAM_SIZE="$VM_RAM"
+  [[ -n "${VM_BRIDGE:-}" ]] && BRG="$VM_BRIDGE"
+  [[ -n "${VM_MAC:-}" ]] && MAC="$VM_MAC"
+  [[ -n "${VM_VLAN:-}" ]] && VLAN=",tag=${VM_VLAN}"
+  [[ -n "${VM_MTU:-}" ]] && MTU=",mtu=${VM_MTU}"
+  [[ -n "${VM_START:-}" ]] && START_VM="$VM_START"
+  [[ -n "${VM_STORAGE:-}" ]] && STORAGE="$VM_STORAGE"
+  [[ -n "${VM_MACHINE:-}" ]] && vm_apply_machine_type "$VM_MACHINE"
+  if [[ -n "${VM_CPU:-}" ]]; then
+    [[ "$VM_CPU" == "host" ]] && CPU_TYPE=" -cpu host" || CPU_TYPE=""
+  fi
+  return 0
+}
+
 vm_start_script() {
+  if [[ "${VM_UNATTENDED:-0}" == "1" ]]; then
+    METHOD="unattended"
+    default_settings
+    vm_apply_env_overrides
+    echo -e "${INFO}${BOLD}${DGN}Unattended: script defaults with environment overrides${CL}"
+    return 0
+  fi
+
   vm_check_dialog_env
   if vm_choose_settings_mode "$@"; then
     header_info
@@ -1476,6 +1513,17 @@ vm_select_storage() {
   local line tag type free item
   local offset=2
   local valid_storage
+
+  # An operator who named a pool has already answered the question, and an
+  # unattended run has no one to ask.
+  if [[ -n "${STORAGE:-}" ]]; then
+    if pvesm status -storage "$STORAGE" &>/dev/null; then
+      msg_ok "Using ${CL}${BL}$STORAGE${CL} ${GN}for Storage Location."
+      return 0
+    fi
+    msg_error "Storage '${STORAGE}' does not exist on this host"
+    exit 119
+  fi
 
   msg_info "Validating Storage"
 
