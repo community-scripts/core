@@ -1286,11 +1286,12 @@ vm_select_storage() {
   elif [ $((${#storage_menu[@]} / 3)) -eq 1 ]; then
     STORAGE=${storage_menu[0]}
   else
-    if [ -n "${SPINNER_PID:-}" ] && ps -p "$SPINNER_PID" >/dev/null 2>&1; then
-      kill "$SPINNER_PID" >/dev/null 2>&1 || true
-      SPINNER_ACTIVE=0
-      printf "\r\e[2K" >&2
-    fi
+    # stop_spinner rather than a hand-rolled kill: kill is asynchronous, so the
+    # spinner got one more frame out after the line was cleared, and whiptail
+    # then painted around it. The result was "Validating Storage" sitting on
+    # top of the storage dialog. stop_spinner waits for the process to actually
+    # be gone before clearing.
+    stop_spinner
     # The width follows the longest storage line, which on a host with long
     # pool names comes out wider than the terminal -- and whiptail then refuses
     # to draw rather than wrapping. Clamp it to what actually fits.
