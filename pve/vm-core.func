@@ -66,6 +66,12 @@ load_api_functions() {
   fi
 }
 
+# Only the groups that set variables. The six names that used to follow
+# shell_check were left behind when their definitions moved out of this
+# function, so loading the engine ran them: get_valid_nextid printed a bare VM
+# ID, cleanup tore down the temp dir before there was one, and check_root and
+# friends ran before the script had said what it wanted. Every script calls
+# those itself, in its own order.
 load_functions() {
   [[ -n "${__FUNCTIONS_LOADED:-}" ]] && return
   __FUNCTIONS_LOADED=1
@@ -76,12 +82,17 @@ load_functions() {
   default_vars
   set_std_mode
   shell_check
-  get_valid_nextid
-  cleanup_vmid
-  cleanup
-  check_root
-  pve_check
-  arch_check
+}
+
+# core/core.func owns this, but a VM script never loads that file -- it carries
+# its own colours and icons. `clear` is part of ncurses and missing from minimal
+# images, where a bare call returns 127 and errexit ends the run.
+_cs_clear() {
+  if command -v clear >/dev/null 2>&1; then
+    clear
+  else
+    printf '\033[H\033[2J\033[3J'
+  fi
 }
 
 load_cloud_init_functions() {
@@ -106,8 +117,11 @@ get_header() {
 
   mkdir -p "$(dirname "$local_header_path")"
 
+  # A script whose banner the generator has not produced yet 404s here, which is
+  # expected and not worth printing at the user. header_info draws nothing.
   if [ ! -s "$local_header_path" ]; then
-    if ! curl -fsSL "$header_url" -o "$local_header_path"; then
+    if ! curl -fsSL "$header_url" -o "$local_header_path" 2>/dev/null; then
+      rm -f "$local_header_path"
       return 1
     fi
   fi
