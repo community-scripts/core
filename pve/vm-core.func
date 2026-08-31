@@ -783,7 +783,7 @@ vm_confirm_new_vm() {
   local height="${3:-10}"
   local width="${4:-58}"
 
-  whiptail --backtitle "Proxmox VE Helper Scripts" --title "$title" --yesno "$message" "$height" "$width"
+  vm_dialog yesno "$title" "$message" "$height" "$width"
 }
 
 vm_choose_settings_mode() {
@@ -791,18 +791,11 @@ vm_choose_settings_mode() {
   local height="${2:-10}"
   local width="${3:-58}"
 
-  local rc=0
-  whiptail --backtitle "Proxmox VE Helper Scripts" --title "SETTINGS" --yesno "$message" --no-button Advanced "$height" "$width" || rc=$?
-
-  # 0 is Default, 1 is the Advanced button. Anything else is ESC or a whiptail
-  # failure, and both used to fall through to Advanced -- so a dialog that
-  # could not be drawn dropped the operator into a wizard they never asked
-  # for, whose first prompt then "exited" them. Treat it as the abort it is.
-  case $rc in
-  0) return 0 ;;
-  1) return 1 ;;
-  *) exit_script ;;
-  esac
+  # 0 is Default, 1 is the Advanced button. vm_dialog turns anything else --
+  # ESC, or a dialog that could not be drawn -- into a fatal error that says
+  # why, instead of falling through to Advanced and letting the next prompt
+  # "exit" the operator from a wizard they never asked for.
+  vm_dialog yesno "SETTINGS" "$message" --no-button Advanced "$height" "$width"
 }
 
 # ------------------------------------------------------------------------------
@@ -911,14 +904,68 @@ vm_confirm_advanced_settings() {
   local height="${2:-10}"
   local width="${3:-58}"
 
-  whiptail --backtitle "Proxmox VE Helper Scripts" --title "ADVANCED SETTINGS COMPLETE" --yesno "$message" --no-button Do-Over "$height" "$width"
+  vm_dialog yesno "ADVANCED SETTINGS COMPLETE" "$message" --no-button Do-Over "$height" "$width"
+}
+
+# One entry point for every dialog in the VM path. Every wizard fault reported
+# so far came from each prompt rolling its own whiptail call:
+#
+#   - whiptail returns 255 for ESC and for "could not draw at all", and callers
+#     read both as a cancel, so a terminal too short for a dialog was reported
+#     as "User exited script"
+#   - the 3>&1 1>&2 2>&3 swap sends whiptail's error text to the same place as
+#     its result, so the explanation was captured into a variable and discarded
+#   - a running spinner kept painting over the dialog it was waiting on
+#   - dialogs sized wider than the terminal made whiptail refuse silently
+#
+# Fixing that in thirteen places meant thirteen chances to miss one. Fixed
+# here, no prompt can reinvent it.
+#
+# Result of an inputbox/radiolist lands in VM_DIALOG_RESULT, since the return
+# code is needed for the cancel/failure distinction.
+# Returns 0 for OK, 1 for a deliberate cancel. Anything else is fatal and says
+# why, rather than being passed off as something the operator did.
+VM_DIALOG_RESULT=""
+
+vm_dialog() {
+  local box="${1:?box type}" title="${2:-}"
+  shift 2
+  local rc=0 out="" cols rows
+
+  # A spinner writes asynchronously, so whiptail would paint around its last
+  # frame and leave the line stranded on top of the dialog.
+  declare -f stop_spinner >/dev/null 2>&1 && stop_spinner
+  VM_DIALOG_RESULT=""
+
+  case "$box" in
+  yesno | msgbox | gauge)
+    whiptail --backtitle "Proxmox VE Helper Scripts" --title "$title" "--$box" "$@" || rc=$?
+    ;;
+  *)
+    out=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "$title" "--$box" "$@" 3>&1 1>&2 2>&3) || rc=$?
+    VM_DIALOG_RESULT="$out"
+    ;;
+  esac
+
+  ((rc <= 1)) && return $rc
+
+  # Past this point whiptail did not present a choice at all. On that path the
+  # captured text is whiptail's own complaint rather than a result, so print it
+  # -- it is the sentence that used to be thrown away.
+  cols=$(tput cols 2>/dev/null || echo "?")
+  rows=$(tput lines 2>/dev/null || echo "?")
+  msg_error "The '${title}' dialog could not be shown (whiptail exit ${rc})"
+  [[ -n "$out" ]] && msg_error "whiptail: ${out}"
+  msg_error "Terminal is ${cols}x${rows}; the wizard needs at least 60x18."
+  exit 1
 }
 
 vm_prompt_vmid() {
   local default_vmid="${1:-$(get_valid_nextid)}"
 
   while true; do
-    if VMID=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set Virtual Machine ID" 8 58 "$default_vmid" --title "VIRTUAL MACHINE ID" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    if vm_dialog inputbox "VIRTUAL MACHINE ID" "Set Virtual Machine ID" 8 58 "$default_vmid" --cancel-button Exit-Script; then
+      VMID="$VM_DIALOG_RESULT"
       if [ -z "$VMID" ]; then
         VMID=$(get_valid_nextid)
       fi
@@ -971,10 +1018,10 @@ vm_prompt_machine_type() {
     q35_default="ON"
   fi
 
-  if machine_choice=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "MACHINE TYPE" --radiolist --cancel-button Exit-Script "Choose Type" 10 58 2 \
+  if vm_dialog radiolist "MACHINE TYPE" --cancel-button Exit-Script "Choose Type" 10 58 2 \
     "i440fx" "Machine i440fx" "$i440fx_default" \
-    "q35" "Machine q35" "$q35_default" \
-    3>&1 1>&2 2>&3); then
+    "q35" "Machine q35" "$q35_default"; then
+    machine_choice="$VM_DIALOG_RESULT"
     vm_apply_machine_type "$machine_choice"
     echo -e "${CONTAINERTYPE}${BOLD}${DGN}Machine Type: ${BGN}$(vm_machine_type_label "$MACHINE_TYPE")${CL}"
   else
@@ -1008,7 +1055,8 @@ vm_prompt_disk_size() {
   local default_size="${1:-8G}"
   local prompt_message="${2:-Set Disk Size in GiB (e.g., 10, 20)}"
 
-  if DISK_SIZE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "$prompt_message" 8 58 "$default_size" --title "DISK SIZE" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+  if vm_dialog inputbox "DISK SIZE" "$prompt_message" 8 58 "$default_size" --cancel-button Exit-Script; then
+    DISK_SIZE="$VM_DIALOG_RESULT"
     DISK_SIZE=$(echo "$DISK_SIZE" | tr -d ' ')
     if [[ "$DISK_SIZE" =~ ^[0-9]+$ ]]; then
       DISK_SIZE="${DISK_SIZE}G"
@@ -1035,10 +1083,10 @@ vm_prompt_disk_cache() {
     write_default="ON"
   fi
 
-  if cache_choice=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "DISK CACHE" --radiolist "Choose" --cancel-button Exit-Script 10 58 2 \
+  if vm_dialog radiolist "DISK CACHE" "Choose" --cancel-button Exit-Script 10 58 2 \
     "0" "None (Default)" "$none_default" \
-    "1" "Write Through" "$write_default" \
-    3>&1 1>&2 2>&3); then
+    "1" "Write Through" "$write_default"; then
+    cache_choice="$VM_DIALOG_RESULT"
     if [ "$cache_choice" = "1" ]; then
       DISK_CACHE="cache=writethrough,"
       echo -e "${DISKSIZE}${BOLD}${DGN}Disk Cache: ${BGN}Write Through${CL}"
@@ -1056,14 +1104,15 @@ vm_prompt_hostname() {
   local adjusted_hostname
   local input_hostname
 
-  if input_hostname=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set Hostname" 8 58 "$default_hostname" --title "HOSTNAME" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+  if vm_dialog inputbox "HOSTNAME" "Set Hostname" 8 58 "$default_hostname" --cancel-button Exit-Script; then
+    input_hostname="$VM_DIALOG_RESULT"
     if [ -z "$input_hostname" ]; then
       HN="$default_hostname"
     else
       adjusted_hostname=$(sanitize_vm_hostname "$input_hostname")
       HN="${adjusted_hostname:-$default_hostname}"
       if [ "$HN" != "${input_hostname,,}" ]; then
-        whiptail --backtitle "Proxmox VE Helper Scripts" --title "HOSTNAME ADJUSTED" --msgbox "Invalid characters detected. Hostname has been adjusted to:\n\n  $HN" 10 58
+        vm_dialog msgbox "HOSTNAME ADJUSTED" "Invalid characters detected. Hostname has been adjusted to:\n\n  $HN" 10 58
       fi
     fi
     echo -e "${HOSTNAME}${BOLD}${DGN}Hostname: ${BGN}$HN${CL}"
@@ -1083,10 +1132,10 @@ vm_prompt_cpu_model() {
     host_default="ON"
   fi
 
-  if cpu_choice=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "CPU MODEL" --radiolist "Choose" --cancel-button Exit-Script 10 58 2 \
+  if vm_dialog radiolist "CPU MODEL" "Choose" --cancel-button Exit-Script 10 58 2 \
     "0" "KVM64 (Default)" "$kvm_default" \
-    "1" "Host" "$host_default" \
-    3>&1 1>&2 2>&3); then
+    "1" "Host" "$host_default"; then
+    cpu_choice="$VM_DIALOG_RESULT"
     if [ "$cpu_choice" = "1" ]; then
       CPU_TYPE=" -cpu host"
       echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}Host${CL}"
@@ -1103,7 +1152,8 @@ vm_prompt_cpu_cores() {
   local default_cores="${1:-2}"
 
   while true; do
-    if CORE_COUNT=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Allocate CPU Cores" 8 58 "$default_cores" --title "CORE COUNT" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    if vm_dialog inputbox "CORE COUNT" "Allocate CPU Cores" 8 58 "$default_cores" --cancel-button Exit-Script; then
+      CORE_COUNT="$VM_DIALOG_RESULT"
       if [ -z "$CORE_COUNT" ]; then
         CORE_COUNT="$default_cores"
       fi
@@ -1111,7 +1161,7 @@ vm_prompt_cpu_cores() {
         echo -e "${CPUCORE}${BOLD}${DGN}CPU Cores: ${BGN}$CORE_COUNT${CL}"
         break
       fi
-      whiptail --backtitle "Proxmox VE Helper Scripts" --title "INVALID INPUT" --msgbox "CPU Cores must be a positive integer (e.g., 2)." 8 58
+      vm_dialog msgbox "INVALID INPUT" "CPU Cores must be a positive integer (e.g., 2)." 8 58
     else
       exit_script
     fi
@@ -1122,7 +1172,8 @@ vm_prompt_ram() {
   local default_ram="${1:-2048}"
 
   while true; do
-    if RAM_SIZE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Allocate RAM in MiB" 8 58 "$default_ram" --title "RAM" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    if vm_dialog inputbox "RAM" "Allocate RAM in MiB" 8 58 "$default_ram" --cancel-button Exit-Script; then
+      RAM_SIZE="$VM_DIALOG_RESULT"
       if [ -z "$RAM_SIZE" ]; then
         RAM_SIZE="$default_ram"
       fi
@@ -1130,7 +1181,7 @@ vm_prompt_ram() {
         echo -e "${RAMSIZE}${BOLD}${DGN}RAM Size: ${BGN}$RAM_SIZE${CL}"
         break
       fi
-      whiptail --backtitle "Proxmox VE Helper Scripts" --title "INVALID INPUT" --msgbox "RAM Size must be a positive integer in MiB (e.g., 2048)." 8 58
+      vm_dialog msgbox "INVALID INPUT" "RAM Size must be a positive integer in MiB (e.g., 2048)." 8 58
     else
       exit_script
     fi
@@ -1140,7 +1191,8 @@ vm_prompt_ram() {
 vm_prompt_bridge() {
   local default_bridge="${1:-vmbr0}"
 
-  if BRG=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a Bridge" 8 58 "$default_bridge" --title "BRIDGE" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+  if vm_dialog inputbox "BRIDGE" "Set a Bridge" 8 58 "$default_bridge" --cancel-button Exit-Script; then
+    BRG="$VM_DIALOG_RESULT"
     if [ -z "$BRG" ]; then
       BRG="$default_bridge"
     fi
@@ -1155,7 +1207,8 @@ vm_prompt_mac() {
   local input_mac
 
   while true; do
-    if input_mac=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a MAC Address" 8 58 "$default_mac" --title "MAC ADDRESS" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    if vm_dialog inputbox "MAC ADDRESS" "Set a MAC Address" 8 58 "$default_mac" --cancel-button Exit-Script; then
+      input_mac="$VM_DIALOG_RESULT"
       if [ -z "$input_mac" ]; then
         MAC="$default_mac"
         echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}$MAC${CL}"
@@ -1166,7 +1219,7 @@ vm_prompt_mac() {
         echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}$MAC${CL}"
         break
       fi
-      whiptail --backtitle "Proxmox VE Helper Scripts" --title "INVALID INPUT" --msgbox "Invalid MAC address format. Use XX:XX:XX:XX:XX:XX (e.g., AA:BB:CC:DD:EE:FF)." 8 58
+      vm_dialog msgbox "INVALID INPUT" "Invalid MAC address format. Use XX:XX:XX:XX:XX:XX (e.g., AA:BB:CC:DD:EE:FF)." 8 58
     else
       exit_script
     fi
@@ -1178,7 +1231,8 @@ vm_prompt_vlan() {
   local input_vlan
 
   while true; do
-    if input_vlan=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a Vlan (leave blank for default)" 8 58 "$default_vlan" --title "VLAN" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    if vm_dialog inputbox "VLAN" "Set a Vlan (leave blank for default)" 8 58 "$default_vlan" --cancel-button Exit-Script; then
+      input_vlan="$VM_DIALOG_RESULT"
       if [ -z "$input_vlan" ]; then
         VLAN=""
         echo -e "${VLANTAG}${BOLD}${DGN}VLAN: ${BGN}Default${CL}"
@@ -1189,7 +1243,7 @@ vm_prompt_vlan() {
         echo -e "${VLANTAG}${BOLD}${DGN}VLAN: ${BGN}$input_vlan${CL}"
         break
       fi
-      whiptail --backtitle "Proxmox VE Helper Scripts" --title "INVALID INPUT" --msgbox "VLAN must be a number between 1 and 4094, or leave blank for default." 8 58
+      vm_dialog msgbox "INVALID INPUT" "VLAN must be a number between 1 and 4094, or leave blank for default." 8 58
     else
       exit_script
     fi
@@ -1201,7 +1255,8 @@ vm_prompt_mtu() {
   local input_mtu
 
   while true; do
-    if input_mtu=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set Interface MTU Size (leave blank for default)" 8 58 "$default_mtu" --title "MTU SIZE" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    if vm_dialog inputbox "MTU SIZE" "Set Interface MTU Size (leave blank for default)" 8 58 "$default_mtu" --cancel-button Exit-Script; then
+      input_mtu="$VM_DIALOG_RESULT"
       if [ -z "$input_mtu" ]; then
         MTU=""
         echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}Default${CL}"
@@ -1212,7 +1267,7 @@ vm_prompt_mtu() {
         echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}$input_mtu${CL}"
         break
       fi
-      whiptail --backtitle "Proxmox VE Helper Scripts" --title "INVALID INPUT" --msgbox "MTU Size must be a number between 576 and 65520, or leave blank for default." 8 58
+      vm_dialog msgbox "INVALID INPUT" "MTU Size must be a number between 576 and 65520, or leave blank for default." 8 58
     else
       exit_script
     fi
@@ -1231,21 +1286,19 @@ vm_prompt_mtu() {
 # leave the old value in place and the setting would do nothing.
 vm_prompt_verbose() {
   local default_verbose="${1:-${VERBOSE:-no}}"
-  local default_flag=() rc=0
+  local default_flag=()
 
   if [ "$default_verbose" != "yes" ]; then
     default_flag=(--defaultno)
   fi
 
-  whiptail --backtitle "Proxmox VE Helper Scripts" "${default_flag[@]}" --title "VERBOSE MODE" \
-    --yes-button Verbose --no-button Silent \
-    --yesno "Show the full output of every command?\n\nSilent keeps the screen readable and writes the detail to the log instead." 11 58 || rc=$?
-
-  case $rc in
-  0) VERBOSE="yes" ;;
-  1) VERBOSE="no" ;;
-  *) exit_script ;;
-  esac
+  if vm_dialog yesno "VERBOSE MODE" \
+    "Show the full output of every command?\n\nSilent keeps the screen readable and writes the detail to the log instead." \
+    11 58 --yes-button Verbose --no-button Silent "${default_flag[@]}"; then
+    VERBOSE="yes"
+  else
+    VERBOSE="no"
+  fi
 
   set_std_mode
   echo -e "${SEARCH}${BOLD}${DGN}Verbose Mode: ${BGN}${VERBOSE}${CL}"
@@ -1259,7 +1312,7 @@ vm_prompt_start_vm() {
     default_flag=(--defaultno)
   fi
 
-  if whiptail --backtitle "Proxmox VE Helper Scripts" "${default_flag[@]}" --title "START VIRTUAL MACHINE" --yesno "Start VM when completed?" 10 58; then
+  if vm_dialog yesno "START VIRTUAL MACHINE" "Start VM when completed?" 10 58 "${default_flag[@]}"; then
     START_VM="yes"
   else
     START_VM="no"
@@ -1324,28 +1377,27 @@ vm_select_storage() {
     # stop_spinner rather than a hand-rolled kill: kill is asynchronous, so the
     # spinner got one more frame out after the line was cleared, and whiptail
     # then painted around it. The result was "Validating Storage" sitting on
-    # top of the storage dialog. stop_spinner waits for the process to actually
-    # be gone before clearing.
-    stop_spinner
-    # The width follows the longest storage line, which on a host with long
-    # pool names comes out wider than the terminal -- and whiptail then refuses
-    # to draw rather than wrapping. Clamp it to what actually fits.
-    local menu_width=$((msg_max_length + 23)) term_cols rc=0
+    # top of the storage dialog. vm_dialog stops the spinner itself now, but
+    # the width still has to be worked out before the call.
+    #
+    # It follows the longest storage line, which on a host with long pool names
+    # comes out wider than the terminal -- and whiptail refuses to draw rather
+    # than wrapping. Clamp it to what actually fits.
+    local menu_width=$((msg_max_length + 23)) term_cols
     term_cols=$(tput cols 2>/dev/null || echo 0)
     ((term_cols > 0 && menu_width > term_cols)) && menu_width=$term_cols
 
     while [ -z "${STORAGE:+x}" ]; do
-      STORAGE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Storage Pools" --radiolist \
+      # Nothing used to look at the exit code here, so whenever whiptail could
+      # not draw, STORAGE stayed empty and this loop spun forever. vm_dialog
+      # separates a cancel from a failure and ends the run on the latter.
+      if vm_dialog radiolist "Storage Pools" \
         "Which storage pool would you like to use for ${hostname}?\nTo make a selection, use the Spacebar.\n" \
         16 "$menu_width" 6 \
-        "${storage_menu[@]}" 3>&1 1>&2 2>&3) || rc=$?
-      # Nothing used to look at the exit code, so whenever whiptail could not
-      # draw, STORAGE stayed empty and this loop spun forever.
-      if ((rc != 0)); then
-        ((rc == 1)) && exit_script
-        msg_error "The storage dialog could not be shown (whiptail exit ${rc})"
-        msg_error "Check the terminal size; the wizard needs at least 60x18."
-        exit 1
+        "${storage_menu[@]}"; then
+        STORAGE="$VM_DIALOG_RESULT"
+      else
+        exit_script
       fi
     done
   fi
