@@ -771,7 +771,18 @@ vm_choose_settings_mode() {
   local height="${2:-10}"
   local width="${3:-58}"
 
-  whiptail --backtitle "Proxmox VE Helper Scripts" --title "SETTINGS" --yesno "$message" --no-button Advanced "$height" "$width"
+  local rc=0
+  whiptail --backtitle "Proxmox VE Helper Scripts" --title "SETTINGS" --yesno "$message" --no-button Advanced "$height" "$width" || rc=$?
+
+  # 0 is Default, 1 is the Advanced button. Anything else is ESC or a whiptail
+  # failure, and both used to fall through to Advanced -- so a dialog that
+  # could not be drawn dropped the operator into a wizard they never asked
+  # for, whose first prompt then "exited" them. Treat it as the abort it is.
+  case $rc in
+  0) return 0 ;;
+  1) return 1 ;;
+  *) exit_script ;;
+  esac
 }
 
 # ------------------------------------------------------------------------------
@@ -824,7 +835,43 @@ vm_echo_default_settings() {
 # that lists what its defaults are needs a taller box than one asking a bare
 # question.
 # ------------------------------------------------------------------------------
+# whiptail returns 255 both when the user presses ESC and when it cannot draw
+# at all -- no tty, an unusable TERM, or a terminal smaller than the dialog.
+# Every prompt here treats non-zero as "the user cancelled", so a window that
+# was merely too small got reported as "User exited script", blaming the
+# operator for something they did not do. The 3>&1 1>&2 2>&3 dance makes it
+# worse: whiptail's own explanation goes to stderr, which that redirection
+# captures into the result variable and discards, so nothing on screen says
+# what happened. Check once, up front, and name the actual problem.
+vm_check_dialog_env() {
+  local cols rows
+  # The storage picker is the tallest dialog at 16 rows; the rest need 10.
+  local need_rows=18 need_cols=60
+
+  if ! command -v whiptail >/dev/null 2>&1; then
+    msg_error "whiptail is not installed, so the settings wizard cannot run"
+    msg_error "Install it with: apt-get install -y whiptail"
+    exit 1
+  fi
+
+  if [[ ! -t 2 ]] && [[ ! -r /dev/tty ]]; then
+    msg_error "No terminal is available for the settings wizard"
+    msg_error "Run the script directly rather than piping it into a shell:"
+    msg_error "  bash -c \"\$(curl -fsSL <script-url>)\""
+    exit 1
+  fi
+
+  cols=$(tput cols 2>/dev/null || echo 0)
+  rows=$(tput lines 2>/dev/null || echo 0)
+  if ((cols > 0 && rows > 0)) && ((cols < need_cols || rows < need_rows)); then
+    msg_error "The terminal is ${cols}x${rows}; the wizard needs at least ${need_cols}x${need_rows}"
+    msg_error "Enlarge the window, or use a smaller console font, and run it again."
+    exit 1
+  fi
+}
+
 vm_start_script() {
+  vm_check_dialog_env
   if vm_choose_settings_mode "$@"; then
     header_info
     echo -e "${DEFAULT}${BOLD}${BL}Using Default Settings${CL}"
@@ -1224,11 +1271,26 @@ vm_select_storage() {
       SPINNER_ACTIVE=0
       printf "\r\e[2K" >&2
     fi
+    # The width follows the longest storage line, which on a host with long
+    # pool names comes out wider than the terminal -- and whiptail then refuses
+    # to draw rather than wrapping. Clamp it to what actually fits.
+    local menu_width=$((msg_max_length + 23)) term_cols rc=0
+    term_cols=$(tput cols 2>/dev/null || echo 0)
+    ((term_cols > 0 && menu_width > term_cols)) && menu_width=$term_cols
+
     while [ -z "${STORAGE:+x}" ]; do
       STORAGE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Storage Pools" --radiolist \
         "Which storage pool would you like to use for ${hostname}?\nTo make a selection, use the Spacebar.\n" \
-        16 $(($msg_max_length + 23)) 6 \
-        "${storage_menu[@]}" 3>&1 1>&2 2>&3)
+        16 "$menu_width" 6 \
+        "${storage_menu[@]}" 3>&1 1>&2 2>&3) || rc=$?
+      # Nothing used to look at the exit code, so whenever whiptail could not
+      # draw, STORAGE stayed empty and this loop spun forever.
+      if ((rc != 0)); then
+        ((rc == 1)) && exit_script
+        msg_error "The storage dialog could not be shown (whiptail exit ${rc})"
+        msg_error "Check the terminal size; the wizard needs at least 60x18."
+        exit 1
+      fi
     done
   fi
 
