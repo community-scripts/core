@@ -92,8 +92,10 @@ detect_repo_source() {
     REPO_SOURCE="ProxmoxVED"
     REPO_SLUG="community-scripts/ProxmoxVED"
     ;;
-  "")
-    # No URL detected — hardcoded fallback (CI rewrites VED → VE on promotion)
+  "" | community-scripts/core)
+    # No script repo identified — hardcoded fallback (CI rewrites VED → VE on
+    # promotion). core is the engine's own repo, not a fork: the bootstrap line
+    # names it whenever COMMUNITY_SCRIPTS_URL is unset.
     REPO_SOURCE="ProxmoxVED"
     REPO_SLUG="community-scripts/ProxmoxVED"
     ;;
