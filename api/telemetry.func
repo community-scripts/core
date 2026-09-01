@@ -324,6 +324,12 @@ post_update_to_api() {
   [[ "${DIAGNOSTICS:-no}" == "no" ]] && return 0
   [[ -z "${RANDOM_UUID:-}" ]] && return 0
 
+  # A status for an execution the service never saw an install for is an orphan.
+  # Unset means post_to_api was never attempted -- an update run, or an exit
+  # before the install began. "false" means it was attempted and the send
+  # failed, which is still worth reporting.
+  [[ -z "${POST_TO_API_DONE:-}" ]] && return 0
+
   local exit_code=0
   if [[ "$raw_exit_code" =~ ^[0-9]+$ ]]; then
     exit_code="$raw_exit_code"
