@@ -1208,7 +1208,12 @@ PROFILE
     if [[ -n "${SESSION_ID:-}" ]]; then
       local error_flag="/root/.install-${SESSION_ID}.failed"
       if pct exec "$CTID" -- test -f "$error_flag" 2>/dev/null; then
-        install_exit_code=$(pct exec "$CTID" -- cat "$error_flag" 2>/dev/null || echo "1")
+        # The flag holds the container's own code. When it cannot be read, or
+        # comes back as something that is not a number, fall back to what
+        # lxc-attach returned rather than to 1: that is a code we actually
+        # observed, and it is already in hand a few lines up.
+        install_exit_code=$(pct exec "$CTID" -- cat "$error_flag" 2>/dev/null | tr -d '[:space:]') || true
+        [[ "$install_exit_code" =~ ^[0-9]+$ ]] || install_exit_code="${lxc_exit:-199}"
         pct exec "$CTID" -- rm -f "$error_flag" 2>/dev/null || true
       fi
     fi
