@@ -1559,7 +1559,36 @@ vm_enable_consoles() {
   virt-customize -q -a "$image" \
     --run-command 'systemctl enable getty@tty1.service serial-getty@ttyS0.service' \
     >/dev/null 2>&1 || true
+
+  # A getty alone only gets you a login prompt after boot -- the kernel still
+  # talks to ttyS0 only, so the screen stays black until then. Listing tty1
+  # first and ttyS0 last keeps qm terminal as the primary console while the
+  # graphical one also shows the boot.
+  virt-customize -q -a "$image" --run-command \
+    'if [ -f /etc/default/grub ]; then
+       sed -i "s/console=ttyS0[^ \"]*/console=tty1 &/" /etc/default/grub
+       grep -q "console=tty1" /etc/default/grub || sed -i "s/\(GRUB_CMDLINE_LINUX_DEFAULT=\"\)/\1console=tty1 /" /etc/default/grub
+       command -v update-grub >/dev/null 2>&1 && update-grub
+     fi' >/dev/null 2>&1 || true
   return 0
+}
+
+# 28 scripts pass -agent 1 and 5 installed the agent, so Proxmox announced a
+# guest agent that was never going to answer: no IP in the summary, no clean
+# shutdown, no qm guest exec. Installing it needs network in the libguestfs
+# appliance, so this reports rather than fails.
+vm_install_guest_agent() {
+  local image="${1:?image}"
+  command -v virt-customize >/dev/null 2>&1 || return 0
+
+  if virt-customize -q -a "$image" --install qemu-guest-agent >/dev/null 2>&1; then
+    virt-customize -q -a "$image" \
+      --run-command 'systemctl enable qemu-guest-agent.service' >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  msg_warn "Could not install qemu-guest-agent -- the VM will show no IP in Proxmox"
+  return 1
 }
 
 # Disk first, CD second. An empty disk is not bootable so the installer still
