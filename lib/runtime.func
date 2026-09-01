@@ -1335,10 +1335,9 @@ setup_nodejs() {
   # once none are left.
   if [[ "$NODE_VERSION" == "22" && "$(npm -v 2>/dev/null)" == "10.9.7" ]]; then
     msg_info "Repairing npm 10.9.7 (Node 22.22.2)"
-    # Supplying the missing module first is what worked for people upstream;
-    # the pinned step is kept because it succeeds where @latest alone does not.
+    # Supplying the missing module is the whole repair -- once arborist can load
+    # promise-retry, npm upgrades itself normally. No version pin needed.
     $STD npm install -g promise-retry 2>/dev/null || true
-    $STD npm install -g npm@10.9.8 2>/dev/null || true
     if $STD npm install -g npm@latest 2>/dev/null; then
       msg_ok "Repaired npm ($(npm -v))"
     else
