@@ -1328,14 +1328,21 @@ setup_nodejs() {
     msg_ok "$node_setup_ok_msg"
   fi
 
-  # Node 22.22.2 bundles npm 10.9.7 which cannot self-upgrade (nodejs/node#62425)
+  # Only Node 22.22.2 shipped npm 10.9.7, whose arborist is missing
+  # promise-retry, so npm cannot upgrade itself (nodejs/node#62425). Fixed
+  # upstream in 22.22.3 on 2026-05-13, so a fresh install never lands here --
+  # this repairs containers built in the seven weeks it was current. Delete it
+  # once none are left.
   if [[ "$NODE_VERSION" == "22" && "$(npm -v 2>/dev/null)" == "10.9.7" ]]; then
-    msg_info "Updating npm (Node 22 regression fix)"
+    msg_info "Repairing npm 10.9.7 (Node 22.22.2)"
+    # Supplying the missing module first is what worked for people upstream;
+    # the pinned step is kept because it succeeds where @latest alone does not.
+    $STD npm install -g promise-retry 2>/dev/null || true
     $STD npm install -g npm@10.9.8 2>/dev/null || true
     if $STD npm install -g npm@latest 2>/dev/null; then
-      msg_ok "Updated npm ($(npm -v))"
+      msg_ok "Repaired npm ($(npm -v))"
     else
-      msg_warn "npm update failed on Node 22.22.2"
+      msg_warn "npm could not be repaired - upgrade Node to 22.22.3 or later"
     fi
   fi
 
