@@ -1547,6 +1547,21 @@ vm_expand_image() {
   return 0
 }
 
+# Cloud images send the kernel console to ttyS0 and run no getty on tty1, so
+# Proxmox's console stays black -- the VM is fine, nothing is drawing on it.
+# The nocloud image variants configure both consoles themselves, which is why
+# only the cloud-init path showed this.
+vm_enable_consoles() {
+  local image="${1:?image}"
+  command -v virt-customize >/dev/null 2>&1 || return 0
+
+  # No autologin: cloud-init sets a password, so a prompt is the right thing.
+  virt-customize -q -a "$image" \
+    --run-command 'systemctl enable getty@tty1.service serial-getty@ttyS0.service' \
+    >/dev/null 2>&1 || true
+  return 0
+}
+
 # Disk first, CD second. An empty disk is not bootable so the installer still
 # runs, and afterwards the disk wins instead of looping back into the installer.
 vm_boot_order() {
