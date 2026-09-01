@@ -1317,6 +1317,13 @@ setup_nodejs() {
       return 127
     fi
 
+    # npm prints its "New major version available" banner at the end of every
+    # run, so it lands in the tail of the log -- which is the excerpt shown when
+    # an install fails. People then read the version notice as the cause and
+    # never see the lines above it that actually explain the failure.
+    export NPM_CONFIG_UPDATE_NOTIFIER=false
+    $STD npm config set update-notifier false --global 2>/dev/null || true
+
     cache_installed_version "nodejs" "$NODE_VERSION"
     msg_ok "$node_setup_ok_msg"
   fi
