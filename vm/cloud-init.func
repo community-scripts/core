@@ -337,8 +337,16 @@ function setup_cloud_init() {
   # Set user
   qm set "$vmid" --ciuser "$ciuser" >/dev/null
 
-  # Generate and set secure random password
-  local cipassword=$(openssl rand -base64 16)
+  # A password the caller supplied wins; otherwise generate one. This used to
+  # overwrite CLOUDINIT_PASSWORD unconditionally, so the Incus path asked for a
+  # password and the Proxmox path threw the answer away.
+  local cipassword="${CLOUDINIT_PASSWORD:-}"
+  local cipassword_source="generated"
+  if [[ -n "$cipassword" ]]; then
+    cipassword_source="chosen"
+  else
+    cipassword=$(openssl rand -base64 16)
+  fi
   qm set "$vmid" --cipassword "$cipassword" >/dev/null
 
   # Add SSH keys only if explicitly provided (not auto-imported from host)
@@ -378,7 +386,7 @@ Hostname: ${hostname}
 Created:  $(date)
 
 Username: ${ciuser}
-Password: ${cipassword}
+Password: $([ "$cipassword_source" = "chosen" ] && echo "(the one you entered - not stored here)" || echo "${cipassword}")
 
 Network:  ${network_mode}$([ "$network_mode" = "static" ] && echo " (IP: ${static_ip}, GW: ${gateway})" || echo " (DHCP)")
 DNS:      ${nameservers}
@@ -400,7 +408,7 @@ Proxmox UI Configuration:
 EOF
   chmod 600 "$cred_file"
 
-  _ci_msg_ok "Cloud-Init configured (User: ${ciuser})"
+  _ci_msg_ok "Cloud-Init configured (User: ${ciuser}, password ${cipassword_source})"
 
   # Export for use in calling script (DO NOT display password here - will be shown in summary)
   export CLOUDINIT_USER="$ciuser"
@@ -452,6 +460,25 @@ function configure_cloud_init_interactive() {
   else
     export CLOUDINIT_USER="$default_user"
   fi
+
+  # Password. Left empty, setup_cloud_init generates one and writes it to the
+  # credentials file -- which is what happened unconditionally before.
+  export CLOUDINIT_PASSWORD=""
+  while true; do
+    local _pw1 _pw2
+    _pw1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --passwordbox \
+      "Password for ${CLOUDINIT_USER}\n\nLeave empty to have one generated." 10 58 \
+      --title "PASSWORD" 3>&1 1>&2 2>&3) || break
+    [[ -z "$_pw1" ]] && break
+    _pw2=$(whiptail --backtitle "Proxmox VE Helper Scripts" --passwordbox \
+      "Repeat the password" 8 58 --title "CONFIRM PASSWORD" 3>&1 1>&2 2>&3) || break
+    if [[ "$_pw1" == "$_pw2" ]]; then
+      export CLOUDINIT_PASSWORD="$_pw1"
+      break
+    fi
+    whiptail --backtitle "Proxmox VE Helper Scripts" --title "PASSWORDS DO NOT MATCH" \
+      --msgbox "The two entries differ. Try again, or leave it empty to have one generated." 8 58
+  done
 
   # Network configuration
   if (whiptail --backtitle "Proxmox VE Helper Scripts" --title "NETWORK MODE" \
