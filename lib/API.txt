@@ -30,6 +30,7 @@ _setup_intel_arc
 _setup_intel_legacy
 _setup_intel_modern
 _setup_mariadb_runtime_dir
+_setup_npm
 _setup_nvidia_gpu
 _setup_rocm
 _tools_cleanup_temp_dirs
