@@ -1547,6 +1547,43 @@ vm_expand_image() {
   return 0
 }
 
+# One call for everything a general-purpose cloud image needs before import.
+# Written because nine scripts imported their image untouched and so had no
+# console, no guest agent and a cloned machine-id, while eleven others each
+# carried their own copy of the same virt-customize lines.
+#
+# Distro-specific steps stay with the script that needs them: SELinux relabel on
+# the RHEL family, OpenRC instead of systemd on Alpine.
+vm_prepare_cloud_image() {
+  local image="${1:?image}" hostname="${2:-${HN:-vm}}"
+
+  if ! command -v virt-customize >/dev/null 2>&1; then
+    msg_info "Installing libguestfs-tools"
+    $STD apt-get update
+    if ! $STD apt-get install -y libguestfs-tools; then
+      msg_warn "libguestfs-tools unavailable - importing the image unmodified"
+      return 1
+    fi
+    msg_ok "Installed libguestfs-tools"
+  fi
+
+  msg_info "Preparing the image"
+  virt-customize -q -a "$image" --hostname "$hostname" >/dev/null 2>&1 || true
+  # A cloned machine-id gives every VM from this image the same DHCP lease.
+  virt-customize -q -a "$image" \
+    --run-command 'truncate -s 0 /etc/machine-id; rm -f /var/lib/dbus/machine-id' \
+    >/dev/null 2>&1 || true
+  # Cloud-Init sets a root password, which is useless if sshd refuses it.
+  virt-customize -q -a "$image" --run-command \
+    'sed -i "s/^#*PermitRootLogin.*/PermitRootLogin yes/;s/^#*PasswordAuthentication.*/PasswordAuthentication yes/" /etc/ssh/sshd_config' \
+    >/dev/null 2>&1 || true
+
+  vm_enable_consoles "$image"
+  vm_install_guest_agent "$image" || true
+  msg_ok "Prepared the image"
+  return 0
+}
+
 # Cloud images send the kernel console to ttyS0 and run no getty on tty1, so
 # Proxmox's console stays black -- the VM is fine, nothing is drawing on it.
 # The nocloud image variants configure both consoles themselves, which is why

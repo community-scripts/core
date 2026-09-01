@@ -451,6 +451,11 @@ ExecStart=-/sbin/agetty --autologin root --noclear %I \$TERM
 EOF' >/dev/null 2>&1 || true
   fi
 
+  # Outside the branch on purpose: the nocloud arm above configures both
+  # consoles, the cloud-init arm configured neither, so that path booted to a
+  # black Proxmox console.
+  vm_enable_consoles "$WORK_FILE"
+
   msg_ok "Finalized image"
 
   # --- Step 5: Resize disk ---
