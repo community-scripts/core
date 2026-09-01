@@ -11,7 +11,8 @@
 #
 # Turns a numeric exit status into a sentence, and sorts it into a category
 # for the telemetry field. Almost entirely a lookup table -- keep it in step
-# with docs/exit_codes.md, which has drifted from it before.
+# with the fallback copy in core/error_handler.func and with the aborted branch
+# of post_update_to_api.
 # ==============================================================================
 
 [[ -n "${_API_EXITCODES_LOADED:-}" ]] && return 0
@@ -165,6 +166,9 @@ explain_exit_code() {
   192) echo "MongoDB: Database not found" ;;
   193) echo "MongoDB: Fatal query error" ;;
 
+  # --- Engine (199) ---
+  199) echo "Engine: exit code not reported" ;;
+
   # --- Proxmox Custom Codes (200-231) ---
   200) echo "Proxmox: Failed to create lock file" ;;
   203) echo "Proxmox: Missing CTID variable" ;;
@@ -263,7 +267,7 @@ categorize_error() {
   150 | 151 | 153 | 154) echo "service" ;;
   170 | 171 | 172 | 173 | 180 | 181 | 182 | 183 | 190 | 191 | 192 | 193) echo "database" ;;
   243 | 245 | 246 | 247 | 248 | 249) echo "runtime" ;;
-  129 | 130 | 143) echo "user_aborted" ;;
+  113 | 114 | 122 | 129 | 130 | 143 | 253 | 254) echo "user_aborted" ;;
   134 | 137) echo "resource" ;;
   139 | 141) echo "signal" ;;
   1 | 2) echo "shell" ;;

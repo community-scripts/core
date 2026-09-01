@@ -1208,7 +1208,9 @@ PROFILE
     if [[ -n "${SESSION_ID:-}" ]]; then
       local error_flag="/root/.install-${SESSION_ID}.failed"
       if pct exec "$CTID" -- test -f "$error_flag" 2>/dev/null; then
-        install_exit_code=$(pct exec "$CTID" -- cat "$error_flag" 2>/dev/null || echo "1")
+        # Unreadable or not a number: fall back to lxc-attach's own code.
+        install_exit_code=$(pct exec "$CTID" -- cat "$error_flag" 2>/dev/null | tr -d '[:space:]') || true
+        [[ "$install_exit_code" =~ ^[0-9]+$ ]] || install_exit_code="${lxc_exit:-199}"
         pct exec "$CTID" -- rm -f "$error_flag" 2>/dev/null || true
       fi
     fi

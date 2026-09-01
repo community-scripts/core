@@ -313,7 +313,8 @@ post_update_to_api() {
   command -v curl &>/dev/null || return 0
 
   local status="${1:-failed}"
-  local raw_exit_code="${2:-1}"
+  # Not defaulted: "no code passed" and "the command returned 1" differ.
+  local raw_exit_code="${2-}"
   local force="${3:-}"
 
   POST_UPDATE_DONE=${POST_UPDATE_DONE:-false}
@@ -336,7 +337,7 @@ post_update_to_api() {
   elif [[ "$raw_exit_code" == "none" ]]; then
     exit_code=0
   else
-    exit_code=1
+    exit_code=199
   fi
 
   local pb_status error_raw=""
@@ -349,9 +350,9 @@ post_update_to_api() {
     pb_status="aborted"
     ;;
   failed)
-    # Signal-based exits are user aborts, not installation failures
+    # Signals and declined prompts are user aborts, not installation failures
     case "$exit_code" in
-    129 | 130 | 143) pb_status="aborted" ;;
+    113 | 114 | 122 | 129 | 130 | 143 | 253 | 254) pb_status="aborted" ;;
     *) pb_status="failed" ;;
     esac
     ;;
