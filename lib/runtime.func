@@ -1211,6 +1211,26 @@ _cs_drop_pm_shim() {
   esac
 }
 
+# Node ships whatever npm was current when that release was cut, and nothing
+# upgraded it afterwards -- which is why installs run months-old npm and npm
+# advertises its own update on every run. Both paths bring it to the newest
+# release; a no-op when it is already there, so the update path needs no
+# separate check. NPM_VERSION pins it if a new major breaks a build.
+_setup_npm() {
+  local target="${NPM_VERSION:-latest}" before after
+  command -v npm >/dev/null 2>&1 || return 0
+  before="$(npm -v 2>/dev/null || echo unknown)"
+
+  if ! $STD npm install -g "npm@${target}" 2>/dev/null; then
+    msg_warn "npm stayed at ${before}"
+    return 0
+  fi
+
+  after="$(npm -v 2>/dev/null || echo "$before")"
+  [[ "$after" != "$before" ]] && msg_ok "npm ${before} -> ${after}"
+  return 0
+}
+
 setup_nodejs() {
   local NODE_VERSION="${NODE_VERSION:-24}"
   local NODE_MODULE="${NODE_MODULE:-}"
@@ -1248,6 +1268,10 @@ setup_nodejs() {
 
     # Upgrade to the latest minor/patch release from NodeSource
     $STD apt-get install -y --only-upgrade nodejs 2>/dev/null || true
+
+    export NPM_CONFIG_UPDATE_NOTIFIER=false
+    $STD npm config set update-notifier false --global 2>/dev/null || true
+    _setup_npm
 
     cache_installed_version "nodejs" "$NODE_VERSION"
     msg_ok "Update Node.js $NODE_VERSION"
@@ -1323,6 +1347,7 @@ setup_nodejs() {
     # never see the lines above it that actually explain the failure.
     export NPM_CONFIG_UPDATE_NOTIFIER=false
     $STD npm config set update-notifier false --global 2>/dev/null || true
+    _setup_npm
 
     cache_installed_version "nodejs" "$NODE_VERSION"
     msg_ok "$node_setup_ok_msg"
