@@ -1236,6 +1236,9 @@ Advanced:
 
   # Display final summary
   echo -e "\n${INFO}${BOLD}${DGN}$(_cs_host_version_line) (Kernel: ${KERNEL_VERSION})${CL}"
+  local engine_ref
+  engine_ref="$(_cs_engine_ref_line)"
+  [[ -n "$engine_ref" ]] && echo -e "${INFO}${BOLD}${YWB}${engine_ref}${CL}"
   echo -e "${OS}${BOLD}${DGN}Operating System: ${BGN}$var_os${CL}"
   echo -e "${OSVERSION}${BOLD}${DGN}Version: ${BGN}$var_version${CL}"
   echo -e "${CONTAINERTYPE}${BOLD}${DGN}Container Type: ${BGN}$([ "$CT_TYPE" == "1" ] && echo "Unprivileged" || echo "Privileged")${CL}"
@@ -1268,6 +1271,7 @@ Advanced:
   log_section "CONTAINER SETTINGS (ADVANCED) - ${APP}"
   log_msg "Application: ${APP}"
   log_msg "$(_cs_host_version_line) (Kernel: ${KERNEL_VERSION})"
+  [[ -n "$engine_ref" ]] && log_msg "$engine_ref"
   log_msg "Operating System: $var_os ($var_version)"
   log_msg "Container Type: $([ "$CT_TYPE" == "1" ] && echo "Unprivileged" || echo "Privileged")"
   log_msg "Container ID: $CT_ID"
