@@ -313,7 +313,11 @@ post_update_to_api() {
   command -v curl &>/dev/null || return 0
 
   local status="${1:-failed}"
-  # Not defaulted: "no code passed" and "the command returned 1" differ.
+  # Deliberately not defaulted to 1. A caller with nothing to report and a
+  # caller reporting a genuine general error are different facts, and 1 is what
+  # bash returns for every ordinary command failure -- defaulting to it made
+  # the two indistinguishable in the data.
+
   local raw_exit_code="${2-}"
   local force="${3:-}"
 
@@ -337,6 +341,10 @@ post_update_to_api() {
   elif [[ "$raw_exit_code" == "none" ]]; then
     exit_code=0
   else
+    # Neither a number nor "none": the code was never passed, or was lost on
+    # the way up. 199 says exactly that, where 1 used to claim a general error
+    # the engine never observed.
+
     exit_code=199
   fi
 
@@ -350,7 +358,13 @@ post_update_to_api() {
     pb_status="aborted"
     ;;
   failed)
-    # Signals and declined prompts are user aborts, not installation failures
+    # Codes the engine raises when the person at the keyboard said no. A signal
+    # is the obvious case; 113, 114, 122 and 254 are the engine asking a
+    # question and being told no, and 253 is an update the user declined to
+    # migrate. Filing those as failures put user decisions in the failure rate:
+    # "exit 113" was one of the largest single signatures on the dashboard,
+    # sitting under exit code 1 in category "shell".
+
     case "$exit_code" in
     113 | 114 | 122 | 129 | 130 | 143 | 253 | 254) pb_status="aborted" ;;
     *) pb_status="failed" ;;
