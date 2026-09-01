@@ -10,8 +10,15 @@
 # function name or behaviour changed with it.
 #
 # Turns a numeric exit status into a sentence, and sorts it into a category
-# for the telemetry field. Almost entirely a lookup table -- keep it in step
-# with docs/exit_codes.md, which has drifted from it before.
+# for the telemetry field. Almost entirely a lookup table, and the authoritative
+# copy of it.
+#
+# Two things have to move with it. core/error_handler.func carries a fallback
+# table for the container case, where this file is not loaded; and the aborted
+# branch of post_update_to_api has to agree with the user_aborted codes below,
+# or a run is filed as one thing and described as another. The pointer here used
+# to name docs/exit_codes.md, which does not exist.
+
 # ==============================================================================
 
 [[ -n "${_API_EXITCODES_LOADED:-}" ]] && return 0
@@ -165,6 +172,15 @@ explain_exit_code() {
   192) echo "MongoDB: Database not found" ;;
   193) echo "MongoDB: Fatal query error" ;;
 
+  # --- Engine (199) ---
+  # Not a failure of the install. It means the engine reported a terminal status
+  # without a code to go with it -- the flag file was unreadable, or a caller
+  # passed nothing. It used to be reported as 1, which is also what bash returns
+  # for any ordinary command failure, so a lost code and a real general error
+  # were the same number.
+
+  199) echo "Engine: exit code not reported" ;;
+
   # --- Proxmox Custom Codes (200-231) ---
   200) echo "Proxmox: Failed to create lock file" ;;
   203) echo "Proxmox: Missing CTID variable" ;;
@@ -263,7 +279,10 @@ categorize_error() {
   150 | 151 | 153 | 154) echo "service" ;;
   170 | 171 | 172 | 173 | 180 | 181 | 182 | 183 | 190 | 191 | 192 | 193) echo "database" ;;
   243 | 245 | 246 | 247 | 248 | 249) echo "runtime" ;;
-  129 | 130 | 143) echo "user_aborted" ;;
+  # Kept in step with the aborted branch of post_update_to_api: a code that
+  # makes the run "aborted" must not describe itself as something else here.
+
+  113 | 114 | 122 | 129 | 130 | 143 | 253 | 254) echo "user_aborted" ;;
   134 | 137) echo "resource" ;;
   139 | 141) echo "signal" ;;
   1 | 2) echo "shell" ;;

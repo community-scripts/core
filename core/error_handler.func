@@ -155,6 +155,7 @@ if ! declare -f explain_exit_code &>/dev/null; then
     191) echo "MongoDB: Authentication failed (bad user/password)" ;;
     192) echo "MongoDB: Database not found" ;;
     193) echo "MongoDB: Fatal query error" ;;
+    199) echo "Engine: exit code not reported" ;;
     200) echo "Proxmox: Failed to create lock file" ;;
     203) echo "Proxmox: Missing CTID variable" ;;
     204) echo "Proxmox: Missing PCT_OSTYPE variable" ;;
