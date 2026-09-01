@@ -526,7 +526,12 @@ _cs_host_version_line() {
 # otherwise, so the header only grows a line when there is something to say.
 _cs_engine_ref_line() {
   local url="${COMMUNITY_SCRIPTS_CORE_URL:-}"
-  [[ -n "$url" && "$url" != "${_CS_CORE_DEFAULT_URL:-}" ]] || return 0
+  # The literal fallback matters: build.func exports COMMUNITY_SCRIPTS_CORE_URL
+  # but not _CS_CORE_DEFAULT_URL, so a child process sees the url with nothing
+  # to compare it against and every ordinary run looks like an override.
+  local default="${_CS_CORE_DEFAULT_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
+  url="${url%/}"
+  [[ -n "$url" && "$url" != "${default%/}" ]] || return 0
 
   local rest="${url#*://}" owner repo ref
   case "$rest" in
