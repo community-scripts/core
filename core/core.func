@@ -110,6 +110,7 @@ icons() {
   DNSOK="✔️ "
   DNSFAIL="${TAB}✖️${TAB}"
   INFO="${TAB}💡${TAB}${CL}"
+  OVERRIDE="${TAB}🔀${TAB}${CL}"
   OS="${TAB}🖥️${TAB}${CL}"
   OSVERSION="${TAB}🌟${TAB}${CL}"
   CONTAINERTYPE="${TAB}📦${TAB}${CL}"
@@ -522,16 +523,17 @@ _cs_host_version_line() {
   fi
 }
 
-# "<label>: owner/repo@ref" for a raw base url, falling back to the url itself
-# when the host is not one we recognise.
+# "<what> <kind>: owner/repo@ref" for a raw base url. The kind is the part worth
+# reading: branch for the official repo on another ref, fork for somebody else's
+# copy, source when the host is not one we can take apart.
 _cs_ref_line() {
-  local label="$1" url="${2%/}" rest owner repo ref
+  local what="$1" url="${2%/}" official="$3" rest owner repo ref kind
   rest="${url#*://}"
   case "$rest" in
   raw.githubusercontent.com/*) rest="${rest#raw.githubusercontent.com/}" ;;
   git.community-scripts.org/*) rest="${rest#git.community-scripts.org/}" ;;
   *)
-    printf '%s: %s' "$label" "$url"
+    printf '%s source: %s' "$what" "$url"
     return 0
     ;;
   esac
@@ -539,11 +541,16 @@ _cs_ref_line() {
   # read gives the remainder to the last name, so a ref with slashes survives:
   # copilot/revert-aurral-to-node22 is one ref, not two path segments.
   IFS=/ read -r owner repo ref <<<"$rest"
-  if [[ -n "$owner" && -n "$repo" && -n "$ref" ]]; then
-    printf '%s: %s/%s@%s' "$label" "$owner" "$repo" "$ref"
-  else
-    printf '%s: %s' "$label" "$url"
+  if [[ -z "$owner" || -z "$repo" || -z "$ref" ]]; then
+    printf '%s source: %s' "$what" "$url"
+    return 0
   fi
+
+  kind=fork
+  case " $official " in
+  *" $owner/$repo "*) kind=branch ;;
+  esac
+  printf '%s %s: %s/%s@%s' "$what" "$kind" "$owner" "$repo" "$ref"
 }
 
 # Which engine this run is using, when it is not the default one. Prints nothing
@@ -556,7 +563,7 @@ _cs_engine_ref_line() {
   local default="${_CS_CORE_DEFAULT_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
   url="${url%/}"
   [[ -n "$url" && "$url" != "${default%/}" ]] || return 0
-  _cs_ref_line Engine "$url"
+  _cs_ref_line Engine "$url" "community-scripts/core"
 }
 
 # The same for the scripts, which is the other half of "what am I running" and
@@ -574,7 +581,8 @@ _cs_scripts_ref_line() {
     [[ -n "$d" && "$url" == "${d%/}" ]] && return 0
   done
 
-  _cs_ref_line Scripts "$url"
+  _cs_ref_line Scripts "$url" \
+    "community-scripts/ProxmoxVE community-scripts/ProxmoxVED"
 }
 
 _pveam_available() {

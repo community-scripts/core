@@ -1239,8 +1239,8 @@ Advanced:
   local engine_ref scripts_ref
   engine_ref="$(_cs_engine_ref_line)"
   scripts_ref="$(_cs_scripts_ref_line)"
-  [[ -n "$engine_ref" ]] && echo -e "${INFO}${BOLD}${YWB}${engine_ref}${CL}"
-  [[ -n "$scripts_ref" ]] && echo -e "${INFO}${BOLD}${YWB}${scripts_ref}${CL}"
+  [[ -n "$engine_ref" ]] && echo -e "${OVERRIDE}${BOLD}${YWB}${engine_ref}${CL}"
+  [[ -n "$scripts_ref" ]] && echo -e "${OVERRIDE}${BOLD}${YWB}${scripts_ref}${CL}"
   echo -e "${OS}${BOLD}${DGN}Operating System: ${BGN}$var_os${CL}"
   echo -e "${OSVERSION}${BOLD}${DGN}Version: ${BGN}$var_version${CL}"
   echo -e "${CONTAINERTYPE}${BOLD}${DGN}Container Type: ${BGN}$([ "$CT_TYPE" == "1" ] && echo "Unprivileged" || echo "Privileged")${CL}"

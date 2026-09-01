@@ -116,6 +116,7 @@ incus_icons() {
   DNSOK="✔️ "
   DNSFAIL="${TAB}✖️${TAB}"
   INFO="${TAB}💡${TAB}${CL}"
+  OVERRIDE="${TAB}🔀${TAB}${CL}"
   OS="${TAB}🖥️${TAB}${CL}"
   OSVERSION="${TAB}🌟${TAB}${CL}"
   CONTAINERTYPE="${TAB}📦${TAB}${CL}"
