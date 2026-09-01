@@ -1415,19 +1415,33 @@ vm_provision() {
 # original root on a much larger disk. virt-resize fixes that offline, before
 # import. Soft failure on purpose: a smaller filesystem is worth less than a
 # failed build.
+# "<bytes> <device>" for the largest Linux filesystem in an image, which is the
+# root. Asked of --filesystems rather than --parts so the ESP and BIOS-boot
+# partitions are excluded by their type, and columns are looked up from the csv
+# header by name rather than by position.
+_vm_root_fs() {
+  virt-filesystems --filesystems --long --csv -a "$1" 2>/dev/null |
+    awk -F, '
+      NR == 1 { for (i = 1; i <= NF; i++) h[$i] = i; next }
+      !h["Name"] || !h["Size"] || !h["VFS"] { exit 1 }
+      $h["VFS"] ~ /^(ext[234]|xfs|btrfs)$/ { print $h["Size"] + 0, $h["Name"] }
+    ' | sort -rn | head -1
+}
+
 vm_expand_image() {
-  local src="${1:?image}" size="${2:?size}" part out
+  local src="${1:?image}" size="${2:?size}" part out before after
 
   if ! command -v virt-resize >/dev/null 2>&1; then
     msg_warn "virt-resize is not available; the guest filesystem keeps its original size"
     return 1
   fi
 
-  # The largest partition is the root in every cloud image we ship.
-  part=$(virt-filesystems --parts --long -a "$src" 2>/dev/null |
-    awk 'NR > 1 && $1 ~ /^\/dev\// {print $NF, $1}' | sort -rn | head -1 | awk '{print $2}')
-  if [[ -z "$part" ]]; then
-    msg_warn "Could not find the root partition to expand; leaving the image as it is"
+  read -r before part < <(_vm_root_fs "$src")
+
+  # virt-resize --expand takes a partition. An LVM logical volume would need
+  # --lv-expand instead, so leave those alone rather than guess.
+  if [[ ! "${part:-}" =~ ^/dev/[a-z]+[0-9]+$ ]]; then
+    msg_warn "Could not identify the root partition to expand; leaving the image as it is"
     return 1
   fi
 
@@ -1439,6 +1453,17 @@ vm_expand_image() {
   if ! virt-resize --expand "$part" "$src" "$out" >/dev/null 2>&1; then
     rm -f "$out"
     msg_warn "virt-resize failed on ${part}; the guest filesystem keeps its original size"
+    return 1
+  fi
+
+  # Ask the result whether it actually grew. virt-resize reporting success is
+  # not the same fact: expanding the wrong partition succeeds too, and that is
+  # how the ESP came to be resized on Debian while root stayed at its original
+  # size on a much larger disk.
+  read -r after _ < <(_vm_root_fs "$out")
+  if [[ -z "${after:-}" ]] || ((after <= before)); then
+    rm -f "$out"
+    msg_warn "Root filesystem did not grow; keeping the original image"
     return 1
   fi
 
