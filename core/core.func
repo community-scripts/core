@@ -522,6 +522,30 @@ _cs_host_version_line() {
   fi
 }
 
+# "<label>: owner/repo@ref" for a raw base url, falling back to the url itself
+# when the host is not one we recognise.
+_cs_ref_line() {
+  local label="$1" url="${2%/}" rest owner repo ref
+  rest="${url#*://}"
+  case "$rest" in
+  raw.githubusercontent.com/*) rest="${rest#raw.githubusercontent.com/}" ;;
+  git.community-scripts.org/*) rest="${rest#git.community-scripts.org/}" ;;
+  *)
+    printf '%s: %s' "$label" "$url"
+    return 0
+    ;;
+  esac
+
+  # read gives the remainder to the last name, so a ref with slashes survives:
+  # copilot/revert-aurral-to-node22 is one ref, not two path segments.
+  IFS=/ read -r owner repo ref <<<"$rest"
+  if [[ -n "$owner" && -n "$repo" && -n "$ref" ]]; then
+    printf '%s: %s/%s@%s' "$label" "$owner" "$repo" "$ref"
+  else
+    printf '%s: %s' "$label" "$url"
+  fi
+}
+
 # Which engine this run is using, when it is not the default one. Prints nothing
 # otherwise, so the header only grows a line when there is something to say.
 _cs_engine_ref_line() {
@@ -532,25 +556,25 @@ _cs_engine_ref_line() {
   local default="${_CS_CORE_DEFAULT_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
   url="${url%/}"
   [[ -n "$url" && "$url" != "${default%/}" ]] || return 0
+  _cs_ref_line Engine "$url"
+}
 
-  local rest="${url#*://}" owner repo ref
-  case "$rest" in
-  raw.githubusercontent.com/*) rest="${rest#raw.githubusercontent.com/}" ;;
-  git.community-scripts.org/*) rest="${rest#git.community-scripts.org/}" ;;
-  *)
-    printf 'Engine: %s' "$url"
-    return 0
-    ;;
-  esac
+# The same for the scripts, which is the other half of "what am I running" and
+# the one people override more often.
+_cs_scripts_ref_line() {
+  local url="${COMMUNITY_SCRIPTS_URL:-}" d
+  url="${url%/}"
+  [[ -n "$url" ]] || return 0
 
-  # read gives the remainder to the last name, so a ref with slashes survives:
-  # fix/telemetry-exit-codes is one ref, not two path segments.
-  IFS=/ read -r owner repo ref <<<"$rest"
-  if [[ -n "$owner" && -n "$repo" && -n "$ref" ]]; then
-    printf 'Engine: %s/%s@%s' "$owner" "$repo" "$ref"
-  else
-    printf 'Engine: %s' "$url"
-  fi
+  # Both official mains count as default, not just one literal: _CS_DEFAULT_URL
+  # is not exported either, and CI rewrites VED to VE on promotion.
+  for d in "${_CS_DEFAULT_URL:-}" \
+    https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main \
+    https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main; do
+    [[ -n "$d" && "$url" == "${d%/}" ]] && return 0
+  done
+
+  _cs_ref_line Scripts "$url"
 }
 
 _pveam_available() {

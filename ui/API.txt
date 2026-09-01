@@ -5,8 +5,10 @@ _cs_clear
 _cs_engine_ref_line
 _cs_host_version_line
 _cs_os_family
+_cs_ref_line
 _cs_run_os_section
 _cs_runtime_cache_dir
+_cs_scripts_ref_line
 _dev_step_end
 _dev_step_key
 _dev_step_start
