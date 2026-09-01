@@ -1211,6 +1211,26 @@ _cs_drop_pm_shim() {
   esac
 }
 
+# Node ships whatever npm was current when that release was cut, and nothing
+# upgraded it afterwards -- which is why installs run months-old npm and npm
+# advertises its own update on every run. Both paths bring it to the newest
+# release; a no-op when it is already there, so the update path needs no
+# separate check. NPM_VERSION pins it if a new major breaks a build.
+_setup_npm() {
+  local target="${NPM_VERSION:-latest}" before after
+  command -v npm >/dev/null 2>&1 || return 0
+  before="$(npm -v 2>/dev/null || echo unknown)"
+
+  if ! $STD npm install -g "npm@${target}" 2>/dev/null; then
+    msg_warn "npm stayed at ${before}"
+    return 0
+  fi
+
+  after="$(npm -v 2>/dev/null || echo "$before")"
+  [[ "$after" != "$before" ]] && msg_ok "npm ${before} -> ${after}"
+  return 0
+}
+
 setup_nodejs() {
   local NODE_VERSION="${NODE_VERSION:-24}"
   local NODE_MODULE="${NODE_MODULE:-}"
@@ -1248,6 +1268,10 @@ setup_nodejs() {
 
     # Upgrade to the latest minor/patch release from NodeSource
     $STD apt-get install -y --only-upgrade nodejs 2>/dev/null || true
+
+    export NPM_CONFIG_UPDATE_NOTIFIER=false
+    $STD npm config set update-notifier false --global 2>/dev/null || true
+    _setup_npm
 
     cache_installed_version "nodejs" "$NODE_VERSION"
     msg_ok "Update Node.js $NODE_VERSION"
@@ -1317,18 +1341,32 @@ setup_nodejs() {
       return 127
     fi
 
+    # npm prints its "New major version available" banner at the end of every
+    # run, so it lands in the tail of the log -- which is the excerpt shown when
+    # an install fails. People then read the version notice as the cause and
+    # never see the lines above it that actually explain the failure.
+    export NPM_CONFIG_UPDATE_NOTIFIER=false
+    $STD npm config set update-notifier false --global 2>/dev/null || true
+    _setup_npm
+
     cache_installed_version "nodejs" "$NODE_VERSION"
     msg_ok "$node_setup_ok_msg"
   fi
 
-  # Node 22.22.2 bundles npm 10.9.7 which cannot self-upgrade (nodejs/node#62425)
+  # Only Node 22.22.2 shipped npm 10.9.7, whose arborist is missing
+  # promise-retry, so npm cannot upgrade itself (nodejs/node#62425). Fixed
+  # upstream in 22.22.3 on 2026-05-13, so a fresh install never lands here --
+  # this repairs containers built in the seven weeks it was current. Delete it
+  # once none are left.
   if [[ "$NODE_VERSION" == "22" && "$(npm -v 2>/dev/null)" == "10.9.7" ]]; then
-    msg_info "Updating npm (Node 22 regression fix)"
-    $STD npm install -g npm@10.9.8 2>/dev/null || true
+    msg_info "Repairing npm 10.9.7 (Node 22.22.2)"
+    # Supplying the missing module is the whole repair -- once arborist can load
+    # promise-retry, npm upgrades itself normally. No version pin needed.
+    $STD npm install -g promise-retry 2>/dev/null || true
     if $STD npm install -g npm@latest 2>/dev/null; then
-      msg_ok "Updated npm ($(npm -v))"
+      msg_ok "Repaired npm ($(npm -v))"
     else
-      msg_warn "npm update failed on Node 22.22.2"
+      msg_warn "npm could not be repaired - upgrade Node to 22.22.3 or later"
     fi
   fi
 
