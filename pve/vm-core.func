@@ -1311,17 +1311,65 @@ vm_prompt_start_vm() {
 # images without updating the published checksum at the same byte count, so
 # --advisory-sha1 reports while --sha256/--sha1 stay fatal.
 #
-# vm_fetch_image <url> <target> [--min-bytes N] [--exact-bytes N]
-#                               [--sha256 H] [--sha1 H] [--advisory-sha1 H]
-#                               [--needs-bytes N]
+# --cache keeps the file for the next run and re-verifies it before reusing it.
+# Without a checksum passed in, one is looked up from the vendor's own listing.
+#
+# vm_fetch_image <url> <target> [--cache] [--verify-xz] [--min-bytes N]
+#                               [--exact-bytes N] [--sha256 H] [--sha1 H]
+#                               [--advisory-sha1 H] [--needs-bytes N]
+vm_image_checksum() {
+  local url="${1:?url}" tool sums style want
+
+  case "$url" in
+  *cloud.debian.org/*) tool=sha512sum; sums="${url%/*}/SHA512SUMS"; style=sums ;;
+  *cloud-images.ubuntu.com/*) tool=sha256sum; sums="${url%/*}/SHA256SUMS"; style=sums ;;
+  *download.truenas.com/*) tool=sha256sum; sums="${url}.sha256"; style=bare ;;
+  *) return 1 ;;
+  esac
+
+  command -v "$tool" >/dev/null 2>&1 || return 1
+
+  if [[ "$style" == bare ]]; then
+    want=$(curl -fsSL --max-time 30 "$sums" 2>/dev/null | tr -d '[:space:]')
+  else
+    want=$(curl -fsSL --max-time 30 "$sums" 2>/dev/null |
+      awk -v f="$(basename "$url")" '$NF == f || $NF == "*" f {print $1; exit}')
+  fi
+
+  [[ "$want" =~ ^([0-9a-fA-F]{64}|[0-9a-fA-F]{128})$ ]] || return 1
+  printf '%s %s' "$tool" "$want"
+}
+
+_vm_image_ok() {
+  local file="$1" exact="$2" min="$3" sha_tool="$4" sha_want="$5" xz="$6" got
+
+  [[ -s "$file" ]] || return 1
+  got=$(stat -c%s "$file" 2>/dev/null || echo 0)
+  [[ -n "$exact" ]] && ((got != exact)) && return 1
+  ((min > 0 && got < min)) && return 1
+
+  if [[ -n "$sha_want" ]] && command -v "$sha_tool" >/dev/null 2>&1; then
+    [[ "$("$sha_tool" "$file" | awk '{print $1}')" == "$sha_want" ]] || return 1
+  fi
+
+  if [[ "$xz" == yes ]] && command -v xz >/dev/null 2>&1; then
+    xz -t "$file" &>/dev/null || return 1
+  fi
+
+  return 0
+}
+
 vm_fetch_image() {
   local url="${1:?url}" target="${2:?target}"
   shift 2
   local min_bytes=0 exact_bytes="" sha256="" sha1="" advisory_sha1="" needs_bytes=""
-  local got avail_mib need_mib entry have
+  local cache=no xz=no
+  local got avail_mib need_mib have part sha_tool="" sha_want="" discovered
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
+    --cache) cache=yes; shift ;;
+    --verify-xz) xz=yes; shift ;;
     --min-bytes) min_bytes="$2"; shift 2 ;;
     --exact-bytes) exact_bytes="$2"; shift 2 ;;
     --sha256) sha256="$2"; shift 2 ;;
@@ -1331,6 +1379,25 @@ vm_fetch_image() {
     *) msg_error "vm_fetch_image: unknown option $1"; return 2 ;;
     esac
   done
+
+  if [[ -n "$sha256" ]]; then
+    sha_tool=sha256sum sha_want="$sha256"
+  elif [[ -n "$sha1" ]]; then
+    sha_tool=sha1sum sha_want="$sha1"
+  elif discovered=$(vm_image_checksum "$url"); then
+    read -r sha_tool sha_want <<<"$discovered"
+  fi
+
+  if [[ "$cache" == yes && -e "$target" ]]; then
+    if _vm_image_ok "$target" "$exact_bytes" "$min_bytes" "$sha_tool" "$sha_want" "$xz"; then
+      msg_ok "Using cached ${CL}${BL}$(basename "$target")${CL}"
+      return 0
+    fi
+    msg_warn "Cached $(basename "$target") did not verify; downloading it again"
+    rm -f "$target"
+  fi
+
+  mkdir -p "$(dirname "$target")"
 
   # Download plus unpacked size plus a GiB, checked before transferring.
   need_mib=$(((${needs_bytes:-0} + ${exact_bytes:-0}) / 1048576 + 1024))
@@ -1343,40 +1410,47 @@ vm_fetch_image() {
     fi
   fi
 
-  if ! curl -f#SL --retry 3 --retry-delay 5 -o "$target" "$url"; then
-    rm -f "$target"
+  # Into a partial file, so a killed transfer cannot be mistaken for the image.
+  part="${target}.part"
+  rm -f "$part"
+  if ! curl -f#SL --retry 3 --retry-delay 5 -o "$part" "$url"; then
+    rm -f "$part"
     msg_error "Failed to download $(basename "$url")"
     return 1
   fi
 
-  got=$(stat -c%s "$target" 2>/dev/null || echo 0)
+  got=$(stat -c%s "$part" 2>/dev/null || echo 0)
   if [[ -n "$exact_bytes" ]] && ((got != exact_bytes)); then
-    rm -f "$target"
+    rm -f "$part"
     msg_error "Downloaded ${got} bytes, expected ${exact_bytes}"
     return 1
   fi
   if ((min_bytes > 0 && got < min_bytes)); then
-    rm -f "$target"
+    rm -f "$part"
     msg_error "Downloaded ${got} bytes, which is too small to be the image"
     msg_error "A mirror most likely served an error page with status 200."
     return 1
   fi
 
-  for entry in "sha256|${sha256}|sha256sum" "sha1|${sha1}|sha1sum"; do
-    local algo="${entry%%|*}" rest="${entry#*|}"
-    local want="${rest%%|*}" tool="${rest##*|}"
-    [[ -z "$want" ]] && continue
-    command -v "$tool" >/dev/null 2>&1 || continue
-    have=$("$tool" "$target" | awk '{print $1}')
-    if [[ "$have" != "$want" ]]; then
-      rm -f "$target"
-      msg_error "${algo} mismatch: got ${have}, expected ${want}"
+  if [[ -n "$sha_want" ]] && command -v "$sha_tool" >/dev/null 2>&1; then
+    have=$("$sha_tool" "$part" | awk '{print $1}')
+    if [[ "$have" != "$sha_want" ]]; then
+      rm -f "$part"
+      msg_error "${sha_tool%sum} mismatch: got ${have}, expected ${sha_want}"
       return 1
     fi
-  done
+  fi
+
+  if [[ "$xz" == yes ]] && command -v xz >/dev/null 2>&1; then
+    if ! xz -t "$part" &>/dev/null; then
+      rm -f "$part"
+      msg_error "$(basename "$url") is not a valid xz archive"
+      return 1
+    fi
+  fi
 
   if [[ -n "$advisory_sha1" ]] && command -v sha1sum >/dev/null 2>&1; then
-    have=$(sha1sum "$target" | awk '{print $1}')
+    have=$(sha1sum "$part" | awk '{print $1}')
     if [[ "$have" == "$advisory_sha1" ]]; then
       msg_ok "Verified sha1 ${CL}${BL}${advisory_sha1}${CL}"
     else
@@ -1385,6 +1459,7 @@ vm_fetch_image() {
     fi
   fi
 
+  mv -f "$part" "$target"
   return 0
 }
 
