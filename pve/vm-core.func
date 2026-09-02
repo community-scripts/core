@@ -1554,17 +1554,23 @@ vm_expand_image() {
 #
 # Distro-specific steps stay with the script that needs them: SELinux relabel on
 # the RHEL family, OpenRC instead of systemd on Alpine.
+vm_ensure_virt_customize() {
+  command -v virt-customize >/dev/null 2>&1 && return 0
+  msg_info "Installing libguestfs-tools"
+  $STD apt-get update
+  if ! $STD apt-get install -y libguestfs-tools; then
+    msg_warn "libguestfs-tools unavailable"
+    return 1
+  fi
+  msg_ok "Installed libguestfs-tools"
+}
+
 vm_prepare_cloud_image() {
   local image="${1:?image}" hostname="${2:-${HN:-vm}}"
 
-  if ! command -v virt-customize >/dev/null 2>&1; then
-    msg_info "Installing libguestfs-tools"
-    $STD apt-get update
-    if ! $STD apt-get install -y libguestfs-tools; then
-      msg_warn "libguestfs-tools unavailable - importing the image unmodified"
-      return 1
-    fi
-    msg_ok "Installed libguestfs-tools"
+  if ! vm_ensure_virt_customize; then
+    msg_warn "Importing the image unmodified"
+    return 1
   fi
 
   msg_info "Preparing the image"
