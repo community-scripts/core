@@ -672,8 +672,9 @@ setup_meilisearch() {
     return 7
   }
 
-  # Generate master key
-  MEILISEARCH_MASTER_KEY=$(openssl rand -base64 12)
+  # 32 bytes, not 12: base64 12 yields 16 characters, and consumers such as
+  # Wanderer's PocketBase fork refuse to start below 32.
+  MEILISEARCH_MASTER_KEY=$(openssl rand -base64 32)
   export MEILISEARCH_MASTER_KEY
 
   # Configure
