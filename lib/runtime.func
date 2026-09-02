@@ -1504,22 +1504,66 @@ setup_nodejs() {
     # each leaves a module npm still lists while `command -v` finds nothing, and
     # the caller is about to run exactly that binary. So ask the question the
     # caller cares about, and put back whatever cannot answer it.
-    local mod_bin
-    for mod in "${MODULES[@]}"; do
-      # Scoped packages do not name their binary (@vue/cli installs `vue`), so
-      # there is nothing reliable to probe for.
-      [[ "$mod" == @*/* ]] && continue
-      mod_bin="${mod%@*}"
-      [[ -z "$mod_bin" ]] && continue
-      command -v "$mod_bin" >/dev/null 2>&1 && continue
+    # Which binary to probe comes from the package's own `bin` field, not from
+    # its name. A package is not required to name its command after itself --
+    # opencode-ai installs `opencode`, @vue/cli installs `vue` -- so guessing
+    # reported a healthy install as broken, reinstalled it, and reported it
+    # broken again. Reading the manifest is also what makes scoped packages
+    # checkable, rather than skipped for want of anything reliable to probe.
+    local mod_bin mod_name mod_manifest mod_bins mod_missing mod_has_manifest
+    local npm_global_root=""
+    npm_global_root="$(npm root -g 2>/dev/null)" || npm_global_root=""
 
-      msg_warn "$mod_bin is installed but not on PATH - reinstalling"
-      if { $STD npm install -g --force "$mod" 2>/dev/null ||
-        $STD npm install -g --force "${mod_bin}@latest" 2>/dev/null; } &&
-        command -v "$mod_bin" >/dev/null 2>&1; then
-        msg_ok "Restored $mod_bin"
+    for mod in "${MODULES[@]}"; do
+      # Strip the version spec without eating the scope: @openai/codex@latest
+      # and @openai/codex must both resolve to @openai/codex.
+      if [[ "$mod" == @*/*@* ]]; then
+        mod_name="${mod%@*}"
+      elif [[ "$mod" == @*/* ]]; then
+        mod_name="$mod"
+      elif [[ "$mod" == *"@"* ]]; then
+        mod_name="${mod%@*}"
       else
-        msg_error "$mod_bin is not callable and could not be restored"
+        mod_name="$mod"
+      fi
+      [[ -z "$mod_name" ]] && continue
+
+      mod_bins=""
+      mod_has_manifest=0
+      mod_manifest="${npm_global_root}/${mod_name}/package.json"
+      if [[ -n "$npm_global_root" && -f "$mod_manifest" ]]; then
+        mod_has_manifest=1
+        # `bin` is either a string (one command, named after the package) or an
+        # object keyed by command name.
+        mod_bins="$(jq -r 'if (.bin | type) == "string" then (.name | split("/") | last)
+                           elif (.bin | type) == "object" then (.bin | keys[])
+                           else empty end' "$mod_manifest" 2>/dev/null)"
+      fi
+
+      if ((mod_has_manifest)); then
+        # A library ships no commands, so there is nothing to probe for.
+        [[ -z "$mod_bins" ]] && continue
+      else
+        # No manifest to read: fall back to the old guess for unscoped packages
+        # and skip scoped ones, which that guess never matched anyway.
+        [[ "$mod_name" == @*/* ]] && continue
+        mod_bins="$mod_name"
+      fi
+
+      mod_missing=""
+      while IFS= read -r mod_bin; do
+        [[ -z "$mod_bin" ]] && continue
+        command -v "$mod_bin" >/dev/null 2>&1 || mod_missing="$mod_bin"
+      done <<<"$mod_bins"
+      [[ -z "$mod_missing" ]] && continue
+
+      msg_warn "$mod_missing is installed but not on PATH - reinstalling"
+      if { $STD npm install -g --force "$mod" 2>/dev/null ||
+        $STD npm install -g --force "${mod_name}@latest" 2>/dev/null; } &&
+        command -v "$mod_missing" >/dev/null 2>&1; then
+        msg_ok "Restored $mod_missing"
+      else
+        msg_error "$mod_missing is not callable and could not be restored"
         ((failed_modules++)) || true
       fi
     done
