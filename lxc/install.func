@@ -1212,9 +1212,26 @@ network_check() {
   local ipv6_connected=false
   sleep 1
 
-  # Check IPv4 connectivity to Google, Cloudflare & Quad9 DNS servers.
+  # ICMP is not connectivity. A firewall that permits outbound 80/443 and drops
+  # ping is an ordinary setup, and apt works perfectly behind it -- one reporter
+  # watched this branch condemn a container while the DNS check below resolved
+  # deb.debian.org without complaint. Ping first because it is fast, then ask
+  # the question that matters: can we reach what an install actually needs?
+  _net_tcp_reachable() {
+    local hp host port
+    for hp in "deb.debian.org 443" "github.com 443" "1.1.1.1 443"; do
+      host="${hp% *}"
+      port="${hp#* }"
+      timeout 3 bash -c "exec 3<>/dev/tcp/${host}/${port}" 2>/dev/null && return 0
+    done
+    return 1
+  }
+
   if ping -c 1 -W 1 1.1.1.1 &>/dev/null || ping -c 1 -W 1 8.8.8.8 &>/dev/null || ping -c 1 -W 1 9.9.9.9 &>/dev/null; then
     msg_ok "IPv4 Internet Connected"
+    ipv4_connected=true
+  elif _net_tcp_reachable; then
+    msg_ok "IPv4 Internet Connected (TCP reachable; ICMP is filtered)"
     ipv4_connected=true
   else
     msg_error "IPv4 Internet Not Connected"
@@ -1232,10 +1249,16 @@ network_check() {
 
   # If both IPv4 and IPv6 checks fail, prompt the user
   if [[ $ipv4_connected == false && $ipv6_connected == false ]]; then
-    # prompt_confirm, not a bare read from /dev/tty: an install driven from cron
-    # or any other headless context has no /dev/tty, and reading from it there
-    # aborted with a device error instead of answering the question.
-    if prompt_confirm "No Internet detected, would you like to continue anyway?" "n"; then
+    # The installer runs under lxc-attach, where stdin is never a terminal, so
+    # this question cannot be asked here at all -- prompt_confirm applied its
+    # "n" default and the exit was reported as "user declined to continue" to
+    # people who were never asked. The host already decided to continue after
+    # its own failed test; contradicting that by destroying the container is the
+    # wrong way to resolve a question nobody could answer.
+    if [[ ! -t 0 ]]; then
+      msg_warn "No Internet detected and no terminal to ask - continuing anyway"
+      echo -e "${INFO}${RD}Expect Issues Without Internet${CL}"
+    elif prompt_confirm "No Internet detected, would you like to continue anyway?" "n"; then
       echo -e "${INFO}${RD}Expect Issues Without Internet${CL}"
     else
       echo -e "${NETWORK}Check Network Settings"
