@@ -9,6 +9,7 @@ _deploy_source_tarball
 _deploy_unpacked_archive
 _diagnose_deb_failure
 _docker_is_noninteractive
+_docker_setup_lxcfs_visibility
 _download_source_tarball
 _forge_asset_urls
 _forge_descriptor
