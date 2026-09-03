@@ -49,9 +49,37 @@ json_str() {
   printf '%s' "$1" | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
 }
 
-# Pull and run the app update script, exactly as the legacy entrypoint did.
+script_exists() {
+  curl -fsSL --connect-timeout 5 --max-time 10 -o /dev/null "${BASE}/ct/${1}.sh" 2>/dev/null
+}
+
+# ct/ scripts get renamed; a container keeps whatever slug it was built with. The
+# Alpine merge alone retired 29 names on 2026-08-18. Try the successors, but only
+# accept one that actually exists -- guessing wrong would run a foreign app's
+# updater. A successful update regenerates /usr/bin/update, so this self-heals.
+resolve_script_name() {
+  local n="$1" c
+  script_exists "$n" && { printf '%s' "$n"; return 0; }
+  for c in "${n#alpine-}" "$(printf '%s' "$n" | sed -E 's/-v[0-9]+$//')"; do
+    [[ -n "$c" && "$c" != "$n" ]] || continue
+    script_exists "$c" && { printf '%s' "$c"; return 0; }
+  done
+  case "$n" in
+  pbs) script_exists proxmox-backup-server && { printf '%s' proxmox-backup-server; return 0; } ;;
+  esac
+  return 1
+}
+
+# Pull and run the app update script. An unresolvable name used to curl a 404 into
+# bash -c "", which did nothing and still exited 0.
 run_app_update() {
-  bash -c "$(curl -fsSL "${BASE}/ct/${NAME}.sh")"
+  local resolved
+  resolved="$(resolve_script_name "$NAME")" || {
+    msg_err "No update script found for '${NAME}' (${BASE}/ct/${NAME}.sh)"
+    return 1
+  }
+  [[ "$resolved" != "$NAME" ]] && msg_info "Script was renamed: ${NAME} -> ${resolved}"
+  bash -c "$(curl -fsSL "${BASE}/ct/${resolved}.sh")"
 }
 
 # Offer to update addons installed on top of the app. Addons drop an
