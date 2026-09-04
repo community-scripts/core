@@ -53,10 +53,9 @@ script_exists() {
   curl -fsSL --connect-timeout 5 --max-time 10 -o /dev/null "${BASE}/ct/${1}.sh" 2>/dev/null
 }
 
-# ct/ scripts get renamed; a container keeps whatever slug it was built with. The
-# Alpine merge alone retired 29 names on 2026-08-18. Try the successors, but only
-# accept one that actually exists -- guessing wrong would run a foreign app's
-# updater. A successful update regenerates /usr/bin/update, so this self-heals.
+# ct/ scripts get renamed; a container keeps whatever slug it was built with. 
+# Try the successors, but only accept one that actually exists.
+# A successful update regenerates /usr/bin/update, so this self-heals.
 resolve_script_name() {
   local n="$1" c
   script_exists "$n" && { printf '%s' "$n"; return 0; }
