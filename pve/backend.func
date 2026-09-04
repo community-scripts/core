@@ -2367,8 +2367,31 @@ create_lxc_container() {
   }
 
   # Downloads an ARM64 LXC rootfs template to $1.
-  # Debian: fetches latest release from community-scripts/debian-arm64-lxc on GitHub.
-  # Others: fetches from jenkins.linuxcontainers.org.
+  # Does Proxmox offer this OS/version/arch? Local first, then the catalog.
+  _pveam_offers_template() {
+    local search pattern
+    search="${PCT_OSTYPE}-${PCT_OSVERSION:-}"
+    case "$PCT_OSTYPE" in
+    debian | ubuntu) pattern="-standard_" ;;
+    alpine | fedora | rocky | centos) pattern="-default_" ;;
+    *) pattern="" ;;
+    esac
+
+    if pveam list "$TEMPLATE_STORAGE" 2>/dev/null |
+      awk -v s="$search" -v p="$pattern" -v a="$ARCH" \
+        '$1 ~ s && $1 ~ p && $1 ~ ("_" a "\\.(tar\\.zst|tar\\.xz|tar\\.gz)$") {found=1}
+         END {exit !found}'; then
+      return 0
+    fi
+
+    _pveam_update >/dev/null 2>&1 || true
+    _pveam_available |
+      grep -E "_${ARCH}\.(tar\.zst|tar\.xz|tar\.gz)([[:space:]]|$)" |
+      awk '{print $2}' |
+      grep -qE "^${search}.*${pattern}"
+  }
+
+  # Only reached when pveam has nothing for this arch.
   download_arm64_template() {
     local dest="$1" url
 
@@ -2377,21 +2400,7 @@ create_lxc_container() {
       exit 217
     }
 
-    if [[ "$PCT_OSTYPE" == "debian" ]]; then
-      url=$(
-        curl -fsSL "https://api.github.com/repos/community-scripts/debian-arm64-lxc/releases/latest" |
-          jq -r --arg v "$CUSTOM_TEMPLATE_VARIANT" \
-            '.assets[].browser_download_url | select(test("debian-" + $v + "-arm64-rootfs\\.tar\\.xz$"))' |
-          head -n1
-      )
-
-      [[ -n "$url" ]] || {
-        msg_error "Could not find Debian ${CUSTOM_TEMPLATE_VARIANT} ARM64 template URL."
-        exit 225
-      }
-    else
-      url="https://jenkins.linuxcontainers.org/job/image-${PCT_OSTYPE}/architecture=arm64,release=${CUSTOM_TEMPLATE_VARIANT},variant=default/lastStableBuild/artifact/rootfs.tar.xz"
-    fi
+    url="https://jenkins.linuxcontainers.org/job/image-${PCT_OSTYPE}/architecture=arm64,release=${CUSTOM_TEMPLATE_VARIANT},variant=default/lastStableBuild/artifact/rootfs.tar.xz"
 
     msg_info "Downloading ${PCT_OSTYPE^} ${CUSTOM_TEMPLATE_VARIANT} ARM64 template"
     local patched="${dest%/*}/.${dest##*/}.patched"
@@ -2603,9 +2612,8 @@ create_lxc_container() {
   # ------------------------------------------------------------------------------
   CUSTOM_TEMPLATE_VARIANT=""
 
-  if [[ "$ARCH" == "arm64" ]]; then
-    # ARM64: use custom template download from linuxcontainers.org / GitHub
-    msg_info "Preparing ARM64 template"
+  if [[ "$ARCH" == "arm64" ]] && ! _pveam_offers_template; then
+    msg_info "No Proxmox template for ${PCT_OSTYPE} on ${ARCH}, using linuxcontainers.org"
 
     CUSTOM_TEMPLATE_VARIANT=$(arm64_template_variant "$PCT_OSTYPE" "${PCT_OSVERSION:-}") || {
       msg_error "No ARM64 template mapping for ${PCT_OSTYPE} ${PCT_OSVERSION:-latest}"
@@ -2730,12 +2738,13 @@ create_lxc_container() {
 
           mapfile -t LOCAL_TEMPLATES < <(
             pveam list "$TEMPLATE_STORAGE" 2>/dev/null |
-              awk -v search="${TEMPLATE_SEARCH}-" -v pattern="${TEMPLATE_PATTERN}" '$1 ~ search && $1 ~ pattern {print $1}' |
+                awk -v search="${TEMPLATE_SEARCH}-" -v pattern="${TEMPLATE_PATTERN}" -v arch="${ARCH}" \
+                  '$1 ~ search && $1 ~ pattern && $1 ~ ("_" arch "\\.(tar\\.zst|tar\\.xz|tar\\.gz)$") {print $1}' |
               sed 's|.*/||' | sort -t - -k 2 -V || true
           )
           mapfile -t ONLINE_TEMPLATES < <(
             _pveam_available |
-              grep -E '\.(tar\.zst|tar\.xz|tar\.gz)$' |
+              grep -E "_${ARCH}\.(tar\.zst|tar\.xz|tar\.gz)([[:space:]]|$)" |
               awk '{print $2}' |
               grep -E "^${TEMPLATE_SEARCH}-.*${TEMPLATE_PATTERN}" |
               sort -t - -k 2 -V 2>/dev/null || true
