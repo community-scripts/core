@@ -90,23 +90,28 @@ _incus_resolve_launch_image() {
     candidates+=("images:ubuntu/${ver}.04" "images:ubuntu/${ver}.04/cloud")
   fi
 
-  local cand local_match
+  local cand local_aliases
+
+  # Local first: a copied image needs no round-trip, and this keeps working on a
+  # host without internet.
+  local_aliases=$(incus image list -f csv,noheader -c l 2>/dev/null || true)
+  for cand in "${candidates[@]}"; do
+    # Match the alias field whole. The previous substring search ran over the
+    # entire row, so a version matched any digits in a date or size.
+    if [[ -n "$local_aliases" ]] &&
+      grep -qxF "${cand#images:}" <<<"$local_aliases" &&
+      incus image info "${cand#images:}" &>/dev/null; then
+      INCUS_LAUNCH_IMAGE="${cand#images:}"
+      return 0
+    fi
+  done
+
   for cand in "${candidates[@]}"; do
     if incus image info "$cand" &>/dev/null; then
       INCUS_LAUNCH_IMAGE="$cand"
       return 0
     fi
   done
-
-  # Local image fingerprint/alias match (already copied)
-  local_match=$(incus image list -f csv,noheader 2>/dev/null |
-    awk -F, -v os="$os" -v ver="$ver" '
-      tolower($0) ~ os && $0 ~ ver { print $1; exit }
-    ' || true)
-  if [[ -n "$local_match" ]] && incus image info "$local_match" &>/dev/null; then
-    INCUS_LAUNCH_IMAGE="$local_match"
-    return 0
-  fi
 
   # Last resort: try remote launch of primary (incus may pull on demand)
   INCUS_LAUNCH_IMAGE="images:${os}/${ver}"
