@@ -45,20 +45,10 @@ _cs_core_url() {
   echo "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/${1:?func path}"
 }
 
-# Retry options for engine fetches. Repeated here rather than taken from
-# core/build.func, which stays on the host while this file is piped into the
-# container and has to stand alone. A container is at its most fragile right
-# after boot, before DNS is up; core/build.func carries the full reasoning.
 _CS_CURL_RETRY=(--retry 3 --retry-delay 1 --retry-connrefused --connect-timeout 10)
 
 # curl -S prints one line per failed attempt, so a download that recovers on the
-# second try would show the user two errors and then quietly work — during a
-# spinner, no less. Hold stderr back and release it only if every attempt failed.
-#
-# A container is at its most fragile right after boot (DNS/routing still
-# settling), so this retries with growing backoff and a growing per-attempt
-# timeout instead of curl's own flat `--retry-delay`, matching the pattern
-# already used by curl_with_retry() in lib/system.func.
+
 _cs_curl_retry() {
   local url="${1:?url}" err rc=0
   local attempt=1 max_attempts=4 backoff=1 timeout=30
