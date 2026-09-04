@@ -2350,20 +2350,21 @@ create_lxc_container() {
   ARCH="$(dpkg --print-architecture)"
 
   # Maps OS type + version to the release variant name used by ARM64 template sources.
-  arm64_template_variant() {
-    case "$1:$2" in
-    debian:12) echo "bookworm" ;;
-    debian:13) echo "trixie" ;;
-    debian:) echo "$DEBIAN_DEFAULT_CODENAME" ;;
-
-    ubuntu:24.04) echo "noble" ;;
-    ubuntu:26.04) echo "questing" ;;
-    ubuntu:) echo "$UBUNTU_DEFAULT_CODENAME" ;;
-
-    alpine:*) echo "${2:-$ALPINE_DEFAULT_VERSION}" ;;
-
-    *) return 1 ;;
-    esac
+  _lxc_catalog_path() {
+    local os="${1,,}" ver="$2" arch="$3"
+    command -v jq >/dev/null 2>&1 || {
+      $STD apt-get update
+      $STD apt-get install -y jq || return 1
+    }
+    curl -fsSL --max-time 30 "https://images.linuxcontainers.org/streams/v1/images.json" 2>/dev/null |
+      jq -r --arg os "$os" --arg ver "$ver" --arg arch "$arch" '
+        .products | to_entries[]
+        | select(.value.arch == $arch and .value.variant == "default")
+        | select((.value.os | ascii_downcase) == $os)
+        | select(.value.release == $ver or ((.value.aliases // "") | split(",") | index($os + "/" + $ver)))
+        | .value.versions | to_entries | sort_by(.key) | last
+        | .value.items["root.tar.xz"].path // empty
+      ' 2>/dev/null | head -1
   }
 
   # Downloads an ARM64 LXC rootfs template to $1.
@@ -2400,7 +2401,7 @@ create_lxc_container() {
       exit 217
     }
 
-    url="https://jenkins.linuxcontainers.org/job/image-${PCT_OSTYPE}/architecture=arm64,release=${CUSTOM_TEMPLATE_VARIANT},variant=default/lastStableBuild/artifact/rootfs.tar.xz"
+    url="https://images.linuxcontainers.org/${CUSTOM_TEMPLATE_PATH}"
 
     msg_info "Downloading ${PCT_OSTYPE^} ${CUSTOM_TEMPLATE_VARIANT} ARM64 template"
     local patched="${dest%/*}/.${dest##*/}.patched"
@@ -2611,16 +2612,19 @@ create_lxc_container() {
   # Template discovery & validation
   # ------------------------------------------------------------------------------
   CUSTOM_TEMPLATE_VARIANT=""
+  CUSTOM_TEMPLATE_PATH=""
 
   if [[ "$ARCH" == "arm64" ]] && ! _pveam_offers_template; then
     msg_info "No Proxmox template for ${PCT_OSTYPE} on ${ARCH}, using linuxcontainers.org"
 
-    CUSTOM_TEMPLATE_VARIANT=$(arm64_template_variant "$PCT_OSTYPE" "${PCT_OSVERSION:-}") || {
-      msg_error "No ARM64 template mapping for ${PCT_OSTYPE} ${PCT_OSVERSION:-latest}"
+    CUSTOM_TEMPLATE_PATH=$(_lxc_catalog_path "$PCT_OSTYPE" "${PCT_OSVERSION:-}" "$ARCH")
+    [[ -n "$CUSTOM_TEMPLATE_PATH" ]] || {
+      msg_error "linuxcontainers.org has no ${PCT_OSTYPE} ${PCT_OSVERSION:-latest} for ${ARCH}"
       exit 225
     }
 
-    TEMPLATE="${PCT_OSTYPE}-${CUSTOM_TEMPLATE_VARIANT}-rootfs.tar.xz"
+    CUSTOM_TEMPLATE_VARIANT=$(awk -F/ '{print $3}' <<<"$CUSTOM_TEMPLATE_PATH")
+    TEMPLATE="${PCT_OSTYPE}-${CUSTOM_TEMPLATE_VARIANT}-${ARCH}-rootfs.tar.xz"
     TEMPLATE_SOURCE="custom-arm64"
 
     # Resolve template path
