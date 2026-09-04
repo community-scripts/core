@@ -527,7 +527,7 @@ _deploy_source_tarball() {
 }
 
 # ------------------------------------------------------------------------------
-# _deploy_unpacked_archive <archive_path> <target> <workdir>
+# _deploy_unpacked_archive <archive_path> <target> <workdir> [kind]
 #
 # Shared tail for the *prebuild* modes of the fetch_and_deploy_*_release helpers
 # (release assets shipped as .zip / .tar.* / .tgz / .txz). Extracts the archive
@@ -535,6 +535,11 @@ _deploy_source_tarball() {
 # a single top-level directory, that directory is stripped (its contents land
 # directly in <target>); otherwise the archive contents are copied as-is.
 #
+#   - <kind> is zip, tar or 7z, and is what the extraction actually branches on.
+#     fetch_and_deploy_from_url passes the kind it sniffed with file(1), because
+#     a download URL need not carry a usable extension; the release helpers omit
+#     it and get the filename mapping below. This is the only place in the
+#     engine that decides how an archive is opened -- keep it that way.
 #   - Honors CLEAN_INSTALL=1 (wipes <target> first, dotfiles included, mount
 #     points preserved — back up config dotfiles like .env via create_backup
 #     and call restore_backup BEFORE any build step that sources them).
@@ -544,26 +549,46 @@ _deploy_source_tarball() {
 #          252 on copy failure / empty archive.
 # ------------------------------------------------------------------------------
 _deploy_unpacked_archive() {
-  local archive="$1" target="$2" workdir="$3"
+  local archive="$1" target="$2" workdir="$3" kind="${4:-}"
   local filename="${archive##*/}"
+
+  if [[ -z "$kind" ]]; then
+    case "$filename" in
+    *.zip) kind="zip" ;;
+    *.tar.* | *.tgz | *.txz) kind="tar" ;;
+    *.7z) kind="7z" ;;
+    esac
+  fi
+
+  # Ahead of CLEAN_INSTALL: a format we cannot open must not wipe the target.
+  case "$kind" in
+  zip | tar | 7z) ;;
+  *)
+    msg_error "Unsupported archive format: $filename"
+    return 65
+    ;;
+  esac
 
   mkdir -p "$target"
   if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
     _cs_clean_target_dir "$target"
   fi
 
-  if [[ "$filename" == *.zip ]]; then
+  case "$kind" in
+  zip)
     ensure_dependencies unzip
     unzip -q "$archive" -d "$workdir" || {
       msg_error "Failed to extract ZIP archive"
       return 251
     }
-  elif [[ "$filename" == *.tar.* || "$filename" == *.tgz || "$filename" == *.txz ]]; then
+    ;;
+  tar)
     tar --no-same-owner -xf "$archive" -C "$workdir" || {
       msg_error "Failed to extract TAR archive"
       return 251
     }
-  elif [[ "$filename" == *.7z ]]; then
+    ;;
+  7z)
     if [[ -f /etc/alpine-release ]]; then
       ensure_dependencies 7zip
     else
@@ -573,10 +598,8 @@ _deploy_unpacked_archive() {
       msg_error "Failed to extract 7z archive"
       return 251
     }
-  else
-    msg_error "Unsupported archive format: $filename"
-    return 65
-  fi
+    ;;
+  esac
 
   local top_entries inner_dir
   top_entries=$(find "$workdir" -mindepth 1 -maxdepth 1)
@@ -2013,15 +2036,17 @@ fetch_and_deploy_gh_release() {
 # ------------------------------------------------------------------------------
 # ------------------------------------------------------------------------------
 # Fetch and deploy from URL
-# Downloads an archive (zip, tar.gz, or .deb) from a URL and extracts/installs it
+# Downloads an archive from a URL and extracts/installs it. The type comes from
+# file(1), not from the URL, which often carries no usable extension: any
+# compressed tarball (gz, xz, bz2, zst, ...), zip, 7z or .deb.
 #
 # Usage: fetch_and_deploy_from_url "url" "directory"
-#   url       - URL to the archive (zip, tar.gz, or .deb)
+#   url       - URL to the archive
 #   directory - Destination path where the archive will be extracted
 #               (not used for .deb packages)
 #
 # Examples:
-#   fetch_and_deploy_from_url "https://example.com/app.tar.gz" "/opt/myapp"
+#   fetch_and_deploy_from_url "https://example.com/app.tar.xz" "/opt/myapp"
 #   fetch_and_deploy_from_url "https://example.com/app.zip" "/opt/myapp"
 #   fetch_and_deploy_from_url "https://example.com/package.deb" ""
 # ------------------------------------------------------------------------------
@@ -2056,8 +2081,14 @@ fetch_and_deploy_from_url() {
 
   local archive_type="unknown"
 
-  if [[ "$file_desc" =~ gzip.*compressed|gzip\ compressed\ data ]]; then
+  # file(1) cannot see through compression: a .tar.xz reports as "XZ compressed
+  # data, checksum CRC64" and never mentions tar. Everything compressed that
+  # arrives here is a tarball, and tar -xf picks the decompressor itself, so the
+  # whole family maps to one type.
+  if [[ "$file_desc" =~ (gzip|XZ|xz|bzip2|Zstandard|zstd|lzip|LZ4|LZMA)[[:space:]]compressed ]]; then
     archive_type="tar"
+  elif [[ "$file_desc" =~ 7-zip\ archive ]]; then
+    archive_type="7z"
   elif [[ "$file_desc" =~ Zip.*archive|ZIP\ archive ]]; then
     archive_type="zip"
   elif [[ "$file_desc" =~ Debian.*package|Debian\ binary\ package ]]; then
@@ -2093,61 +2124,10 @@ fetch_and_deploy_from_url() {
 
   msg_info "Extracting archive to $directory"
 
-  mkdir -p "$directory"
-
-  if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-    _cs_clean_target_dir "$directory"
-  fi
-
   local unpack_tmp
   unpack_tmp=$(mktemp -d)
 
-  if [[ "$archive_type" == "zip" ]]; then
-    ensure_dependencies unzip
-    unzip -q "$tmpdir/$filename" -d "$unpack_tmp" || {
-      msg_error "Failed to extract ZIP archive"
-      return 251
-    }
-  elif [[ "$archive_type" == "tar" ]]; then
-    tar --no-same-owner -xf "$tmpdir/$filename" -C "$unpack_tmp" || {
-      msg_error "Failed to extract TAR archive"
-      return 251
-    }
-  fi
-
-  local top_entries
-  top_entries=$(find "$unpack_tmp" -mindepth 1 -maxdepth 1)
-
-  if [[ "$(echo "$top_entries" | wc -l)" -eq 1 && -d "$top_entries" ]]; then
-    local inner_dir="$top_entries"
-    shopt -s dotglob nullglob
-    if compgen -G "$inner_dir/*" >/dev/null; then
-      cp -r "$inner_dir"/* "$directory/" || {
-        msg_error "Failed to copy contents from $inner_dir to $directory"
-        shopt -u dotglob nullglob
-        return 252
-      }
-    else
-      msg_error "Inner directory is empty: $inner_dir"
-      shopt -u dotglob nullglob
-      return 252
-    fi
-    shopt -u dotglob nullglob
-  else
-    shopt -s dotglob nullglob
-    if compgen -G "$unpack_tmp/*" >/dev/null; then
-      cp -r "$unpack_tmp"/* "$directory/" || {
-        msg_error "Failed to copy contents to $directory"
-        shopt -u dotglob nullglob
-        return 252
-      }
-    else
-      msg_error "Unpacked archive is empty"
-      shopt -u dotglob nullglob
-      return 252
-    fi
-    shopt -u dotglob nullglob
-  fi
+  _deploy_unpacked_archive "$tmpdir/$filename" "$directory" "$unpack_tmp" "$archive_type" || return
 
   msg_ok "Successfully deployed archive to $directory"
   return 0
