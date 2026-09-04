@@ -92,12 +92,9 @@ _incus_resolve_launch_image() {
 
   local cand local_aliases
 
-  # Local first: a copied image needs no round-trip, and this keeps working on a
-  # host without internet.
+  # Local first: no round-trip, and works without internet.
   local_aliases=$(incus image list -f csv,noheader -c l 2>/dev/null || true)
   for cand in "${candidates[@]}"; do
-    # Match the alias field whole. The previous substring search ran over the
-    # entire row, so a version matched any digits in a date or size.
     if [[ -n "$local_aliases" ]] &&
       grep -qxF "${cand#images:}" <<<"$local_aliases" &&
       incus image info "${cand#images:}" &>/dev/null; then
