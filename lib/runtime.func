@@ -857,6 +857,27 @@ setup_go() {
     GO_VERSION="$go_version_tmp"
   fi
 
+  # A bare major.minor version (e.g. "1.22", as commonly found in go.mod's `go`
+  # directive) has no matching tarball -- go.dev only publishes patch releases
+  # (go1.22.12, not go1.22) -- so resolve it to the latest matching patch first.
+  if [[ "$GO_VERSION" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+    local go_major="${BASH_REMATCH[1]}" go_minor="${BASH_REMATCH[2]}"
+    ensure_dependencies jq || return 100
+    local go_releases go_patch
+    go_releases=$(curl_with_retry "https://go.dev/dl/?mode=json&include=all" "-" 2>/dev/null) || true
+    go_patch=$(printf '%s' "$go_releases" | jq -r --arg maj "$go_major" --arg min "$go_minor" '
+      [.[] | select(.stable == true) | .version
+       | capture("^go(?<maj>[0-9]+)\\.(?<min>[0-9]+)\\.(?<patch>[0-9]+)$")
+       | select(.maj == $maj and .min == $min)
+       | (.patch | tonumber)]
+      | max // empty' 2>/dev/null)
+    if [[ -z "$go_patch" ]]; then
+      msg_error "Could not resolve latest patch release for Go ${GO_VERSION}.x"
+      return 250
+    fi
+    GO_VERSION="${go_major}.${go_minor}.${go_patch}"
+  fi
+
   local GO_BIN="/usr/local/bin/go"
   local GO_INSTALL_DIR="/usr/local/go"
 
