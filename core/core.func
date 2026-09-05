@@ -923,13 +923,31 @@ silent() {
 # - Runs in infinite loop until killed by stop_spinner()
 # - Uses color_spinner() colors for output
 # ------------------------------------------------------------------------------
+_msg_fit() {
+  local msg="$1" reserved="${2:-4}" size cols max
+  size="$(stty size 2>/dev/null </dev/tty)" || size=""
+  cols="${size##* }"
+  if [[ ! "$cols" =~ ^[1-9][0-9]*$ ]]; then
+    printf '%s' "$msg"
+    return 0
+  fi
+  max=$((cols - reserved))
+  ((max < 10)) && max=10
+  if ((${#msg} > max)); then
+    printf '%s…' "${msg:0:max-1}"
+  else
+    printf '%s' "$msg"
+  fi
+}
+
 spinner() {
   # Reset bash's command hash table — package upgrades (dnf/pacman) may have
   # moved /usr/bin <-> /usr/sbin during /usr-merge, leaving the parent shell
   # with stale cached paths that get inherited by this background subshell.
   hash -r 2>/dev/null || true
   local chars=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
-  local msg="${SPINNER_MSG:-Processing...}"
+  local msg
+  msg="$(_msg_fit "${SPINNER_MSG:-Processing...}" 4)"
   local i=0
   while true; do
     local index=$((i++ % ${#chars[@]}))

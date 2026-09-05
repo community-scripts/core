@@ -497,6 +497,25 @@ cleanup_spinner() {
   # Additional cleanup if needed
 }
 
+if ! declare -f _msg_fit >/dev/null 2>&1; then
+  _msg_fit() {
+    local msg="$1" reserved="${2:-4}" size cols max
+    size="$(stty size 2>/dev/null </dev/tty)" || size=""
+    cols="${size##* }"
+    if [[ ! "$cols" =~ ^[1-9][0-9]*$ ]]; then
+      printf '%s' "$msg"
+      return 0
+    fi
+    max=$((cols - reserved))
+    ((max < 10)) && max=10
+    if ((${#msg} > max)); then
+      printf '%s…' "${msg:0:max-1}"
+    else
+      printf '%s' "$msg"
+    fi
+  }
+fi
+
 start_spinner() {
   local msg="${1:-Processing...}"
   local frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
@@ -513,10 +532,13 @@ start_spinner() {
   # Set active flag
   SPINNER_ACTIVE=1
 
+  local display
+  display="$(_msg_fit "$msg" 8)"
+
   # Start spinner in background
   {
     while [[ "$SPINNER_ACTIVE" -eq 1 ]]; do
-      printf "\r\e[2K%s %b" "${TAB}${frames[spin_i]}${TAB}" "${YW}${SPINNER_MSG}${CL}" >&2
+      printf "\r\e[2K%s %b" "${TAB}${frames[spin_i]}${TAB}" "${YW}${display}${CL}" >&2
       spin_i=$(((spin_i + 1) % ${#frames[@]}))
       sleep "$interval"
     done

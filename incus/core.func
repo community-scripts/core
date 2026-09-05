@@ -408,7 +408,8 @@ incus_silent() {
 incus_spinner() {
   hash -r 2>/dev/null || true
   local chars=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
-  local msg="${SPINNER_MSG:-Processing...}"
+  local msg
+  msg="$(_msg_fit "${SPINNER_MSG:-Processing...}" 4)"
   local i=0
   while true; do
     local index=$((i++ % ${#chars[@]}))
