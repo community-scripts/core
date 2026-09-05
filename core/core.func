@@ -927,6 +927,7 @@ _msg_fit() {
   local msg="$1" reserved="${2:-4}" size cols max
   size="$(stty size 2>/dev/null </dev/tty)" || size=""
   cols="${size##* }"
+  [[ "$cols" =~ ^[1-9][0-9]*$ ]] || cols="${COLUMNS:-}"
   if [[ ! "$cols" =~ ^[1-9][0-9]*$ ]]; then
     printf '%s' "$msg"
     return 0
