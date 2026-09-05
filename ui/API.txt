@@ -34,6 +34,7 @@ _is_whitelisted_key
 _list_os_versions
 _list_templates
 _load_vars_file_to_map
+_msg_fit
 _pve_version
 _pveam_available
 _pveam_update
