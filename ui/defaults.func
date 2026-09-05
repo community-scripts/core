@@ -127,8 +127,15 @@ resolve_os_version() {
   local ostype="${var_os:-}" want="${var_version:-}"
   [[ -n "$ostype" && -n "$want" ]] || return 0
 
-  # ARM64 pulls from linuxcontainers.org, the pveam catalog says nothing there
-  [[ "$(dpkg --print-architecture 2>/dev/null)" == "arm64" ]] && return 0
+  local arch
+  arch="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+
+  # ARM64 normally pulls from a platform-specific source, so the pveam catalog
+  # says nothing useful there. The PVE backend can opt an OS into its catalog.
+  if [[ "$arch" == "arm64" ]] &&
+    { ! declare -F _use_custom_arm64_template >/dev/null || _use_custom_arm64_template "$arch" "$ostype"; }; then
+    return 0
+  fi
 
   local -a versions=()
   mapfile -t versions < <(_list_os_versions "$ostype")
@@ -141,7 +148,8 @@ resolve_os_version() {
 
   # Already downloaded counts as available even if the catalog dropped it
   if [[ -n "${TEMPLATE_STORAGE:-}" ]] &&
-    pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -q "/${ostype}-${want}-"; then
+    pveam list "$TEMPLATE_STORAGE" 2>/dev/null |
+    grep -Eq "/${ostype}-${want}-.*_${arch}\\.(tar\\.zst|tar\\.xz|tar\\.gz)$"; then
     return 0
   fi
 

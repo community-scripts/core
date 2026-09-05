@@ -22,6 +22,7 @@ on:
       - "vm/**"
       - "pve/**"
       - "incus/**"
+      - "tests/**"
   push:
     branches: [main]
     paths:
@@ -34,6 +35,7 @@ on:
       - "vm/**"
       - "pve/**"
       - "incus/**"
+      - "tests/**"
   workflow_dispatch:
 
 env:
@@ -53,6 +55,9 @@ jobs:
             bash -n "$f" || { echo "::error file=$f::syntax error"; fail=1; }
           done < <(find $ENGINE_DIRS -name '*.func' -type f)
           exit $fail
+
+      - name: ARM64 template routing
+        run: bash tests/arm64-template-routing.sh
 
       - name: Prefetch lists cover every engine file
         run: |
