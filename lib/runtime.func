@@ -1237,8 +1237,15 @@ _cs_drop_pm_shim() {
 # advertises its own update on every run. Both paths bring it to the newest
 # release; a no-op when it is already there, so the update path needs no
 # separate check. NPM_VERSION pins it if a new major breaks a build.
+#
+# Reports through NPM_SETUP_VERSION rather than its own msg_ok: both callers run
+# this inside an open msg_info, and a msg_ok there stops that spinner and prints
+# ahead of the step it belongs to -- "npm 11.19.0 -> 12.0.2" landed above "Setup
+# Node.js 24" and read as if npm had been handled first. The callers fold the
+# version into their own closing line instead.
 _setup_npm() {
   local target="${NPM_VERSION:-latest}" before after
+  NPM_SETUP_VERSION=""
   command -v npm >/dev/null 2>&1 || return 0
   before="$(npm -v 2>/dev/null || echo unknown)"
 
@@ -1248,7 +1255,7 @@ _setup_npm() {
   fi
 
   after="$(npm -v 2>/dev/null || echo "$before")"
-  [[ "$after" != "$before" ]] && msg_ok "npm ${before} -> ${after}"
+  NPM_SETUP_VERSION="$after"
   return 0
 }
 
@@ -1259,6 +1266,7 @@ setup_nodejs() {
   local node_major="${NODE_VERSION%%.*}"
   local wants_corepack=0
   local node_setup_ok_msg=""
+  local NPM_SETUP_VERSION=""
 
   # Corepack must run fully non-interactive, or it blocks on "about to download
   # X. Continue? [Y/n]" -- here and in the calling script's later corepack calls,
@@ -1295,7 +1303,7 @@ setup_nodejs() {
     _setup_npm
 
     cache_installed_version "nodejs" "$NODE_VERSION"
-    msg_ok "Update Node.js $NODE_VERSION"
+    msg_ok "Update Node.js $NODE_VERSION${NPM_SETUP_VERSION:+ (npm ${NPM_SETUP_VERSION})}"
   else
     # Scenario 2: Different version installed - clean upgrade
     if [[ -n "$CURRENT_NODE_VERSION" && "$CURRENT_NODE_VERSION" != "$NODE_VERSION" ]]; then
@@ -1371,7 +1379,7 @@ setup_nodejs() {
     _setup_npm
 
     cache_installed_version "nodejs" "$NODE_VERSION"
-    msg_ok "$node_setup_ok_msg"
+    msg_ok "${node_setup_ok_msg}${NPM_SETUP_VERSION:+ (npm ${NPM_SETUP_VERSION})}"
   fi
 
   # Only Node 22.22.2 shipped npm 10.9.7, whose arborist is missing
