@@ -114,6 +114,13 @@ update_motd_ip() {
 setup_hwaccel() {
   # GPU/device passthrough is applied at create time (incus config device add gpu …).
   # Inside the CT we only verify visibility and permissions.
+  export HWACCEL_VENDOR="none"
+  if ldconfig -p 2>/dev/null | grep -q 'libcuda\.so\.1' && compgen -G '/dev/nvidia[0-9]*' &>/dev/null; then
+    export HWACCEL_VENDOR="nvidia"
+  elif [[ -e /dev/kfd ]]; then
+    export HWACCEL_VENDOR="amd"
+  fi
+
   if [[ -d /dev/dri ]] && compgen -G '/dev/dri/*' &>/dev/null; then
     msg_ok "Hardware acceleration devices present under /dev/dri"
     return 0

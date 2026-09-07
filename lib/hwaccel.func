@@ -50,6 +50,9 @@ _cs_apt_install_optional() {
 setup_hwaccel() {
   local service_user="${1:-}"
 
+  export HWACCEL_VENDOR="none"
+  _cs_nvidia_usable=0
+
   # Check if user explicitly disabled GPU in advanced settings
   # ENABLE_GPU is exported from build.func
   if [[ "${ENABLE_GPU:-no}" == "no" ]]; then
@@ -313,6 +316,22 @@ setup_hwaccel() {
   # Device Permissions
   # ═══════════════════════════════════════════════════════════════════════════
   _setup_gpu_permissions "$in_ct" "$service_user"
+
+  local _gpu_type
+  for idx in "${SELECTED_INDICES[@]}"; do
+    _gpu_type="${GPU_TYPES[$idx]}"
+    if [[ "$_gpu_type" == "NVIDIA" && $_cs_nvidia_usable -eq 1 ]]; then
+      HWACCEL_VENDOR="nvidia"
+      break
+    fi
+    if [[ "$HWACCEL_VENDOR" == "none" ]]; then
+      case "$_gpu_type" in
+      AMD) HWACCEL_VENDOR="amd" ;;
+      INTEL*) HWACCEL_VENDOR="intel" ;;
+      esac
+    fi
+  done
+  export HWACCEL_VENDOR
 
   cache_installed_version "hwaccel" "1.0"
   msg_ok "Setup Hardware Acceleration"
@@ -882,6 +901,7 @@ NVIDIA_PIN
   ldconfig -p 2>/dev/null | grep -q 'libcuda\.so\.1' && have_libcuda=1
 
   if [[ $have_libcuda -eq 1 && ${#nvidia_nodes[@]} -gt 0 ]]; then
+    _cs_nvidia_usable=1
     msg_ok "NVIDIA GPU configured (host driver ${nvidia_host_version}, ${#nvidia_nodes[@]} device nodes)"
   elif [[ ${#nvidia_nodes[@]} -eq 0 ]]; then
     msg_error "NVIDIA GPU not usable: no /dev/nvidia* device nodes in this container"
