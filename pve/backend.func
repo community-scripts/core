@@ -2426,7 +2426,7 @@ create_lxc_container() {
     return 1
   }
 
-  # Downloads an ARM64 LXC rootfs template to $1.
+  # Downloads a linuxcontainers rootfs template to $1.
   # Does Proxmox offer this OS/version/arch? Local first, then the catalog.
   _pveam_offers_template() {
     local search pattern
@@ -2469,7 +2469,7 @@ create_lxc_container() {
     sqfs="${dest%.tar.xz}.squashfs"
     if ! curl -fsSL -o "$sqfs" "$url"; then
       rm -f "$sqfs"
-      msg_error "Failed to download ARM64 template from: $url"
+      msg_error "Failed to download template from: $url"
       return 1
     fi
 
@@ -2496,7 +2496,7 @@ create_lxc_container() {
   }
 
   # Only reached when pveam has nothing for this arch.
-  download_arm64_template() {
+  download_catalog_template() {
     local dest="$1" url
 
     mkdir -p "$(dirname "$dest")" || {
@@ -2506,7 +2506,7 @@ create_lxc_container() {
 
     url="https://images.linuxcontainers.org/${CUSTOM_TEMPLATE_PATH}"
 
-    msg_info "Downloading ${PCT_OSTYPE^} ${CUSTOM_TEMPLATE_VARIANT} ARM64 template"
+    msg_info "Downloading ${PCT_OSTYPE^} ${CUSTOM_TEMPLATE_VARIANT} template (${ARCH})"
     local patched="${dest%/*}/.${dest##*/}.patched"
     (
       flock -x 200
@@ -2516,7 +2516,7 @@ create_lxc_container() {
       if [[ "$url" == *.squashfs ]]; then
         _lxc_squashfs_to_tarball "$url" "$dest" || exit 208
       elif ! curl -fsSL -o "$dest" "$url"; then
-        msg_error "Failed to download ARM64 template from: $url"
+        msg_error "Failed to download template from: $url"
         exit 208
       fi
       if ! tar -tJf "$dest" 2>/dev/null | grep -q '/etc/network/$'; then
@@ -2528,7 +2528,7 @@ create_lxc_container() {
           rm -rf "$fixdir"
         else
           rm -rf "$fixdir" "$tmptar"
-          msg_error "Failed to patch ARM64 template (missing /etc/network)"
+          msg_error "Failed to patch template (missing /etc/network)"
           exit 208
         fi
       fi
@@ -2538,13 +2538,13 @@ create_lxc_container() {
     if [[ $dl_rc -ne 0 ]]; then
       exit "$dl_rc"
     fi
-    msg_ok "Downloaded ARM64 LXC template"
+    msg_ok "Downloaded LXC template from linuxcontainers.org"
   }
 
   download_template() {
     local dest="${1:-$TEMPLATE_PATH}"
-    if [[ "$ARCH" == "arm64" ]]; then
-      download_arm64_template "$dest"
+    if [[ -n "$CUSTOM_TEMPLATE_PATH" ]]; then
+      download_catalog_template "$dest"
     else
       pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" >>"${BUILD_LOG:-/dev/null}" 2>&1 || {
         msg_error "Failed to download template '$TEMPLATE' to storage '$TEMPLATE_STORAGE'"
@@ -2719,25 +2719,26 @@ create_lxc_container() {
   CUSTOM_TEMPLATE_VARIANT=""
   CUSTOM_TEMPLATE_PATH=""
 
-  if [[ "$ARCH" == "arm64" ]] && ! _pveam_offers_template; then
-    msg_info "No Proxmox template for ${PCT_OSTYPE} on ${ARCH}, using linuxcontainers.org"
+  if ! _pveam_offers_template; then
+    msg_info "No Proxmox template for ${PCT_OSTYPE} ${PCT_OSVERSION:-} on ${ARCH}, trying linuxcontainers.org"
 
     _lxc_catalog_index="$(mktemp)"
     if ! _lxc_catalog_fetch "$_lxc_catalog_index"; then
-      rm -f "$_lxc_catalog_index"
-      msg_error "Could not reach the linuxcontainers.org image catalog"
-      exit 225
+      msg_warn "Could not reach the linuxcontainers.org image catalog"
+    elif ! CUSTOM_TEMPLATE_PATH=$(_lxc_catalog_path "$PCT_OSTYPE" "${PCT_OSVERSION:-}" "$ARCH" "$_lxc_catalog_index"); then
+      CUSTOM_TEMPLATE_PATH=""
+      msg_warn "linuxcontainers.org has no ${PCT_OSTYPE} ${PCT_OSVERSION:-latest} for ${ARCH}"
     fi
-    CUSTOM_TEMPLATE_PATH=$(_lxc_catalog_path "$PCT_OSTYPE" "${PCT_OSVERSION:-}" "$ARCH" "$_lxc_catalog_index") || {
-      rm -f "$_lxc_catalog_index"
-      msg_error "linuxcontainers.org has no ${PCT_OSTYPE} ${PCT_OSVERSION:-latest} for ${ARCH}"
-      exit 225
-    }
     rm -f "$_lxc_catalog_index"
+  fi
 
+  # A catalog miss falls through to pveam rather than ending the run: asking for
+  # a version that does not exist is far more common than asking for a distro
+  # nobody publishes, and only the pveam path can offer what this host does have.
+  if [[ -n "$CUSTOM_TEMPLATE_PATH" ]]; then
     CUSTOM_TEMPLATE_VARIANT=$(awk -F/ '{print $3}' <<<"$CUSTOM_TEMPLATE_PATH")
     TEMPLATE="${PCT_OSTYPE}-${CUSTOM_TEMPLATE_VARIANT}-${ARCH}-rootfs.tar.xz"
-    TEMPLATE_SOURCE="custom-arm64"
+    TEMPLATE_SOURCE="custom-catalog"
 
     # Resolve template path
     TEMPLATE_PATH="$(pvesm path "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" 2>/dev/null || true)"
@@ -2753,11 +2754,11 @@ create_lxc_container() {
 
     # Download if missing, too small, or corrupt
     if [[ ! -f "$TEMPLATE_PATH" ]]; then
-      download_arm64_template "$TEMPLATE_PATH"
+      download_catalog_template "$TEMPLATE_PATH"
     elif [[ "$(stat -c%s "$TEMPLATE_PATH")" -lt 1000000 ]] || ! tar -tf "$TEMPLATE_PATH" &>/dev/null; then
       msg_warn "Local template invalid - re-downloading."
       rm -f "$TEMPLATE_PATH"
-      download_arm64_template "$TEMPLATE_PATH"
+      download_catalog_template "$TEMPLATE_PATH"
     else
       msg_ok "Template ${BL}$TEMPLATE${CL} found locally."
     fi
@@ -3070,7 +3071,7 @@ create_lxc_container() {
     download_template
     msg_ok "Template downloaded"
   elif ! tar -tf "$TEMPLATE_PATH" &>/dev/null; then
-    if [[ "$ARCH" == "arm64" || -n "$ONLINE_TEMPLATE" ]]; then
+    if [[ -n "$CUSTOM_TEMPLATE_PATH" || -n "$ONLINE_TEMPLATE" ]]; then
       msg_info "Template appears corrupted – re-downloading"
       rm -f "$TEMPLATE_PATH"
       download_template
@@ -3156,8 +3157,8 @@ create_lxc_container() {
           if [[ ! -f "$LOCAL_TEMPLATE_PATH" ]]; then
             msg_ok "Trying local storage fallback"
             msg_info "Downloading template to local"
-            if [[ "$ARCH" == "arm64" ]]; then
-              download_arm64_template "$LOCAL_TEMPLATE_PATH"
+            if [[ -n "$CUSTOM_TEMPLATE_PATH" ]]; then
+              download_catalog_template "$LOCAL_TEMPLATE_PATH"
             else
               pveam download local "$TEMPLATE" >>"${BUILD_LOG:-/dev/null}" 2>&1
             fi
