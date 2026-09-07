@@ -204,6 +204,16 @@ detect_os() {
     OS_FAMILY="debian"
     PKG_MANAGER="apt"
     ;;
+  kali)
+    OS_FAMILY="debian"
+    PKG_MANAGER="apt"
+    ;;
+  # /etc/os-release says linuxmint; the image catalog and var_os say mint.
+  linuxmint | mint)
+    OS_TYPE="mint"
+    OS_FAMILY="debian"
+    PKG_MANAGER="apt"
+    ;;
   alpine)
     OS_FAMILY="alpine"
     PKG_MANAGER="apk"
@@ -236,6 +246,18 @@ detect_os() {
     PKG_MANAGER="dnf"
     ;;
   openeuler)
+    OS_FAMILY="rhel"
+    PKG_MANAGER="dnf"
+    ;;
+  # Oracle Linux reports ID=ol, Amazon Linux ID=amzn. Both normalize to the
+  # name the image catalog and var_os use, so one spelling covers both ends.
+  ol | oracle | oraclelinux)
+    OS_TYPE="oracle"
+    OS_FAMILY="rhel"
+    PKG_MANAGER="dnf"
+    ;;
+  amzn | amazonlinux)
+    OS_TYPE="amazonlinux"
     OS_FAMILY="rhel"
     PKG_MANAGER="dnf"
     ;;
