@@ -1793,10 +1793,12 @@ check_hostname_conflict() {
 }
 
 set_description() {
-  local app_name script_slug script_url donate_url
-  app_name=$(echo "${APP,,}" | tr ' ' '-')
-  script_slug="${SCRIPT_SLUG:-${app_name}}"
-  script_slug="$(echo "$script_slug" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+  local script_slug script_url donate_url
+  # A VM script sets NSAPP itself (archlinux-vm, haos-vm) and that is the slug
+  # the website serves. Rebuilding it from APP dropped the -vm suffix and dashed
+  # the spaces, pointing "Arch Linux" at /scripts/arch-linux, which 404s.
+  script_slug="${SCRIPT_SLUG:-${NSAPP:-$APP}}"
+  script_slug="$(echo "$script_slug" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
   script_url="https://community-scripts.org/scripts/${script_slug}"
   donate_url="https://community-scripts.org/donate"
   local description_title="${APP:-${NSAPP} VM}"
