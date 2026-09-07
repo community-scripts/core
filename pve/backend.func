@@ -3296,8 +3296,12 @@ description() {
   # every Incus container to a repository it has nothing to do with.
   local repo_slug="${REPO_SLUG:-community-scripts/ProxmoxVE}"
   local repo_url="https://github.com/${repo_slug}"
+  # NSAPP is the slug the website serves, and what menu.func and the update
+  # entrypoint already look the app up by. Dashing the spaces instead of
+  # dropping them pointed "Arch Linux" at /scripts/arch-linux, which 404s.
   local script_slug
-  script_slug="$(printf '%s' "${APP}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+  script_slug="${SCRIPT_SLUG:-${NSAPP:-$APP}}"
+  script_slug="$(printf '%s' "$script_slug" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
 
   # A script under test asks for feedback here too: the description shows in the
   # Proxmox UI without entering the container and outlives the install output.
