@@ -1524,6 +1524,14 @@ _vm_image_ok() {
   return 0
 }
 
+vm_image_cache_path() {
+  local url="${1:?url}"
+  local dir="${VM_IMAGE_CACHE_DIR:-/var/lib/vz/template/cache}"
+  local name="${url%%\?*}"
+  mkdir -p "$dir" 2>/dev/null || true
+  printf '%s/%s' "$dir" "${name##*/}"
+}
+
 vm_fetch_image() {
   local url="${1:?url}" target="${2:?target}"
   shift 2
