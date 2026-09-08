@@ -1140,6 +1140,112 @@ vm_prompt_disk_cache() {
   fi
 }
 
+vm_prompt_bios() {
+  local default_bios="${1:-ovmf}"
+  local ovmf_default="ON" seabios_default="OFF"
+  [[ "$default_bios" == "seabios" ]] && {
+    ovmf_default="OFF"
+    seabios_default="ON"
+  }
+
+  if vm_dialog radiolist "BIOS" "Choose the firmware" --cancel-button Exit-Script 10 58 2 \
+    "ovmf" "OVMF (UEFI)" "$ovmf_default" \
+    "seabios" "SeaBIOS (Legacy)" "$seabios_default"; then
+    # SeaBIOS has no EFI vars disk, so callers must skip -efidisk0 for it.
+    if [[ "$VM_DIALOG_RESULT" == "seabios" ]]; then
+      BIOS_TYPE=" -bios seabios"
+      BIOS_UEFI="no"
+      echo -e "${OS}${BOLD}${DGN}BIOS: ${BGN}SeaBIOS${CL}"
+    else
+      BIOS_TYPE=" -bios ovmf"
+      BIOS_UEFI="yes"
+      echo -e "${OS}${BOLD}${DGN}BIOS: ${BGN}OVMF (UEFI)${CL}"
+    fi
+  else
+    exit_script
+  fi
+}
+
+vm_prompt_scsihw() {
+  local default_hw="${1:-virtio-scsi-pci}"
+  local pci_default="ON" single_default="OFF"
+  [[ "$default_hw" == "virtio-scsi-single" ]] && {
+    pci_default="OFF"
+    single_default="ON"
+  }
+
+  if vm_dialog radiolist "SCSI CONTROLLER" "Choose the controller" --cancel-button Exit-Script 10 62 2 \
+    "virtio-scsi-pci" "VirtIO SCSI (Default)" "$pci_default" \
+    "virtio-scsi-single" "VirtIO SCSI single (allows IO threads)" "$single_default"; then
+    SCSIHW="$VM_DIALOG_RESULT"
+    echo -e "${CONTAINERTYPE}${BOLD}${DGN}SCSI Controller: ${BGN}${SCSIHW}${CL}"
+  else
+    exit_script
+  fi
+}
+
+vm_prompt_display() {
+  local default_vga="${1:-serial0}"
+  local serial_default="OFF" std_default="OFF" none_default="OFF"
+  case "$default_vga" in
+  serial0) serial_default="ON" ;;
+  none) none_default="ON" ;;
+  *) std_default="ON" ;;
+  esac
+
+  if vm_dialog radiolist "DISPLAY" "Choose the graphic card" --cancel-button Exit-Script 11 62 3 \
+    "serial0" "Serial terminal 0 (cloud images)" "$serial_default" \
+    "std" "Standard VGA" "$std_default" \
+    "none" "None" "$none_default"; then
+    VGA_TYPE="$VM_DIALOG_RESULT"
+    echo -e "${CONTAINERTYPE}${BOLD}${DGN}Display: ${BGN}${VGA_TYPE}${CL}"
+  else
+    exit_script
+  fi
+}
+
+vm_prompt_nic_model() {
+  local default_model="${1:-virtio}"
+  local virtio_default="ON" e1000_default="OFF" rtl_default="OFF"
+  case "$default_model" in
+  e1000) virtio_default="OFF" e1000_default="ON" ;;
+  rtl8139) virtio_default="OFF" rtl_default="ON" ;;
+  esac
+
+  if vm_dialog radiolist "NETWORK MODEL" "Choose the NIC model" --cancel-button Exit-Script 11 62 3 \
+    "virtio" "VirtIO (paravirtualized, default)" "$virtio_default" \
+    "e1000" "Intel E1000" "$e1000_default" \
+    "rtl8139" "Realtek RTL8139" "$rtl_default"; then
+    NIC_MODEL="$VM_DIALOG_RESULT"
+    echo -e "${BRIDGE}${BOLD}${DGN}NIC Model: ${BGN}${NIC_MODEL}${CL}"
+  else
+    exit_script
+  fi
+}
+
+vm_prompt_balloon() {
+  local default_balloon="${1:-no}"
+  local yes_default="OFF" no_default="ON"
+  [[ "$default_balloon" == "yes" ]] && {
+    yes_default="ON"
+    no_default="OFF"
+  }
+
+  if vm_dialog radiolist "MEMORY BALLOONING" "Allow Proxmox to reclaim unused guest memory?" --cancel-button Exit-Script 11 62 2 \
+    "no" "Off - guest keeps the full amount" "$no_default" \
+    "yes" "On - balloon down to half on pressure" "$yes_default"; then
+    if [[ "$VM_DIALOG_RESULT" == "yes" ]]; then
+      BALLOON=$((RAM_SIZE / 2))
+      echo -e "${RAMSIZE}${BOLD}${DGN}Ballooning: ${BGN}yes (min ${BALLOON} MiB)${CL}"
+    else
+      BALLOON=0
+      echo -e "${RAMSIZE}${BOLD}${DGN}Ballooning: ${BGN}no${CL}"
+    fi
+  else
+    exit_script
+  fi
+}
+
 vm_prompt_hostname() {
   local default_hostname="${1:-vm}"
   local adjusted_hostname
@@ -1173,17 +1279,28 @@ vm_prompt_cpu_model() {
     host_default="ON"
   fi
 
-  if vm_dialog radiolist "CPU MODEL" "Choose" --cancel-button Exit-Script 10 58 2 \
-    "0" "KVM64 (Default)" "$kvm_default" \
-    "1" "Host" "$host_default"; then
+  local v2_default="OFF" v3_default="OFF" v4_default="OFF"
+  case "$default_model" in
+  x86-64-v2-AES) kvm_default="OFF" v2_default="ON" ;;
+  x86-64-v3) kvm_default="OFF" v3_default="ON" ;;
+  x86-64-v4) kvm_default="OFF" v4_default="ON" ;;
+  esac
+
+  if vm_dialog radiolist "CPU MODEL" "Choose" --cancel-button Exit-Script 13 64 5 \
+    "0" "KVM64 (Default, most portable)" "$kvm_default" \
+    "1" "Host (fastest, blocks migration)" "$host_default" \
+    "2" "x86-64-v2-AES (AES-NI, wide support)" "$v2_default" \
+    "3" "x86-64-v3 (AVX2, needs newer hosts)" "$v3_default" \
+    "4" "x86-64-v4 (AVX-512, few hosts)" "$v4_default"; then
     cpu_choice="$VM_DIALOG_RESULT"
-    if [ "$cpu_choice" = "1" ]; then
-      CPU_TYPE=" -cpu host"
-      echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}Host${CL}"
-    else
-      CPU_TYPE=""
-      echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}KVM64${CL}"
-    fi
+    case "$cpu_choice" in
+    1) CPU_TYPE=" -cpu host" ;;
+    2) CPU_TYPE=" -cpu x86-64-v2-AES" ;;
+    3) CPU_TYPE=" -cpu x86-64-v3" ;;
+    4) CPU_TYPE=" -cpu x86-64-v4" ;;
+    *) CPU_TYPE="" ;;
+    esac
+    echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}${CPU_TYPE:+${CPU_TYPE# -cpu }}${CPU_TYPE:-KVM64}${CL}"
   else
     exit_script
   fi
@@ -1757,8 +1874,9 @@ vm_select_storage() {
     exit 119
   fi
 
-  msg_info "Validating Storage"
-
+  # Enumerating is a couple of pvesm calls, so it runs silently. Only the branch
+  # that actually has to ask the user gets a spinner, and only until the dialog
+  # replaces it.
   while read -r line; do
     tag=$(echo "$line" | awk '{print $1}')
     type=$(echo "$line" | awk '{printf "%-10s", $2}')
