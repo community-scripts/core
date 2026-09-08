@@ -11,6 +11,7 @@ _diagnose_deb_failure
 _docker_is_noninteractive
 _download_source_tarball
 _forge_asset_urls
+_forge_curl
 _forge_descriptor
 _forge_http_get
 _forge_release_json
