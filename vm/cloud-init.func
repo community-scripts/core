@@ -569,9 +569,6 @@ function configure_cloud_init_advanced() {
 # display_cloud_init_info - Show Cloud-Init summary after setup
 # ------------------------------------------------------------------------------
 function display_cloud_init_info() {
-  local vmid="$1"
-  local hostname="${2:-}"
-
   if [ -n "$CLOUDINIT_CRED_FILE" ] && [ -f "$CLOUDINIT_CRED_FILE" ]; then
     if [ -n "${INFO:-}" ]; then
       echo -e "\n${INFO}${BOLD:-}${GN:-} Cloud-Init Configuration:${CL:-}"
@@ -579,7 +576,6 @@ function display_cloud_init_info() {
       echo -e "${TAB:-  }${DGN:-}Password: ${BGN:-}${CLOUDINIT_PASSWORD}${CL:-}"
       echo -e "${TAB:-  }${DGN:-}Credentials: ${BL:-}${CLOUDINIT_CRED_FILE}${CL:-}"
       echo -e "${TAB:-  }${RD:-}⚠️  Delete credentials file after noting password!${CL:-}"
-      echo -e "${TAB:-  }${YW:-}💡 Configure in Proxmox UI: VM ${vmid} > Cloud-Init${CL:-}"
     else
       echo ""
       echo "[INFO] Cloud-Init Configuration:"
@@ -587,7 +583,6 @@ function display_cloud_init_info() {
       echo "  Password: ${CLOUDINIT_PASSWORD}"
       echo "  Credentials: ${CLOUDINIT_CRED_FILE}"
       echo "  ⚠️  Delete credentials file after noting password!"
-      echo "  Configure in Proxmox UI: VM ${vmid} > Cloud-Init"
     fi
   fi
 }
