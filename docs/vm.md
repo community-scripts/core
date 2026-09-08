@@ -8,6 +8,14 @@ Cloud-init configuration for VMs: SSH key discovery and selection
 (`configure_cloudinit_ssh_keys`), network configuration and validation, and
 `setup_cloud_init` / `configure_cloud_init_interactive`.
 
+The interactive half is split in two. `configure_cloud_init_interactive` runs
+before the Default/Advanced fork — it asks whether to use cloud-init at all
+(the answer picks the disk image) plus the username and password, and then
+defaults the rest to DHCP, `CLOUDINIT_DNS_SERVERS` and no SSH keys.
+`configure_cloud_init_advanced` and `configure_cloudinit_ssh_keys` ask for the
+rest and are reached only through `vm_prompt_cloud_init_advanced`, on the
+Advanced path.
+
 Loaded by [`pve/vm-core.func`](../pve/vm-core.func) only. The Incus VM path
 ([`incus/vm-core.func`](../incus/vm-core.func)) does not use it — Incus drives
 its own instance configuration through the `incus` CLI.

@@ -411,7 +411,14 @@ vm_confirm_new_vm() {
 
 vm_choose_settings_mode() {
   [[ "${VM_UNATTENDED:-0}" == "1" ]] && return 0
-  prompt_confirm "Use Default Settings? (No = Advanced)" "y" 60
+  local rc=0
+  prompt_confirm "Use Default Settings? (No = Advanced)" "y" 60 || rc=$?
+  if ((rc == 0)); then
+    VM_SETTINGS_MODE="default"
+  else
+    VM_SETTINGS_MODE="advanced"
+  fi
+  return $rc
 }
 
 vm_confirm_advanced_settings() {
@@ -631,23 +638,48 @@ vm_prompt_secureboot() {
   echo -e "${DEFAULT}${BOLD}${DGN}Secure Boot: ${BGN}${SECUREBOOT}${CL}"
 }
 
+# Whether to use Cloud-Init at all, and the account to log in with. Everything
+# else has a default worth keeping and is asked by vm_prompt_cloud_init_advanced
+# instead -- see the note there.
 vm_prompt_cloud_init() {
   local default_user="${1:-ubuntu}"
   if prompt_confirm "Enable Cloud-Init?" "n" 60; then
     USE_CLOUD_INIT="yes"
     CLOUDINIT_USER=$(prompt_input "Cloud-Init user" "$default_user" 60)
     CLOUDINIT_PASSWORD=$(prompt_input "Cloud-Init password (empty=SSH key only)" "" 60)
-    CLOUDINIT_SSHKEY=$(prompt_input "SSH public key (empty=none)" "" 60)
-    CLOUDINIT_NETWORK_MODE=$(prompt_select "Cloud-Init network mode" "1" 60 "dhcp" "static")
-    if [[ "$CLOUDINIT_NETWORK_MODE" == "static" ]]; then
-      CLOUDINIT_IP=$(prompt_input "Static IP/CIDR (e.g. 10.0.0.10/24)" "" 60)
-      CLOUDINIT_GW=$(prompt_input "Gateway IPv4" "" 60)
-      CLOUDINIT_DNS=$(prompt_input "DNS servers (space separated)" "1.1.1.1 8.8.8.8" 60)
-    fi
+    CLOUDINIT_SSHKEY="${CLOUDINIT_SSHKEY:-}"
+    CLOUDINIT_NETWORK_MODE="${CLOUDINIT_NETWORK_MODE:-dhcp}"
+    CLOUDINIT_DNS="${CLOUDINIT_DNS:-1.1.1.1 8.8.8.8}"
   else
     USE_CLOUD_INIT="no"
   fi
   echo -e "${CLOUD}${BOLD}${DGN}Cloud-Init: ${BGN}${USE_CLOUD_INIT}${CL}"
+
+  # Called from inside advanced_settings, the extra questions belong here, next
+  # to the one that opened the subject. A script that asks before the
+  # Default/Advanced fork calls vm_prompt_cloud_init_advanced itself afterwards.
+  [[ "${VM_SETTINGS_MODE:-}" == "advanced" ]] && vm_prompt_cloud_init_advanced
+
+  return 0
+}
+
+# SSH key, network mode and DNS: the Cloud-Init settings with defaults worth
+# keeping. Runs once per script, on the Advanced path only.
+vm_prompt_cloud_init_advanced() {
+  [[ "${VM_UNATTENDED:-0}" == "1" ]] && return 0
+  [[ "${USE_CLOUD_INIT:-no}" == "yes" ]] || return 0
+  [[ -n "${_CS_CI_ADVANCED_DONE:-}" ]] && return 0
+  _CS_CI_ADVANCED_DONE=1
+
+  CLOUDINIT_SSHKEY=$(prompt_input "SSH public key (empty=none)" "${CLOUDINIT_SSHKEY:-}" 60)
+  CLOUDINIT_NETWORK_MODE=$(prompt_select "Cloud-Init network mode" "1" 60 "dhcp" "static")
+  if [[ "$CLOUDINIT_NETWORK_MODE" == "static" ]]; then
+    CLOUDINIT_IP=$(prompt_input "Static IP/CIDR (e.g. 10.0.0.10/24)" "${CLOUDINIT_IP:-}" 60)
+    CLOUDINIT_GW=$(prompt_input "Gateway IPv4" "${CLOUDINIT_GW:-}" 60)
+    CLOUDINIT_DNS=$(prompt_input "DNS servers (space separated)" "${CLOUDINIT_DNS:-1.1.1.1 8.8.8.8}" 60)
+  fi
+
+  return 0
 }
 
 # LC_ALL=C because incus translates this output: a German host reports

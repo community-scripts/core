@@ -806,12 +806,19 @@ vm_choose_settings_mode() {
   local message="${1:-Use Default Settings?}"
   local height="${2:-10}"
   local width="${3:-58}"
+  local rc=0
 
   # 0 is Default, 1 is the Advanced button. vm_dialog turns anything else --
   # ESC, or a dialog that could not be drawn -- into a fatal error that says
   # why, instead of falling through to Advanced and letting the next prompt
   # "exit" the operator from a wizard they never asked for.
-  vm_dialog yesno "SETTINGS" "$message" --no-button Advanced "$height" "$width"
+  vm_dialog yesno "SETTINGS" "$message" --no-button Advanced "$height" "$width" || rc=$?
+  if ((rc == 0)); then
+    VM_SETTINGS_MODE="default"
+  else
+    VM_SETTINGS_MODE="advanced"
+  fi
+  return $rc
 }
 
 # ------------------------------------------------------------------------------
@@ -945,6 +952,11 @@ vm_start_script() {
   else
     header_info
     echo -e "${ADVANCED}${BOLD}${RD}Using Advanced Settings${CL}"
+    # Scripts that ask the Cloud-Init question before this fork -- it picks the
+    # disk image, so a default run has to answer it too -- never get to offer
+    # the rest of it. Offer it here. A no-op when Cloud-Init is off or when
+    # advanced_settings asks the question itself, which chains its own.
+    vm_prompt_cloud_init_advanced
     advanced_settings
   fi
 }
@@ -1085,9 +1097,26 @@ vm_prompt_cloud_init() {
   USE_CLOUD_INIT="${CLOUDINIT_ENABLE:-no}"
   echo -e "${CLOUD}${BOLD}${DGN}Cloud-Init: ${BGN}${USE_CLOUD_INIT}${CL}"
 
-  if [ "$USE_CLOUD_INIT" = "yes" ] && declare -f configure_cloudinit_ssh_keys >/dev/null 2>&1; then
-    configure_cloudinit_ssh_keys || true
-  fi
+  # Called from inside advanced_settings, the extra questions belong here, next
+  # to the one that opened the subject. Called before the Default/Advanced fork,
+  # vm_start_script picks them up afterwards instead.
+  [[ "${VM_SETTINGS_MODE:-}" == "advanced" ]] && vm_prompt_cloud_init_advanced
+
+  return 0
+}
+
+# Network mode, DNS and SSH keys: the Cloud-Init settings with defaults worth
+# keeping. Runs once per script, on the Advanced path only.
+vm_prompt_cloud_init_advanced() {
+  [[ "${VM_UNATTENDED:-0}" == "1" ]] && return 0
+  [[ "${USE_CLOUD_INIT:-no}" == "yes" ]] || return 0
+  [[ -n "${_CS_CI_ADVANCED_DONE:-}" ]] && return 0
+  _CS_CI_ADVANCED_DONE=1
+
+  declare -f configure_cloud_init_advanced >/dev/null 2>&1 &&
+    { configure_cloud_init_advanced || true; }
+  declare -f configure_cloudinit_ssh_keys >/dev/null 2>&1 &&
+    { configure_cloudinit_ssh_keys || true; }
 
   return 0
 }
