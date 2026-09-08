@@ -1515,9 +1515,11 @@ EOF
   fi
 
   cat >>"$PROFILE_FILE" <<EOF
-echo -e "${YW:-} OS: ${GN:-}${os_name} - Version: ${os_version}${CL:-}"
-echo -e "${YW:-} Hostname: ${GN:-}\$(hostname)${CL:-}"
-echo -e "${YW:-} IP Address: ${GN:-}\$(ip -4 route get 1 2>/dev/null | sed -n 's/.* src \\([0-9.]\\+\\).*/\\1/p' | head -1)${CL:-}"
+echo -e "${GATEWAY:-}${YW:-}Provided by: ${GN:-}community-scripts ORG ${YW:-}| GitHub: ${GN:-}https://github.com/community-scripts/ProxmoxVE${CL:-}"
+echo ""
+echo -e "${OS:-}${YW:-}OS: ${GN:-}${os_name} - Version: ${os_version}${CL:-}"
+echo -e "${HOSTNAME:-}${YW:-}Hostname: ${GN:-}\$(hostname)${CL:-}"
+echo -e "${INFO:-}${YW:-}IP Address: ${GN:-}\$(ip -4 route get 1 2>/dev/null | sed -n 's/.* src \\([0-9.]\\+\\).*/\\1/p' | head -1)${CL:-}"
 EOF
 
   if [[ -n "${CS_TESTING_URL:-}" ]]; then
@@ -1738,9 +1740,18 @@ EOF
       # rewrite it with --autologin, preserving the original inittab id.
       if [[ -f /etc/inittab ]]; then
         if command -v agetty &>/dev/null; then
-          sed -i -E 's#^([A-Za-z0-9]*:[0-9]*:respawn:).*[ag]etty.*tty1.*#\1/sbin/agetty --autologin root --noclear tty1 38400 linux#' /etc/inittab
-          sed -i -E 's#^([A-Za-z0-9]*:[0-9]*:respawn:).*[ag]etty.*console.*#\1/sbin/agetty --autologin root --noclear console 115200 linux#' /etc/inittab
-          telinit q &>/dev/null || kill -HUP 1 &>/dev/null || true
+          # Re-applied on every boot: a one-time edit does not survive one, which
+          # is why autologin worked on a fresh container and was gone afterwards.
+          mkdir -p /etc/local.d
+          cat >/etc/local.d/autologin.start <<'EOF'
+#!/bin/sh
+sed -i -E 's#^([A-Za-z0-9]*:[0-9]*:respawn:).*[ag]etty.*tty1.*#\1/sbin/agetty --autologin root --noclear tty1 38400 linux#' /etc/inittab
+sed -i -E 's#^([A-Za-z0-9]*:[0-9]*:respawn:).*[ag]etty.*console.*#\1/sbin/agetty --autologin root --noclear console 115200 linux#' /etc/inittab
+kill -HUP 1
+EOF
+          chmod +x /etc/local.d/autologin.start
+          $STD rc-update add local default 2>/dev/null || true
+          /etc/local.d/autologin.start &>/dev/null || true
           sleep 1
           pkill -f 'agetty.*tty1' &>/dev/null || true
           pkill -f 'agetty.*console' &>/dev/null || true
