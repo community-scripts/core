@@ -656,7 +656,7 @@ build_container() {
 description() {
   CTID="${CT_NAME:-$CTID}"
   IP=$(incus exec "${CT_NAME}" -- hostname -I 2>/dev/null | awk '{print $1}')
-  [[ -z "$IP" ]] && IP=$(incus list "${CT_NAME}" -c4 -f csv 2>/dev/null | head -1 | cut -d' ' -f1)
+  [[ -z "$IP" ]] && IP=$(incus_instance_field "${CT_NAME}" 4 | tr -d '"' | cut -d' ' -f1)
   export IP
   incus config set "${CT_NAME}" user.description "${APP} LXC (community-scripts)" 2>/dev/null || true
   incus config set "${CT_NAME}" user.community-scripts "1" 2>/dev/null || true

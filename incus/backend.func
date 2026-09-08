@@ -69,7 +69,7 @@ _incus_restart_ct() {
   # A failed restart leaves incus disagreeing with itself - the same recovery
   # logged "already stopped" from stop and "already running" from start - so
   # the exit code proves nothing here. Ask what the state actually is.
-  [[ "$(LC_ALL=C incus list "${CT_NAME}" -c s --format csv 2>/dev/null | head -1)" == "RUNNING" ]]
+  [[ "$(incus_instance_field "${CT_NAME}" s)" == "RUNNING" ]]
 }
 
 _incus_resolve_launch_image() {
@@ -860,7 +860,7 @@ incus_wait_for_network() {
   for ((i = 1; i <= max_wait; i++)); do
     ip_in_lxc=$(incus_ct_exec ip -4 addr show dev eth0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1)
     [[ -z "$ip_in_lxc" ]] && ip_in_lxc=$(incus_ct_exec ip -6 addr show dev eth0 scope global 2>/dev/null | awk '/inet6 / {print $2}' | cut -d/ -f1 | head -n1)
-    [[ -z "$ip_in_lxc" ]] && ip_in_lxc=$(incus list "${CT_NAME}" -c4 -f csv 2>/dev/null | head -1 | awk '{print $1}' | cut -d/ -f1)
+    [[ -z "$ip_in_lxc" ]] && ip_in_lxc=$(incus_instance_field "${CT_NAME}" 4 | tr -d '"' | awk '{print $1}' | cut -d/ -f1)
     [[ -n "$ip_in_lxc" && "$ip_in_lxc" != "-" ]] && break
     sleep 1
   done

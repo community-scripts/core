@@ -807,6 +807,27 @@ incus_container_exists() {
 }
 
 # ------------------------------------------------------------------------------
+# incus_instance_field()
+#
+# - Prints one `incus list` column for exactly the instance called <name>
+# - Usage: incus_instance_field <name> <column-shorthand>   (4 = IPv4, s = state)
+#
+# `incus list <name>` is not an exact lookup. The manpage describes the
+# positional filter as "a single keyword like web which will list any instance
+# with a name starting by web", and the client turns it into the regex
+# name=(^web$|^web.*) - so a lookup for "haos" also returns "haos-test" and a
+# plain head -1 could answer with the wrong instance. Anchoring the regex the
+# manpage documents narrows it to one instance server-side; the name column is
+# compared here as well because that regex is matched case-insensitively.
+# ------------------------------------------------------------------------------
+incus_instance_field() {
+  local name="${1:?name}" column="${2:?column}" pattern
+  printf -v pattern '^%s$' "$name"
+  LC_ALL=C incus list "$pattern" --format csv -c "n${column}" 2>/dev/null |
+    awk -F, -v want="$name" '$1 == want { print substr($0, length(want) + 2); exit }'
+}
+
+# ------------------------------------------------------------------------------
 # incus_container_running()
 #
 # - Checks if an Incus container is running

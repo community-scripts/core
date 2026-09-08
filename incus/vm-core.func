@@ -399,12 +399,18 @@ if _vm_use_whiptail; then
 fi
 
 
+# Each VM script calls these two from its own start(), not through
+# vm_start_script, so the VM_UNATTENDED branch there never runs for them and an
+# unattended run sat on a whiptail prompt with nobody to answer it. Same
+# short-circuit as pve/vm-core.func's vm_confirm_new_vm, for the same reason.
 vm_confirm_new_vm() {
   local message="${2:-Create new VM?}"
+  [[ "${VM_UNATTENDED:-0}" == "1" ]] && return 0
   prompt_confirm "$message" "y" 60
 }
 
 vm_choose_settings_mode() {
+  [[ "${VM_UNATTENDED:-0}" == "1" ]] && return 0
   prompt_confirm "Use Default Settings? (No = Advanced)" "y" 60
 }
 
@@ -1565,10 +1571,25 @@ vm_wait_for_agent() {
   return 1
 }
 
+# An address handed out on a managed Incus bridge comes from the DHCP server
+# Incus runs on that bridge. It is a real address, but while ipv4.nat is on it
+# only exists behind the host, so "reachable" is true from the host and from
+# nowhere else on the LAN. Say which of the two it is instead of leaving the
+# operator to find out by trying.
+_vm_note_nat_network() {
+  local net="${BRG:-}" cfg
+  [[ -n "$net" ]] || return 0
+  cfg=$(LC_ALL=C incus network show "$net" 2>/dev/null) || return 0
+  grep -qE '^managed:[[:space:]]*true$' <<<"$cfg" || return 0
+  grep -qE '^[[:space:]]+ipv4\.nat:[[:space:]]*"?true"?$' <<<"$cfg" || return 0
+  msg_custom "💡" "${YW}" "${net} is a NAT network - that address reaches the VM from this host, not from the LAN. Put the VM on a bridged profile for that."
+}
+
 vm_get_ip() {
   local name="${1:?name}" timeout="${2:-90}" waited=0 ip=""
   while ((waited < timeout)); do
-    ip=$(incus list "$name" --format csv -c 4 2>/dev/null | tr ' ' '\n' | grep -oE '^[0-9.]+' | head -1)
+    ip=$(incus_instance_field "$name" 4 | tr -d '"' | tr ' ' '\n' |
+      grep -oE '^[0-9]+(\.[0-9]+){3}$' | head -1) || ip=""
     [[ -n "$ip" ]] && {
       echo "$ip"
       return 0
@@ -1902,7 +1923,8 @@ incus_vm_create() {
   local ip
   if ip=$(vm_get_ip "$vm_name"); then
     VM_IP="$ip"
-    msg_ok "VM ${vm_name} is reachable at ${BL}${ip}${CL}"
+    msg_ok "VM ${vm_name} has the address ${BL}${ip}${CL}"
+    _vm_note_nat_network
   else
     msg_warn "No IPv4 address yet - check 'incus list ${vm_name}'"
   fi
