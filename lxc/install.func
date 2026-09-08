@@ -62,8 +62,9 @@ _cs_curl_retry() {
     if curl -fsSL --connect-timeout 10 --max-time "$timeout" "$url" 2>"$err"; then
       rm -f "$err"
       return 0
+    else
+      rc=$?
     fi
-    rc=$?
     ((attempt == max_attempts)) && break
     sleep "$backoff"
     backoff=$((backoff * 2))
