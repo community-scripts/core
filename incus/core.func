@@ -837,7 +837,10 @@ incus_container_running() {
   local name="$1"
   local status
   status=$(incus info "$name" 2>/dev/null | awk '/^Status:/ {print $2}') || true
-  [[ "$status" == "Running" ]]
+  # incus info upper-cases the status (cmd/incus/info.go prints
+  # strings.ToUpper(inst.Status)) where incus list leaves it title-case, so
+  # comparing against either spelling verbatim is wrong for one of them.
+  [[ "${status^^}" == "RUNNING" ]]
 }
 
 # ------------------------------------------------------------------------------
