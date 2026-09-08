@@ -764,6 +764,8 @@ arch_check() {
 }
 
 ssh_check() {
+  # Purely advisory, and there is nobody to advise on an unattended run.
+  [[ "${VM_UNATTENDED:-0}" == "1" ]] && return 0
   if command -v pveversion >/dev/null 2>&1 && [ -n "${SSH_CLIENT:-}" ]; then
     if whiptail --backtitle "Proxmox VE Helper Scripts" --defaultno --title "SSH DETECTED" --yesno "It's suggested to use the Proxmox shell instead of SSH, since SSH can create issues while gathering variables. Would you like to proceed with using SSH?" 10 62; then
       :
@@ -792,6 +794,10 @@ vm_confirm_new_vm() {
   local message="$2"
   local height="${3:-10}"
   local width="${4:-58}"
+
+  # Unattended runs have nobody to answer this, and vm_start_script already
+  # skips the wizard for them -- without this the run hangs on the prompt.
+  [[ "${VM_UNATTENDED:-0}" == "1" ]] && return 0
 
   vm_dialog yesno "$title" "$message" "$height" "$width"
 }
@@ -912,7 +918,17 @@ vm_apply_env_overrides() {
   return 0
 }
 
+vm_preflight() {
+  [[ -n "${_CS_VM_PREFLIGHT_DONE:-}" ]] && return 0
+  _CS_VM_PREFLIGHT_DONE=1
+  check_root
+  [[ "${var_arm64:-no}" == "yes" ]] || arch_check
+  pve_check
+  ssh_check
+}
+
 vm_start_script() {
+  vm_preflight
   if [[ "${VM_UNATTENDED:-0}" == "1" ]]; then
     METHOD="unattended"
     default_settings
@@ -1049,6 +1065,15 @@ vm_prompt_cloud_init() {
   local default_user="${1:-root}"
 
   USE_CLOUD_INIT="no"
+
+  # Interactive by nature; VM_CLOUD_INIT decides it for unattended runs.
+  if [[ "${VM_UNATTENDED:-0}" == "1" ]]; then
+    USE_CLOUD_INIT="${VM_CLOUD_INIT:-no}"
+    echo -e "${CLOUD}${BOLD}${DGN}Cloud-Init: ${BGN}${USE_CLOUD_INIT}${CL}"
+    [[ "$USE_CLOUD_INIT" == "yes" ]] && load_cloud_init_functions
+    return 0
+  fi
+
   load_cloud_init_functions
 
   if ! declare -f configure_cloud_init_interactive >/dev/null 2>&1; then
@@ -1718,6 +1743,10 @@ vm_select_storage() {
   # A named pool is already an answer, and an unattended run has nobody to ask.
   if [[ -n "${STORAGE:-}" ]]; then
     if pvesm status -storage "$STORAGE" &>/dev/null; then
+      # The interactive path ends with this too. Skipping it here left
+      # DISK_IMPORT_FORMAT and friends unset for every preselected storage.
+      STORAGE_TYPE=$(pvesm status -storage "$STORAGE" | awk 'NR>1 {print $2}')
+      vm_apply_storage_layout "$STORAGE_TYPE"
       msg_ok "Using ${CL}${BL}$STORAGE${CL} ${GN}for Storage Location."
       return 0
     fi
@@ -1782,6 +1811,21 @@ vm_define_disk_references() {
     printf -v "DISK${i}" '%s' "$disk_name"
     printf -v "DISK${i}_REF" '%s' "${STORAGE}:${DISK_REF:-}${disk_name}"
   done
+}
+
+vm_resize_disk() {
+  local disk="${1:-scsi0}"
+  local size="${2:-${DISK_SIZE:-${DEFAULT_DISK_SIZE:-}}}"
+  [[ -z "$size" ]] && return 0
+
+  msg_info "Resizing ${disk} to ${size}"
+  # qm refuses to shrink, and an image already expanded to the requested size
+  # is not an error. Warning beats aborting the whole build under errexit.
+  if qm resize "$VMID" "$disk" "$size" >/dev/null 2>&1; then
+    msg_ok "Resized ${disk} to ${size}"
+  else
+    msg_warn "Could not resize ${disk} to ${size} - it is likely already that size or larger"
+  fi
 }
 
 check_hostname_conflict() {
