@@ -160,6 +160,182 @@ sanitize_vm_hostname() {
 }
 
 # ==============================================================================
+# SECTION 0: PARITY WITH pve/vm-core.func
+# ==============================================================================
+# Everything below carries the same name and argument order as its counterpart
+# in pve/vm-core.func, so a VM script calls the same thing on either host. Where
+# Incus has no equivalent at all the function still exists, says so once through
+# msg_warn, and leaves the variables it owns defined -- a script that
+# interpolates ${MACHINE} or ${VMID} must not die on an unset variable just
+# because the concept is Proxmox-only.
+
+load_api_functions() {
+  declare -f post_to_api >/dev/null 2>&1 && return 0
+  _incus_vm_source "api/api.func"
+}
+
+# vm/cloud-init.func builds a Proxmox cloudinit drive with qm and pvesm, so it
+# cannot run here. Incus is provisioned through the cloud-init.* instance keys
+# instead, which vm_provision sets. Returning non-zero is what keeps a
+# Proxmox-shaped script on its "helpers unavailable" branch rather than letting
+# it call setup_cloud_init and die.
+_VM_CLOUD_INIT_WARNED=0
+load_cloud_init_functions() {
+  if ((_VM_CLOUD_INIT_WARNED == 0)); then
+    _VM_CLOUD_INIT_WARNED=1
+    msg_warn "The Proxmox Cloud-Init helpers do not run on Incus - vm_provision applies cloud-init through instance config instead"
+  fi
+  return 1
+}
+
+# Incus addresses instances by name and has no numeric IDs. Scripts still put
+# ${VMID} in log lines, telemetry and disk names, so hand back the lowest number
+# from 100 up that is not already an instance name instead of an empty string.
+get_valid_nextid() {
+  local taken id=100
+  taken=$(incus list -f csv,noheader -c n 2>/dev/null || true)
+  while grep -qx "$id" <<<"$taken"; do id=$((id + 1)); done
+  printf '%s' "$id"
+}
+
+vm_preflight() {
+  [[ -n "${_CS_VM_PREFLIGHT_DONE:-}" ]] && return 0
+  _CS_VM_PREFLIGHT_DONE=1
+  check_root
+  [[ "${var_arm64:-no}" == "yes" ]] || arch_check
+  pve_check
+  ssh_check
+  # Not in the Proxmox counterpart because a PVE host is a hypervisor by
+  # definition. An Incus host without /dev/kvm only runs containers, and finding
+  # that out after the wizard wastes the operator's time.
+  kvm_check
+}
+
+VM_DIALOG_RESULT=""
+
+vm_dialog() {
+  local box="${1:?box type}" title="${2:-}"
+  shift 2
+  local rc=0 out="" cols rows
+
+  declare -f stop_spinner >/dev/null 2>&1 && stop_spinner
+  VM_DIALOG_RESULT=""
+
+  case "$box" in
+  yesno | msgbox | gauge)
+    whiptail --backtitle "${VM_BACKTITLE:-Community Scripts :: Incus VM}" --title "$title" "--$box" "$@" || rc=$?
+    ;;
+  *)
+    out=$(whiptail --backtitle "${VM_BACKTITLE:-Community Scripts :: Incus VM}" --title "$title" "--$box" "$@" 3>&1 1>&2 2>&3) || rc=$?
+    VM_DIALOG_RESULT="$out"
+    ;;
+  esac
+
+  ((rc <= 1)) && return $rc
+
+  cols=$(tput cols 2>/dev/null || echo "?")
+  rows=$(tput lines 2>/dev/null || echo "?")
+  msg_error "The '${title}' dialog could not be shown (whiptail exit ${rc})"
+  [[ -n "$out" ]] && msg_error "whiptail: ${out}"
+  msg_error "Terminal is ${cols}x${rows}; the wizard needs at least 60x18."
+  exit 1
+}
+
+vm_check_dialog_env() {
+  local cols rows
+  local need_rows=18 need_cols=60
+
+  if ! command -v whiptail >/dev/null 2>&1; then
+    msg_error "whiptail is not installed, so the settings wizard cannot run"
+    msg_error "Install it with your package manager (Debian/Ubuntu: apt-get install -y whiptail)"
+    exit 1
+  fi
+
+  if [[ ! -t 2 ]] && [[ ! -r /dev/tty ]]; then
+    msg_error "No terminal is available for the settings wizard"
+    msg_error "Run the script directly rather than piping it into a shell:"
+    msg_error "  bash -c \"\$(curl -fsSL <script-url>)\""
+    exit 1
+  fi
+
+  cols=$(tput cols 2>/dev/null || echo 0)
+  rows=$(tput lines 2>/dev/null || echo 0)
+  if ((cols > 0 && rows > 0)) && ((cols < need_cols || rows < need_rows)); then
+    msg_error "The terminal is ${cols}x${rows}; the wizard needs at least ${need_cols}x${need_rows}"
+    msg_error "Enlarge the window, or use a smaller console font, and run it again."
+    exit 1
+  fi
+}
+
+# Same variable names as the Proxmox side, different shape for two of them:
+# Incus takes VLAN and MTU as bare values on the nic device, where Proxmox needs
+# the ",tag=" / ",mtu=" fragments its -net0 string is concatenated from.
+vm_apply_env_overrides() {
+  [[ -n "${VM_VMID:-}" ]] && VMID="$VM_VMID"
+  [[ -n "${VM_DISK_SIZE:-}" ]] && DISK_SIZE="$VM_DISK_SIZE"
+  [[ -n "${VM_DISK_CACHE:-}" ]] && DISK_CACHE="$VM_DISK_CACHE"
+  [[ -n "${VM_HOSTNAME:-}" ]] && HN="$VM_HOSTNAME"
+  [[ -n "${VM_CORES:-}" ]] && CORE_COUNT="$VM_CORES"
+  [[ -n "${VM_RAM:-}" ]] && RAM_SIZE="$VM_RAM"
+  [[ -n "${VM_BRIDGE:-}" ]] && BRG="$VM_BRIDGE"
+  [[ -n "${VM_MAC:-}" ]] && MAC="$VM_MAC"
+  [[ -n "${VM_VLAN:-}" ]] && VLAN="$VM_VLAN"
+  [[ -n "${VM_MTU:-}" ]] && MTU="$VM_MTU"
+  [[ -n "${VM_START:-}" ]] && START_VM="$VM_START"
+  [[ -n "${VM_STORAGE:-}" ]] && STORAGE="$VM_STORAGE"
+  [[ -n "${VM_MACHINE:-}" ]] && vm_apply_machine_type "$VM_MACHINE"
+  [[ -n "${VM_CPU:-}" ]] && vm_apply_cpu_model "$VM_CPU"
+  return 0
+}
+
+vm_echo_default_settings() {
+  local cpu_label="${CPU_MODEL:-default}"
+  local cache_label="${DISK_CACHE:-none}"
+  local machine_label
+  machine_label="$(vm_machine_type_label "${MACHINE_TYPE:-q35}")"
+
+  echo -e "${CONTAINERID}${BOLD}${DGN}Virtual Machine ID: ${BGN}${VMID:-n/a}${CL}"
+  echo -e "${CONTAINERTYPE}${BOLD}${DGN}Machine Type: ${BGN}${machine_label}${CL}"
+  echo -e "${DISKSIZE}${BOLD}${DGN}Disk Size: ${BGN}${DISK_SIZE}${CL}"
+  echo -e "${DISKSIZE}${BOLD}${DGN}Disk Cache: ${BGN}${cache_label}${CL}"
+  echo -e "${HOSTNAME}${BOLD}${DGN}Hostname: ${BGN}${HN}${CL}"
+  echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}${cpu_label}${CL}"
+  echo -e "${CPUCORE}${BOLD}${DGN}CPU Cores: ${BGN}${CORE_COUNT}${CL}"
+  echo -e "${RAMSIZE}${BOLD}${DGN}RAM Size: ${BGN}${RAM_SIZE} MiB${CL}"
+  echo -e "${BRIDGE}${BOLD}${DGN}Network: ${BGN}${BRG}${CL}"
+  echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}${MAC:-auto}${CL}"
+  echo -e "${VLANTAG}${BOLD}${DGN}VLAN: ${BGN}${VLAN:-Default}${CL}"
+  echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}${MTU:-Default}${CL}"
+  echo -e "${GATEWAY}${BOLD}${DGN}Start VM when completed: ${BGN}${START_VM}${CL}"
+  echo -e "${SEARCH}${BOLD}${DGN}Verbose Mode: ${BGN}${VERBOSE:-no}${CL}"
+  echo -e "${CREATING}${BOLD}${DGN}Creating a ${APP:-${NSAPP:-VM}} VM using the above default settings${CL}"
+}
+
+# default_settings and advanced_settings are resolved when this runs, not when
+# it is defined, so each script still supplies its own.
+vm_start_script() {
+  vm_preflight
+  if [[ "${VM_UNATTENDED:-0}" == "1" ]]; then
+    METHOD="unattended"
+    default_settings
+    vm_apply_env_overrides
+    echo -e "${INFO}${BOLD}${DGN}Unattended: script defaults with environment overrides${CL}"
+    return 0
+  fi
+
+  vm_check_dialog_env
+  if vm_choose_settings_mode "$@"; then
+    header_info
+    echo -e "${DEFAULT}${BOLD}${BL}Using Default Settings${CL}"
+    default_settings
+  else
+    header_info
+    echo -e "${ADVANCED}${BOLD}${RD}Using Advanced Settings${CL}"
+    advanced_settings
+  fi
+}
+
+# ==============================================================================
 # SECTION 1: PROMPTS
 # ==============================================================================
 # Containers on Incus get whiptail through ui/build-ui.func; the VM path
@@ -234,6 +410,123 @@ vm_choose_settings_mode() {
 
 vm_confirm_advanced_settings() {
   prompt_confirm "${1:-Ready to create VM?}" "y" 120
+}
+
+# ── Proxmox-only hardware knobs ───────────────────────────────────────────────
+# Incus exposes no QEMU machine type and no CPU model: the instance option list
+# has limits.cpu for the count and a topology, and nothing for either of these.
+# They are recorded so the summary and any ${MACHINE} / ${CPU_TYPE} a script
+# interpolates stay defined, and each says once that it did nothing.
+
+_VM_MACHINE_WARNED=0
+vm_apply_machine_type() {
+  MACHINE_TYPE="${1:-q35}"
+  MACHINE=""
+  FORMAT=""
+  if ((_VM_MACHINE_WARNED == 0)); then
+    _VM_MACHINE_WARNED=1
+    msg_warn "Incus has no machine-type setting - '${MACHINE_TYPE}' is recorded but not applied"
+  fi
+}
+
+vm_machine_type_label() {
+  case "${1:-q35}" in
+  q35) echo "Q35 (Modern)" ;;
+  *) echo "i440fx" ;;
+  esac
+}
+
+vm_prompt_machine_type() {
+  vm_apply_machine_type "${1:-q35}"
+  echo -e "${CONTAINERTYPE}${BOLD}${DGN}Machine Type: ${BGN}$(vm_machine_type_label "$MACHINE_TYPE")${CL}"
+}
+
+_VM_CPU_MODEL_WARNED=0
+vm_apply_cpu_model() {
+  CPU_MODEL="${1:-host}"
+  CPU_TYPE=""
+  if ((_VM_CPU_MODEL_WARNED == 0)); then
+    _VM_CPU_MODEL_WARNED=1
+    msg_warn "Incus has no CPU-model setting - '${CPU_MODEL}' is recorded but not applied"
+  fi
+}
+
+vm_prompt_cpu_model() {
+  vm_apply_cpu_model "${1:-host}"
+  echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}${CPU_MODEL}${CL}"
+}
+
+_VM_VMID_WARNED=0
+vm_prompt_vmid() {
+  VMID="${1:-$(get_valid_nextid)}"
+  if ((_VM_VMID_WARNED == 0)); then
+    _VM_VMID_WARNED=1
+    msg_warn "Incus instances are addressed by name - ${VMID} is used for logging and telemetry only"
+  fi
+  echo -e "${CONTAINERID}${BOLD}${DGN}Virtual Machine ID: ${BGN}${VMID}${CL}"
+}
+
+# The one Proxmox firmware choice that does map: security.csm selects the
+# firmware for UEFI-incompatible guests, which is what SeaBIOS is picked for.
+# It cannot coexist with Secure Boot, so incus_vm_create turns that off with it.
+vm_prompt_bios() {
+  local default_bios="${1:-ovmf}"
+  if prompt_confirm "Use legacy BIOS (CSM) instead of UEFI?" "$([[ "$default_bios" == "seabios" ]] && echo y || echo n)" 60; then
+    CSM="yes"
+    BIOS_UEFI="no"
+    BIOS_TYPE="seabios"
+  else
+    CSM="no"
+    BIOS_UEFI="yes"
+    BIOS_TYPE="ovmf"
+  fi
+  echo -e "${OS}${BOLD}${DGN}Firmware: ${BGN}$([[ "$CSM" == yes ]] && echo "CSM (legacy BIOS)" || echo "UEFI")${CL}"
+}
+
+# The Proxmox SCSI controller and the Incus disk bus are the same decision under
+# different names, so this is a rename onto vm_prompt_disk_bus rather than a
+# no-op. SCSIHW is kept for a script that prints it.
+vm_prompt_scsihw() {
+  vm_prompt_disk_bus
+  SCSIHW="$DISK_BUS"
+}
+
+_VM_DISPLAY_WARNED=0
+vm_prompt_display() {
+  VGA_TYPE="${1:-serial0}"
+  if ((_VM_DISPLAY_WARNED == 0)); then
+    _VM_DISPLAY_WARNED=1
+    msg_warn "Incus has no display-adapter setting - use 'incus console' for the text console and 'incus console --type vga' for the graphical one"
+  fi
+}
+
+_VM_NIC_MODEL_WARNED=0
+vm_prompt_nic_model() {
+  NIC_MODEL="${1:-virtio}"
+  if ((_VM_NIC_MODEL_WARNED == 0)); then
+    _VM_NIC_MODEL_WARNED=1
+    msg_warn "Incus VMs always get a virtio-net adapter - '${NIC_MODEL}' is recorded but not applied"
+  fi
+}
+
+_VM_BALLOON_WARNED=0
+vm_prompt_balloon() {
+  BALLOON=0
+  if ((_VM_BALLOON_WARNED == 0)); then
+    _VM_BALLOON_WARNED=1
+    msg_warn "Incus has no memory-ballooning setting for VMs - limits.memory is a fixed allocation"
+  fi
+}
+
+vm_prompt_verbose() {
+  local default_verbose="${1:-${VERBOSE:-no}}"
+  if prompt_confirm "Show the full output of every command?" "$([[ "$default_verbose" == "yes" ]] && echo y || echo n)" 60; then
+    VERBOSE="yes"
+  else
+    VERBOSE="no"
+  fi
+  set_std_mode
+  echo -e "${SEARCH}${BOLD}${DGN}Verbose Mode: ${BGN}${VERBOSE}${CL}"
 }
 
 vm_prompt_hostname() {
@@ -351,21 +644,129 @@ vm_prompt_cloud_init() {
   echo -e "${CLOUD}${BOLD}${DGN}Cloud-Init: ${BGN}${USE_CLOUD_INIT}${CL}"
 }
 
+# LC_ALL=C because incus translates this output: a German host reports
+# "Gesamter Speicherplatz", which no English pattern matches. Same reason
+# incus_storage_pool_free_gb in incus/backend.func does it. Prints nothing and
+# returns non-zero when the figure cannot be read, so the caller shows the pool
+# without a number rather than a wrong one.
+_vm_pool_free_gib() {
+  local pool="${1:?pool}" free src
+  # Only a bare integer is accepted. --bytes is what makes it one; an Incus that
+  # ignored the flag would report "9.32GiB", and stripping the non-digits out of
+  # that would turn 9.32 GiB into "932" -- a wrong number, which is worse than
+  # none.
+  free=$(LC_ALL=C incus storage info --bytes "$pool" 2>/dev/null |
+    awk -F': *' '/space free:/ {print $2; exit}' | tr -d '[:space:]')
+  [[ "$free" =~ ^[0-9]+$ ]] || free=""
+  if [[ -z "$free" ]]; then
+    src="$(LC_ALL=C incus storage get "$pool" source 2>/dev/null || true)"
+    [[ -n "$src" && -d "$src" ]] &&
+      free="$(df -PB1 "$src" 2>/dev/null | awk 'NR==2 {print $4}')"
+  fi
+  [[ "$free" =~ ^[0-9]+$ ]] && ((free > 0)) || return 1
+  echo $((free / 1024 / 1024 / 1024))
+}
+
+_vm_pool_driver() {
+  LC_ALL=C incus storage list -f csv,noheader -c nD 2>/dev/null |
+    awk -F, -v p="${1:?pool}" '$1 == p {print $2; exit}'
+}
+
+# Same contract as the Proxmox counterpart: a preselected STORAGE is accepted
+# without asking, a single pool is taken silently, and STORAGE_TYPE plus the
+# disk-layout variables are set on every path -- skipping that on the
+# preselected path is what once left DISK_IMPORT_FORMAT unset.
 vm_select_storage() {
-  local pools first selected
-  pools=$(incus_get_storage_pools | sed '/^\s*$/d')
-  [[ -z "$pools" ]] && fatal "No Incus storage pools available"
-  first=$(head -1 <<<"$pools")
-  selected="$first"
-  while IFS= read -r p; do
-    [[ -z "$p" ]] && continue
-    if prompt_confirm "Use storage pool '$p'?" "$([[ "$p" == "$first" ]] && echo y || echo n)" 15; then
-      selected="$p"
-      break
+  local hostname="${1:-${HN:-vm}}"
+  local pools count pool free label
+  local -a menu=()
+
+  if [[ -n "${STORAGE:-}" ]]; then
+    if incus storage info "$STORAGE" &>/dev/null; then
+      STORAGE_TYPE="$(_vm_pool_driver "$STORAGE")"
+      vm_apply_storage_layout "$STORAGE_TYPE"
+      msg_ok "Using ${CL}${BL}${STORAGE}${CL} ${GN}for Storage Location."
+      return 0
     fi
-  done <<<"$pools"
-  STORAGE="$selected"
-  echo -e "${DISKSIZE}${BOLD}${DGN}Storage: ${BGN}${STORAGE}${CL}"
+    msg_error "Storage pool '${STORAGE}' does not exist on this host"
+    exit 119
+  fi
+
+  pools=$(incus_get_storage_pools | sed '/^[[:space:]]*$/d')
+  if [[ -z "$pools" ]]; then
+    msg_error "No Incus storage pool found. Create one with: incus storage create default dir"
+    exit 119
+  fi
+
+  count=$(wc -l <<<"$pools")
+  if ((count == 1)); then
+    STORAGE="$pools"
+  else
+    while IFS= read -r pool; do
+      [[ -z "$pool" ]] && continue
+      free="$(_vm_pool_free_gib "$pool" 2>/dev/null || echo "")"
+      if [[ -n "$free" ]]; then
+        label="$pool ($(_vm_pool_driver "$pool"), ~${free} GiB free)"
+      else
+        label="$pool ($(_vm_pool_driver "$pool"), free space unknown)"
+      fi
+      menu+=("$label")
+    done <<<"$pools"
+
+    label="$(prompt_select "Which storage pool would you like to use for ${hostname}?" "1" 60 "${menu[@]}")"
+    STORAGE="${label%% (*}"
+  fi
+
+  [[ -z "${STORAGE:-}" ]] && exit_script "No storage pool selected"
+
+  msg_ok "Using ${CL}${BL}${STORAGE}${CL} ${GN}for Storage Location."
+  STORAGE_TYPE="$(_vm_pool_driver "$STORAGE")"
+  vm_apply_storage_layout "$STORAGE_TYPE"
+}
+
+# The Proxmox counterpart picks a disk format from the storage type because qm
+# importdisk has to be told one. Incus decides the on-pool layout itself and
+# never exposes it, so the only thing left to decide is the format the image
+# has to be in on the way in -- and that is always qcow2, because that is the
+# magic incus image import looks for to classify an image as a virtual machine
+# rather than a container root filesystem.
+vm_apply_storage_layout() {
+  STORAGE_DRIVER="${1:-${STORAGE_TYPE:-}}"
+  DISK_IMPORT_FORMAT="qcow2"
+  DISK_EXT=""
+  DISK_REF=""
+  FORMAT=""
+  THIN=""
+}
+
+# Names only, exactly like the Proxmox counterpart -- nothing is allocated here.
+# The names are usable as Incus custom volumes: DISK0 is the root device, which
+# Incus creates with the instance, and DISK1 upwards are what a script would
+# pass to `incus storage volume create <pool> <name> --type=block`.
+vm_define_disk_references() {
+  local disk_count="${1:-2}"
+  local i disk_name
+
+  for ((i = 0; i < disk_count; i++)); do
+    disk_name="${HN:-vm}-disk-${i}"
+    printf -v "DISK${i}" '%s' "$disk_name"
+    printf -v "DISK${i}_REF" '%s' "${STORAGE:-default}:${disk_name}"
+  done
+}
+
+# Incus takes a size with an explicit unit; a bare "8G" is rejected because G is
+# not one of its suffixes (kB/MB/GB or KiB/MiB/GiB). "8", "8G" and "8GiB" all
+# mean GiB to the callers, so normalise all three.
+_vm_size_to_incus() {
+  local size="${1:-}"
+  size="${size// /}"
+  [[ -z "$size" ]] && return 1
+  case "$size" in
+  *[iI]B | *B) printf '%s' "$size" ;;
+  *[gG]) printf '%sGiB' "${size%[gG]}" ;;
+  *[0-9]) printf '%sGiB' "$size" ;;
+  *) return 1 ;;
+  esac
 }
 
 
@@ -695,6 +1096,395 @@ check_hostname_conflict() {
 }
 
 # ==============================================================================
+# SECTION 2b: DISK IMAGES
+# ==============================================================================
+# Downloading, verifying and preparing a vendor cloud image has nothing to do
+# with the hypervisor: it is curl, sha*sum and libguestfs on either host. These
+# are therefore the same code as in pve/vm-core.func rather than a translation,
+# with two deliberate differences, both marked below: where the cache goes, and
+# which guest agent is worth installing.
+
+vm_image_checksum() {
+  local url="${1:?url}" tool sums style want
+
+  case "$url" in
+  *cloud.debian.org/*) tool=sha512sum; sums="${url%/*}/SHA512SUMS"; style=sums ;;
+  *cloud-images.ubuntu.com/*) tool=sha256sum; sums="${url%/*}/SHA256SUMS"; style=sums ;;
+  *download.truenas.com/*) tool=sha256sum; sums="${url}.sha256"; style=bare ;;
+  *) return 1 ;;
+  esac
+
+  command -v "$tool" >/dev/null 2>&1 || return 1
+
+  if [[ "$style" == bare ]]; then
+    want=$(curl -fsSL --max-time 30 "$sums" 2>/dev/null | tr -d '[:space:]')
+  else
+    want=$(curl -fsSL --max-time 30 "$sums" 2>/dev/null |
+      awk -v f="$(basename "$url")" '$NF == f || $NF == "*" f {print $1; exit}')
+  fi
+
+  [[ "$want" =~ ^([0-9a-fA-F]{64}|[0-9a-fA-F]{128})$ ]] || return 1
+  printf '%s %s' "$tool" "$want"
+}
+
+_vm_image_ok() {
+  local file="$1" exact="$2" min="$3" sha_tool="$4" sha_want="$5" xz="$6" got
+
+  [[ -s "$file" ]] || return 1
+  got=$(stat -c%s "$file" 2>/dev/null || echo 0)
+  [[ -n "$exact" ]] && ((got != exact)) && return 1
+  ((min > 0 && got < min)) && return 1
+
+  if [[ -n "$sha_want" ]] && command -v "$sha_tool" >/dev/null 2>&1; then
+    [[ "$("$sha_tool" "$file" | awk '{print $1}')" == "$sha_want" ]] || return 1
+  fi
+
+  if [[ "$xz" == yes ]] && command -v xz >/dev/null 2>&1; then
+    xz -t "$file" &>/dev/null || return 1
+  fi
+
+  return 0
+}
+
+# Not /var/lib/vz/template/cache: that path is Proxmox's and an Incus host is
+# routinely driven by a user who cannot write anywhere under /var either.
+# community_scripts_dir is the engine's answer to exactly that question.
+vm_image_cache_path() {
+  local url="${1:?url}" dir name
+  if [[ -n "${VM_IMAGE_CACHE_DIR:-}" ]]; then
+    dir="$VM_IMAGE_CACHE_DIR"
+  elif declare -f community_scripts_dir >/dev/null 2>&1; then
+    dir="$(community_scripts_dir)/vm-images"
+  else
+    dir="${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/community-scripts/vm-images"
+  fi
+  name="${url%%\?*}"
+  mkdir -p "$dir" 2>/dev/null || true
+  printf '%s/%s' "$dir" "${name##*/}"
+}
+
+# vm_fetch_image <url> <target> [--cache] [--verify-xz] [--min-bytes N]
+#                               [--exact-bytes N] [--sha256 H] [--sha1 H]
+#                               [--advisory-sha1 H] [--needs-bytes N]
+vm_fetch_image() {
+  local url="${1:?url}" target="${2:?target}"
+  shift 2
+  local min_bytes=0 exact_bytes="" sha256="" sha1="" advisory_sha1="" needs_bytes=""
+  local cache=no xz=no
+  local got avail_mib need_mib have part sha_tool="" sha_want="" discovered
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --cache) cache=yes; shift ;;
+    --verify-xz) xz=yes; shift ;;
+    --min-bytes) min_bytes="$2"; shift 2 ;;
+    --exact-bytes) exact_bytes="$2"; shift 2 ;;
+    --sha256) sha256="$2"; shift 2 ;;
+    --sha1) sha1="$2"; shift 2 ;;
+    --advisory-sha1) advisory_sha1="$2"; shift 2 ;;
+    --needs-bytes) needs_bytes="$2"; shift 2 ;;
+    *) msg_error "vm_fetch_image: unknown option $1"; return 2 ;;
+    esac
+  done
+
+  if [[ -n "$sha256" ]]; then
+    sha_tool=sha256sum sha_want="$sha256"
+  elif [[ -n "$sha1" ]]; then
+    sha_tool=sha1sum sha_want="$sha1"
+  elif discovered=$(vm_image_checksum "$url"); then
+    read -r sha_tool sha_want <<<"$discovered"
+  fi
+
+  if [[ "$cache" == yes && -e "$target" ]]; then
+    if _vm_image_ok "$target" "$exact_bytes" "$min_bytes" "$sha_tool" "$sha_want" "$xz"; then
+      msg_ok "Using cached ${CL}${BL}$(basename "$target")${CL}"
+      return 0
+    fi
+    msg_warn "Cached $(basename "$target") did not verify; downloading it again"
+    rm -f "$target"
+  fi
+
+  mkdir -p "$(dirname "$target")"
+
+  need_mib=$(((${needs_bytes:-0} + ${exact_bytes:-0}) / 1048576 + 1024))
+  if ((need_mib > 1024)); then
+    avail_mib=$(df -Pm "$(dirname "$target")" | awk 'NR==2 {print $4}')
+    if ((avail_mib < need_mib)); then
+      msg_error "Need ${need_mib} MiB free in $(dirname "$target"), there is ${avail_mib} MiB"
+      msg_error "Free some space, or set VM_IMAGE_CACHE_DIR to a filesystem that has room."
+      return 1
+    fi
+  fi
+
+  part="${target}.part"
+  rm -f "$part"
+  if ! curl -f#SL --retry 3 --retry-delay 5 -o "$part" "$url"; then
+    rm -f "$part"
+    msg_error "Failed to download $(basename "$url")"
+    return 1
+  fi
+
+  got=$(stat -c%s "$part" 2>/dev/null || echo 0)
+  if [[ -n "$exact_bytes" ]] && ((got != exact_bytes)); then
+    rm -f "$part"
+    msg_error "Downloaded ${got} bytes, expected ${exact_bytes}"
+    return 1
+  fi
+  if ((min_bytes > 0 && got < min_bytes)); then
+    rm -f "$part"
+    msg_error "Downloaded ${got} bytes, which is too small to be the image"
+    msg_error "A mirror most likely served an error page with status 200."
+    return 1
+  fi
+
+  if [[ -n "$sha_want" ]] && command -v "$sha_tool" >/dev/null 2>&1; then
+    have=$("$sha_tool" "$part" | awk '{print $1}')
+    if [[ "$have" != "$sha_want" ]]; then
+      rm -f "$part"
+      msg_error "${sha_tool%sum} mismatch: got ${have}, expected ${sha_want}"
+      return 1
+    fi
+  fi
+
+  if [[ "$xz" == yes ]] && command -v xz >/dev/null 2>&1; then
+    if ! xz -t "$part" &>/dev/null; then
+      rm -f "$part"
+      msg_error "$(basename "$url") is not a valid xz archive"
+      return 1
+    fi
+  fi
+
+  if [[ -n "$advisory_sha1" ]] && command -v sha1sum >/dev/null 2>&1; then
+    have=$(sha1sum "$part" | awk '{print $1}')
+    if [[ "$have" == "$advisory_sha1" ]]; then
+      msg_ok "Verified sha1 ${CL}${BL}${advisory_sha1}${CL}"
+    else
+      msg_warn "The vendor index lists sha1 ${advisory_sha1}, this file is ${have}"
+      msg_warn "Size is correct, so this is the index lagging a respin -- continuing"
+    fi
+  fi
+
+  mv -f "$part" "$target"
+  return 0
+}
+
+# apt-get is not a given here: the Proxmox counterpart can assume Debian,
+# an Incus host can be anything.
+vm_ensure_virt_customize() {
+  command -v virt-customize >/dev/null 2>&1 && return 0
+
+  local -a cmd=()
+  if command -v apt-get >/dev/null 2>&1; then
+    $STD apt-get update || true
+    cmd=(apt-get install -y libguestfs-tools)
+  elif command -v dnf >/dev/null 2>&1; then
+    cmd=(dnf install -y libguestfs-tools-c)
+  elif command -v zypper >/dev/null 2>&1; then
+    cmd=(zypper --non-interactive install guestfs-tools)
+  elif command -v pacman >/dev/null 2>&1; then
+    cmd=(pacman -S --noconfirm libguestfs)
+  elif command -v apk >/dev/null 2>&1; then
+    cmd=(apk add --no-cache libguestfs)
+  else
+    msg_warn "No known package manager - install libguestfs (virt-customize) by hand to prepare images"
+    return 1
+  fi
+
+  msg_info "Installing libguestfs (virt-customize)"
+  if ! $STD "${cmd[@]}"; then
+    msg_warn "Could not install libguestfs"
+    return 1
+  fi
+  msg_ok "Installed libguestfs"
+}
+
+_vm_root_fs() {
+  virt-filesystems --filesystems --long --csv -a "$1" 2>/dev/null |
+    awk -F, '
+      NR == 1 { for (i = 1; i <= NF; i++) h[$i] = i; next }
+      !h["Name"] || !h["Size"] || !h["VFS"] { exit 1 }
+      $h["VFS"] ~ /^(ext[234]|xfs|btrfs)$/ { print $h["Size"] + 0, $h["Name"] }
+    ' | sort -rn | head -1
+}
+
+vm_expand_image() {
+  local src="${1:?image}" size="${2:?size}" part out before after
+
+  if ! command -v virt-resize >/dev/null 2>&1; then
+    msg_warn "virt-resize is not available; the guest filesystem keeps its original size"
+    return 1
+  fi
+
+  read -r before part < <(_vm_root_fs "$src")
+
+  if [[ ! "${part:-}" =~ ^/dev/[a-z]+[0-9]+$ ]]; then
+    msg_warn "Could not identify the root partition to expand; leaving the image as it is"
+    return 1
+  fi
+
+  out="${src%.*}-expanded.${src##*.}"
+  if ! qemu-img create -f qcow2 "$out" "$size" >/dev/null 2>&1; then
+    msg_warn "Could not allocate the expanded image; leaving the original"
+    return 1
+  fi
+  if ! virt-resize --expand "$part" "$src" "$out" >/dev/null 2>&1; then
+    rm -f "$out"
+    msg_warn "virt-resize failed on ${part}; the guest filesystem keeps its original size"
+    return 1
+  fi
+
+  read -r after _ < <(_vm_root_fs "$out")
+  if [[ -z "${after:-}" ]] || ((after <= before)); then
+    rm -f "$out"
+    msg_warn "Root filesystem did not grow; keeping the original image"
+    return 1
+  fi
+
+  mv -f "$out" "$src"
+  msg_ok "Expanded ${CL}${BL}${part}${CL} ${GN}to ${size}"
+  return 0
+}
+
+vm_prepare_cloud_image() {
+  local image="${1:?image}" hostname="${2:-${HN:-vm}}"
+
+  if ! vm_ensure_virt_customize; then
+    msg_warn "Importing the image unmodified"
+    return 1
+  fi
+
+  msg_info "Preparing the image"
+  virt-customize -q -a "$image" --hostname "$hostname" >/dev/null 2>&1 || true
+  # A cloned machine-id gives every VM from this image the same DHCP lease.
+  virt-customize -q -a "$image" \
+    --run-command 'truncate -s 0 /etc/machine-id; rm -f /var/lib/dbus/machine-id' \
+    >/dev/null 2>&1 || true
+  virt-customize -q -a "$image" --run-command \
+    'sed -i "s/^#*PermitRootLogin.*/PermitRootLogin yes/;s/^#*PasswordAuthentication.*/PasswordAuthentication yes/" /etc/ssh/sshd_config' \
+    >/dev/null 2>&1 || true
+
+  vm_enable_consoles "$image"
+  vm_install_guest_agent "$image" || true
+  msg_ok "Prepared the image"
+  return 0
+}
+
+# `incus console` attaches to the first serial port, so a cloud image with no
+# getty on ttyS0 gives a console that shows nothing. Same fix as on Proxmox.
+vm_enable_consoles() {
+  local image="${1:?image}"
+  command -v virt-customize >/dev/null 2>&1 || return 0
+
+  virt-customize -q -a "$image" \
+    --run-command 'systemctl enable getty@tty1.service serial-getty@ttyS0.service' \
+    >/dev/null 2>&1 || true
+
+  virt-customize -q -a "$image" --run-command \
+    'if [ -f /etc/default/grub ]; then
+       sed -i "s/console=ttyS0[^ \"]*/console=tty1 &/" /etc/default/grub
+       grep -q "console=tty1" /etc/default/grub || sed -i "s/\(GRUB_CMDLINE_LINUX_DEFAULT=\"\)/\1console=tty1 /" /etc/default/grub
+       command -v update-grub >/dev/null 2>&1 && update-grub
+     fi' >/dev/null 2>&1 || true
+  return 0
+}
+
+# Deliberately not the Proxmox behaviour. Incus does not talk to
+# qemu-guest-agent: `incus exec`, the IP in `incus list` and a clean shutdown
+# all come from incus-agent over vsock, which the guest gets from the
+# agent:config drive incus_vm_create attaches, not from a package.
+_VM_GUEST_AGENT_WARNED=0
+vm_install_guest_agent() {
+  if ((_VM_GUEST_AGENT_WARNED == 0)); then
+    _VM_GUEST_AGENT_WARNED=1
+    msg_warn "Skipping qemu-guest-agent: Incus uses its own agent - set AGENT_DISK=yes to attach agent:config and run install.sh in the guest"
+  fi
+  return 0
+}
+
+# Pure string formatting on the Proxmox side too, so this is the same code.
+# Nothing on the Incus path consumes it; a disk device's boot.priority does.
+vm_boot_order() {
+  local disk="${1:?disk device}" kind="${2:-image}"
+  case "$kind" in
+  installer) echo "${disk};ide2" ;;
+  *) echo "$disk" ;;
+  esac
+}
+
+# Turns a downloaded disk image into an Incus VM image and prints its alias.
+#
+# incus image import takes a split image as "<metadata tarball> <rootfs>", and
+# classifies the result as a virtual machine when the second file carries the
+# qcow2 magic -- so a raw .img has to be converted first or it would be imported
+# as a container root filesystem. The metadata tarball is built here rather than
+# with `incus image generate-metadata`, which prompts for every field and cannot
+# be driven from a script. architecture and creation_date are the two mandatory
+# fields; the rest is what `incus image list` shows.
+_vm_import_local_image() {
+  local file="${1:?image file}" alias="${2:-}"
+  local work meta arch magic scratch="" converted="$file"
+
+  # The alias is this function's return value and travels on stdout, which
+  # msg_info and msg_ok also write to -- hence the >&2 on every progress line
+  # below. Without it the caller's $( ) captures the spinner text as well.
+  [[ -f "$file" ]] || { msg_error "No such image file: ${file}"; return 1; }
+  command -v tar >/dev/null 2>&1 || { msg_error "tar is required to import a disk image into Incus"; return 1; }
+
+  alias="${alias:-cs-$(basename "${file%.*}")}"
+  arch="$(uname -m)"
+
+  magic=$(head -c 3 "$file" 2>/dev/null | tr -d '\0')
+  if [[ "$magic" != "QFI" ]]; then
+    command -v qemu-img >/dev/null 2>&1 || {
+      msg_error "${file} is not qcow2 and qemu-img is not installed to convert it"
+      return 1
+    }
+    msg_info "Converting $(basename "$file") to qcow2 for import" >&2
+    # Into a scratch file rather than beside the source: the source is often the
+    # download cache, and a converted copy left there would be picked up as a
+    # cache hit on the next run.
+    scratch="$(mktemp --suffix=.qcow2)" || return 1
+    if ! qemu-img convert -O qcow2 "$file" "$scratch" >/dev/null 2>&1; then
+      rm -f "$scratch"
+      msg_error "qemu-img could not convert $(basename "$file") to qcow2"
+      return 1
+    fi
+    converted="$scratch"
+    msg_ok "Converted $(basename "$file") to qcow2" >&2
+  fi
+
+  work="$(mktemp -d)" || { rm -f "$scratch"; return 1; }
+  cat >"${work}/metadata.yaml" <<EOF
+architecture: ${arch}
+creation_date: $(date +%s)
+properties:
+  description: ${APP:-${NSAPP:-Community Scripts}} (imported by community-scripts)
+  os: ${var_os:-linux}
+  release: ${var_version:-unknown}
+EOF
+
+  meta="${work}/incus.tar.xz"
+  if ! tar -C "$work" -cJf "$meta" metadata.yaml 2>/dev/null; then
+    rm -rf "$work"
+    rm -f "$scratch"
+    msg_error "Could not build the image metadata tarball (is xz installed?)"
+    return 1
+  fi
+
+  msg_info "Importing $(basename "$converted") as Incus image ${alias}" >&2
+  if ! incus image import "$meta" "$converted" --alias "$alias" --reuse >/dev/null 2>&1; then
+    rm -rf "$work"
+    rm -f "$scratch"
+    msg_error "incus image import failed for ${converted}"
+    return 1
+  fi
+  rm -rf "$work"
+  rm -f "$scratch"
+  msg_ok "Imported Incus image ${CL}${BL}${alias}${CL}" >&2
+  printf '%s' "$alias"
+}
+
+# ==============================================================================
 # SECTION 3: CREATION
 # ==============================================================================
 
@@ -715,10 +1505,47 @@ cleanup_vmid() {
 
 cleanup() { cleanup_vmid; }
 
+# The Proxmox counterpart writes an HTML card, because the Proxmox web UI
+# renders the notes field as HTML. `incus info` prints the description verbatim,
+# so the same markup would just be noise -- plain text and the same two links.
 set_description() {
-  [[ -z "${_INCUS_VM_NAME:-}" ]] && return 0
-  incus config set "$_INCUS_VM_NAME" \
-    user.description "${VM_DESCRIPTION:-${APP:-VM} - community-scripts.org}" >/dev/null 2>&1 || true
+  local target="${_INCUS_VM_NAME:-${HN:-}}" slug
+  [[ -z "$target" ]] && return 0
+  incus info "$target" >/dev/null 2>&1 || return 0
+
+  slug="${SCRIPT_SLUG:-${NSAPP:-${APP:-}}}"
+  slug="$(echo "$slug" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
+
+  DESCRIPTION="${VM_DESCRIPTION:-${APP:-VM} - community-scripts.org}"
+  [[ -n "$slug" ]] && DESCRIPTION+=$'\n'"https://community-scripts.org/scripts/${slug}"
+
+  incus config set "$target" description "$DESCRIPTION" >/dev/null 2>&1 || true
+  # Kept alongside the real field: earlier builds only ever set this one, so
+  # anything reading it back still finds it.
+  incus config set "$target" user.description "$DESCRIPTION" >/dev/null 2>&1 || true
+}
+
+# The Proxmox counterpart names a bus device (scsi0, sata0, virtio0). An Incus
+# VM has exactly one resizable disk, the root device, so every one of those
+# names lands on the same place. Warn-and-continue rather than abort, for the
+# same reason as there: an image already at the requested size is not a failure.
+vm_resize_disk() {
+  local disk="${1:-scsi0}"
+  local size="${2:-${DISK_SIZE:-${DEFAULT_DISK_SIZE:-}}}"
+  local target="${_INCUS_VM_NAME:-${HN:-}}" incus_size
+  [[ -z "$size" || -z "$target" ]] && return 0
+
+  if ! incus_size="$(_vm_size_to_incus "$size")"; then
+    msg_warn "Could not read '${size}' as a disk size - leaving the root disk as it is"
+    return 0
+  fi
+
+  msg_info "Resizing the root disk to ${incus_size}"
+  if incus config device set "$target" root size="$incus_size" >/dev/null 2>&1; then
+    msg_ok "Resized the root disk to ${incus_size}"
+  else
+    msg_warn "Could not resize the root disk to ${incus_size} (requested as ${disk}) - it is likely already that size or larger"
+  fi
 }
 
 # Wait for the incus-agent inside the guest. Until it answers, incus exec fails
@@ -802,11 +1629,24 @@ incus_vm_create() {
   local image="${1:-images:debian/13}"
   local vm_name="${2:-$HN}"
   local disk_size="${3:-${DISK_SIZE:-10G}}"
-  local disk_gib="${disk_size%G}"
+  local incus_size
+
+  if ! incus_size="$(_vm_size_to_incus "$disk_size")"; then
+    msg_warn "Could not read '${disk_size}' as a disk size - using 10GiB"
+    incus_size="10GiB"
+  fi
 
   [[ -z "$vm_name" ]] && { fatal "No VM name given"; return 1; }
   kvm_check
-  image="$(_vm_resolve_cloud_image "$image")"
+
+  # A path instead of a remote alias means a downloaded vendor cloud image, the
+  # way every Proxmox VM script obtains one. Import it, and skip the
+  # /cloud-variant lookup, which only means anything on the images: remote.
+  if [[ -f "$image" ]]; then
+    image="$(_vm_import_local_image "$image")" || return 1
+  else
+    image="$(_vm_resolve_cloud_image "$image")"
+  fi
   vm_check_image "$image"
   vm_name="$(check_hostname_conflict "$vm_name")"
   HN="$vm_name"
@@ -838,7 +1678,7 @@ incus_vm_create() {
   args+=(--storage "${STORAGE:-default}")
 
   # Root disk: size plus the optional bus and cache overrides.
-  local root_dev="root,size=${disk_gib}GiB"
+  local root_dev="root,size=${incus_size}"
   [[ -n "${DISK_BUS:-}" && "${DISK_BUS}" != "virtio-blk" ]] && root_dev+=",io.bus=${DISK_BUS}"
   [[ -n "${DISK_CACHE:-}" && "${DISK_CACHE}" != "none" ]] && root_dev+=",io.cache=${DISK_CACHE}"
   args+=(--device "$root_dev")
@@ -886,7 +1726,7 @@ incus_vm_create() {
     done
   fi
 
-  msg_info "Creating VM ${vm_name} (${CORE_COUNT:-2} vCPU, ${RAM_SIZE:-2048} MiB, ${disk_gib} GiB)"
+  msg_info "Creating VM ${vm_name} (${CORE_COUNT:-2} vCPU, ${RAM_SIZE:-2048} MiB, ${incus_size})"
   if ! incus init "$image" "$vm_name" "${args[@]}" >/dev/null; then
     fatal "Failed to create VM ${vm_name}"
     return 1
@@ -1086,8 +1926,3 @@ post_update_to_api() {
   declare -f post_update_to_api_real >/dev/null 2>&1 && post_update_to_api_real "$@"
   return 0
 }
-
-# Kept for parity with the Proxmox entry point; Incus has no numeric IDs and no
-# separate storage layout step, so these are intentionally empty.
-vm_define_disk_references() { :; }
-vm_apply_storage_layout() { :; }
