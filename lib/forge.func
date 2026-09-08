@@ -147,11 +147,11 @@ github_api_call() {
   local attempt=1
   while ((attempt <= max_retries)); do
     local http_code
-    http_code=$(_forge_curl "$output_file" \
+    http_code=$(curl -sSL -w "%{http_code}" -o "$output_file" \
       -H "Accept: application/vnd.github+json" \
       -H "X-GitHub-Api-Version: 2022-11-28" \
       "${header_args[@]}" \
-      "$url")
+      "$url" 2>/dev/null) || true
 
     case "$http_code" in
     200)
@@ -232,9 +232,9 @@ codeberg_api_call() {
 
   for attempt in $(seq 1 $max_retries); do
     local http_code
-    http_code=$(_forge_curl "$output_file" \
+    http_code=$(curl -sSL -w "%{http_code}" -o "$output_file" \
       -H "Accept: application/json" \
-      "$url")
+      "$url" 2>/dev/null) || true
 
     case "$http_code" in
     200)
@@ -733,6 +733,7 @@ get_latest_gl_tag() {
 
   local gitlab_url="${GITLAB_URL:-https://gitlab.com}"
   local api_base="${gitlab_url}/api/v4/projects/${repo_encoded}/repository/tags"
+  local api_timeout="--connect-timeout 10 --max-time 60"
 
   local header=()
   [[ -n "${GITLAB_TOKEN:-}" ]] && header=(-H "PRIVATE-TOKEN: $GITLAB_TOKEN")
@@ -752,8 +753,8 @@ get_latest_gl_tag() {
   temp_file=$(mktemp) || return 1
 
   local http_code
-  http_code=$(_forge_curl "$temp_file" \
-    "${header[@]}" "${api_base}${search_param}")
+  http_code=$(curl $api_timeout -sSL -w "%{http_code}" -o "$temp_file" \
+    "${header[@]}" "${api_base}${search_param}" 2>/dev/null) || true
 
   if [[ "$http_code" != "200" ]]; then
     rm -f "$temp_file"
@@ -1164,25 +1165,6 @@ _forge_stable_filter() {
 }
 
 # ------------------------------------------------------------------------------
-# _forge_curl()
-#
-# - GET into a file and echo the status, or 000 when the transfer did not finish
-# - curl prints %{http_code} as soon as the response headers arrive, so a body
-#   cut short by --max-time still reports 200 while the file holds a fragment.
-#   Every call site discarded curl's exit status, so that fragment reached jq:
-#   "Unfinished string at EOF" on a release list that parses on a retry
-# ------------------------------------------------------------------------------
-_forge_curl() {
-  local out="${1:?outfile}" code status
-  shift
-  code="$(curl -sSL --connect-timeout 10 --max-time 60 -w "%{http_code}" \
-    -o "$out" "$@" 2>/dev/null)"
-  status=$?
-  ((status != 0)) && code="000"
-  printf '%s' "${code:-000}"
-}
-
-# ------------------------------------------------------------------------------
 # _forge_http_get()
 #
 # - GET into a file, mapping the status onto the codes callers already see:
@@ -1200,22 +1182,13 @@ _forge_http_get() {
   auth="$(_forge_descriptor "$forge" auth)"
   [[ -n "$auth" ]] && headers+=(-H "$auth")
 
-  # A dropped connection and a truncated body both land on 000, and both are
-  # worth another go: the same URL succeeds when retried by hand.
-  local attempt=1 delay=2
-  while :; do
-    code="$(_forge_curl "$out" "${headers[@]}" "$url")"
-    [[ "$code" != "000" ]] && break
-    ((attempt >= 3)) && break
-    sleep "$delay"
-    delay=$((delay * 2))
-    ((attempt++))
-  done
+  code="$(curl -sSL --max-time 20 -w "%{http_code}" -o "$out" \
+    "${headers[@]}" "$url" 2>/dev/null)" || true
 
   case "$code" in
   200) return 0 ;;
   000)
-    msg_error "${forge}: connection failed or response cut short after ${attempt} attempts"
+    msg_error "Connection failed while querying ${forge}"
     return 7
     ;;
   401)
@@ -1478,11 +1451,6 @@ check_for_release() {
       return 22
     fi
     releases_json="$(<"$json_file")"
-  fi
-
-  if ! jq -e . >/dev/null 2>&1 <<<"$releases_json"; then
-    msg_error "Malformed response from ${forge} for ${app}"
-    return 22
   fi
 
   # GH_INCLUDE_PRERELEASE was honoured by the deploy path and ignored here, so
