@@ -63,18 +63,19 @@ load_incus_vm_functions() {
 load_functions() { load_incus_vm_functions; }
 
 header_info() {
-  # get_header derives the slug from APP and APP_TYPE itself.
+  # get_header derives the slug from APP and APP_TYPE itself. Same contract as
+  # the Proxmox path: no banner means draw nothing. The text fallback this used
+  # to print ("Incus VM :: Home Assistant OS") read like the banner had been
+  # replaced on purpose, so a header that simply failed to fetch looked like a
+  # deliberate design rather than the missing artwork it is.
   local header_content=""
   APP_TYPE="${APP_TYPE:-vm}"
   if declare -f get_header >/dev/null 2>&1; then
     header_content=$(get_header 2>/dev/null || true)
   fi
   _cs_clear
-  if [[ -n "$header_content" ]]; then
-    echo "$header_content"
-  else
-    echo -e "${INCUS_HEADER:-Incus VM :: ${APP:-Virtual Machine}}"
-  fi
+  [[ -n "$header_content" ]] && echo "$header_content"
+  return 0
 }
 
 check_root() { incus_root_check; }
