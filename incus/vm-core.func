@@ -318,6 +318,9 @@ vm_start_script() {
   vm_preflight
   if [[ "${VM_UNATTENDED:-0}" == "1" ]]; then
     METHOD="unattended"
+    # This branch returns before vm_choose_settings_mode, where the bridge is
+    # otherwise resolved, and default_settings below reads var_bridge.
+    vm_resolve_bridge
     default_settings
     vm_apply_env_overrides
     echo -e "${INFO}${BOLD}${DGN}Unattended: script defaults with environment overrides${CL}"
@@ -410,14 +413,86 @@ vm_confirm_new_vm() {
   prompt_confirm "$message" "y" 60
 }
 
+# ------------------------------------------------------------------------------
+# vm_resolve_bridge()
+#
+# - Fills var_bridge when the script did not pin one, so BRG="$var_bridge" in
+#   every default_settings() gets a network that exists on THIS host
+# - --quiet: pick, but do not ask and do not announce (the advanced wizard is
+#   about to ask for the network anyway)
+#
+# The VM scripts used to default to incusbr0 outright. That is the network
+# Incus creates at `incus admin init` with ipv4.nat on, so a VM landed behind
+# the host's NAT and was unreachable from the LAN - on hosts whose containers
+# were sitting on a real LAN bridge two lines further down in `incus network
+# list`. Ranking is incus_network_candidates', which the container path already
+# uses; this only decides what to do with the result.
+# ------------------------------------------------------------------------------
+_VM_BRIDGE_RESOLVED=0
+vm_resolve_bridge() {
+  local quiet=0 n
+  [[ "${1:-}" == "--quiet" ]] && quiet=1
+  ((_VM_BRIDGE_RESOLVED)) && return 0
+  _VM_BRIDGE_RESOLVED=1
+
+  # Both overrides stay absolute: an operator who names a network gets it, even
+  # if it is the NATed one.
+  if [[ -n "${VM_BRIDGE:-}" ]]; then
+    var_bridge="$VM_BRIDGE"
+    return 0
+  fi
+  [[ -n "${var_bridge:-}" ]] && return 0
+
+  local -a cands=()
+  while IFS= read -r n; do
+    [[ -n "$n" ]] && cands+=("$n")
+  done < <(incus_network_candidates 2>/dev/null || true)
+
+  case "${#cands[@]}" in
+  0)
+    # Nothing usable found. incusbr0 is still the name Incus would have
+    # created, so it is the least surprising thing to fail on.
+    var_bridge="incusbr0"
+    msg_warn "No bridge to attach the VM to was found - falling back to incusbr0"
+    ;;
+  1)
+    # Nothing to choose between; the settings summary prints it either way.
+    var_bridge="${cands[0]}"
+    ;;
+  *)
+    if [[ "${VM_UNATTENDED:-0}" == "1" ]] || is_unattended || [[ ! -r /dev/tty ]]; then
+      # msg_info would leave a spinner running over whatever prompts next.
+      var_bridge="${cands[0]}"
+      msg_custom "🌉" "${YW}" "Network: ${var_bridge} - picked over ${cands[*]:1}"
+    elif ((quiet)); then
+      var_bridge="${cands[0]}"
+    else
+      # More than one plausible answer and someone is watching: ask rather than
+      # decide. Getting this wrong costs a VM that nothing on the LAN can reach.
+      var_bridge=$(prompt_select "Which network should the VM use? (best guess first; a NATed one is reachable from this host only)" 1 60 "${cands[@]}")
+      [[ -n "${var_bridge:-}" ]] || var_bridge="${cands[0]}"
+    fi
+    ;;
+  esac
+  return 0
+}
+
 vm_choose_settings_mode() {
-  [[ "${VM_UNATTENDED:-0}" == "1" ]] && return 0
+  # Every VM script calls this once, before either settings path reads
+  # var_bridge - the one place the network default can be resolved for all of
+  # them instead of eighteen copies of the same line.
+  if [[ "${VM_UNATTENDED:-0}" == "1" ]]; then
+    vm_resolve_bridge
+    return 0
+  fi
   local rc=0
   prompt_confirm "Use Default Settings? (No = Advanced)" "y" 60 || rc=$?
   if ((rc == 0)); then
     VM_SETTINGS_MODE="default"
+    vm_resolve_bridge
   else
     VM_SETTINGS_MODE="advanced"
+    vm_resolve_bridge --quiet
   fi
   return $rc
 }
@@ -575,10 +650,13 @@ vm_prompt_disk_size() {
 }
 
 vm_prompt_bridge() {
-  local default_bridge="${1:-incusbr0}" networks
-  networks=$(incus_get_networks 2>/dev/null | sed '/^\s*$/d')
-  if [[ -n "$networks" ]] && ! grep -qx "$default_bridge" <<<"$networks"; then
-    default_bridge=$(head -1 <<<"$networks")
+  local default_bridge="${1:-${var_bridge:-}}" networks
+  networks=$(incus_get_networks 2>/dev/null | sed '/^[[:space:]]*$/d')
+  # head -1 of `incus network list` is whatever sorts first, which on a host
+  # with a physical NIC in the list is the one network a guest must not be
+  # given. Ask the ranking instead.
+  if [[ -z "$default_bridge" ]] || { [[ -n "$networks" ]] && ! grep -qx "$default_bridge" <<<"$networks"; }; then
+    default_bridge=$(incus_pick_default_network)
   fi
   BRG=$(prompt_input "Set Network" "$default_bridge" 60)
   [[ -z "${BRG:-}" ]] && BRG="$default_bridge"
@@ -1728,7 +1806,11 @@ incus_vm_create() {
     args+=(--config "snapshots.expiry=${SNAPSHOT_EXPIRY:-7d}")
   }
 
-  args+=(--network "${BRG:-incusbr0}")
+  # Last line of defence for a caller that never went through the wizard: a
+  # literal incusbr0 here is the NATed bridge on a host that may well have a
+  # LAN one, which is the whole reason vm_resolve_bridge exists.
+  [[ -n "${BRG:-}" ]] || BRG="$(incus_pick_default_network)"
+  args+=(--network "${BRG}")
   args+=(--storage "${STORAGE:-default}")
 
   # Root disk: size plus the optional bus and cache overrides.
