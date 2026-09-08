@@ -297,7 +297,8 @@ migrate_update_entrypoint() {
   # migrated container keeps pulling from the same repo it always did.
   if [[ -f /usr/bin/update ]]; then
     local legacy
-    legacy="$(grep -oE 'https?://[^"]+/ct/[^"]+\.sh' /usr/bin/update 2>/dev/null | head -1)"
+    # No match is normal; grep exiting 1 must not trip the ERR trap.
+    legacy="$(grep -oE 'https?://[^"]+/ct/[^"]+\.sh' /usr/bin/update 2>/dev/null | head -1 || true)"
     if [[ -n "$legacy" ]]; then
       base="${legacy%/ct/*}"
       name="$(basename "${legacy%.sh}")"
