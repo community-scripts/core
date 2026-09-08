@@ -1728,6 +1728,9 @@ vm_apply_storage_layout() {
     DISK_EXT=""
     DISK_REF=""
     DISK_IMPORT_FORMAT="raw"
+    # Block storage keeps whatever the script chose, but a script that never set
+    # it would otherwise hit an unbound variable in its qm set line.
+    THIN="${THIN-discard=on,ssd=1,}"
     ;;
   esac
 }
