@@ -211,6 +211,25 @@ ensure_profile_loaded() {
   export _PROFILE_LOADED=1
 }
 
+# git.community-scripts.org was a Gitea mirror of the same repositories and has
+# been shut down. Anything still pointing at it is rewritten onto GitHub; every
+# other base, including a fork, is left exactly as it is. Kept in step with the
+# copy in misc/update.sh, which cannot source this file.
+# ------------------------------------------------------------------------------
+_cs_live_base() {
+  local u="${1%/}"
+  case "$u" in
+  *//git.community-scripts.org/*)
+    u="${u#*//git.community-scripts.org/}"
+    u="${u/\/raw\/branch\//\/}"
+    u="${u/\/raw\/tag\//\/}"
+    u="${u/\/raw\/commit\//\/}"
+    printf 'https://raw.githubusercontent.com/%s' "$u"
+    ;;
+  *) printf '%s' "$u" ;;
+  esac
+}
+
 # ------------------------------------------------------------------------------
 # write_update_entrypoint()
 #
@@ -235,7 +254,7 @@ write_update_entrypoint() {
   [[ -z "$name" ]] && return 0
 
   local base core_url website
-  base="${base_override:-${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}}"
+  base="$(_cs_live_base "${base_override:-${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}}")"
   core_url="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
   website="${COMMUNITY_SCRIPTS_WEBSITE_URL:-https://community-scripts.org}"
 
@@ -284,8 +303,13 @@ EOF
 # rather than guessing from the current environment.
 # ------------------------------------------------------------------------------
 migrate_update_entrypoint() {
-  # Already on the helper-based bootstrap? Nothing to do.
-  if [[ -f /usr/bin/update ]] && grep -q "misc/update.sh" /usr/bin/update 2>/dev/null; then
+  # On the helper bootstrap AND pointing somewhere that still serves scripts?
+  # Nothing to do. A dead base counts as stale even in the new format: the Gitea
+  # mirror is gone, and misc/update.sh only works around it per run. Regenerating
+  # bakes the live URL in so the workaround is needed exactly once.
+  if [[ -f /usr/bin/update ]] &&
+    grep -q "misc/update.sh" /usr/bin/update 2>/dev/null &&
+    ! grep -q "git.community-scripts.org" /usr/bin/update 2>/dev/null; then
     return 0
   fi
 
@@ -302,8 +326,15 @@ migrate_update_entrypoint() {
     if [[ -n "$legacy" ]]; then
       base="${legacy%/ct/*}"
       name="$(basename "${legacy%.sh}")"
+    else
+      # Helper format: the script name is an export, and the url in the fallback
+      # line is literal ${...}, so the pattern above cannot find it.
+      name="$(sed -n 's/^export UPDATE_SCRIPT_NAME="\(.*\)"$//p' /usr/bin/update 2>/dev/null | head -1 || true)"
     fi
   fi
+
+  # Whatever it was built from, a dead mirror cannot be preserved.
+  base="$(_cs_live_base "$base")"
 
   # Fall back to the update environment when the legacy line could not be parsed.
   [[ -z "${name:-}" ]] && name="${NSAPP:-${app:-${var_os:-}}}"

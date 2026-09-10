@@ -30,7 +30,27 @@ set -uo pipefail
 
 SLUG="${SCRIPT_SLUG:-}"
 NAME="${UPDATE_SCRIPT_NAME:-$SLUG}"
-BASE="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+# git.community-scripts.org was a Gitea mirror and is gone. Containers built
+# against it kept that base in /usr/bin/update, so every update 404s on a script
+# that is really there. Map it back onto GitHub, which serves the same repos.
+# Exported, not just used here: the ct/ script inherits it and regenerates the
+# entrypoint with it, so a container heals itself on the first update.
+_cs_github_base() {
+  local u="${1%/}"
+  case "$u" in
+  *//git.community-scripts.org/*)
+    u="${u#*//git.community-scripts.org/}"
+    u="${u/\/raw\/branch\//\/}"
+    u="${u/\/raw\/tag\//\/}"
+    u="${u/\/raw\/commit\//\/}"
+    printf 'https://raw.githubusercontent.com/%s' "$u"
+    ;;
+  *) printf '%s' "$u" ;;
+  esac
+}
+
+BASE="$(_cs_github_base "${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}")"
+export COMMUNITY_SCRIPTS_URL="$BASE"
 WEBSITE="${COMMUNITY_SCRIPTS_WEBSITE_URL:-https://community-scripts.org}"
 
 # ── Minimal output helpers (this runs standalone, before core.func exists) ──────
