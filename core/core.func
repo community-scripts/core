@@ -211,10 +211,8 @@ ensure_profile_loaded() {
   export _PROFILE_LOADED=1
 }
 
-# git.community-scripts.org was a Gitea mirror of the same repositories and has
-# been shut down. Anything still pointing at it is rewritten onto GitHub; every
-# other base, including a fork, is left exactly as it is. Kept in step with the
-# copy in misc/update.sh, which cannot source this file.
+# The retired Gitea mirror; GitHub serves the same repos. Mirrored in
+# misc/update.sh, which cannot source this file.
 # ------------------------------------------------------------------------------
 _cs_live_base() {
   local u="${1%/}"
@@ -303,10 +301,7 @@ EOF
 # rather than guessing from the current environment.
 # ------------------------------------------------------------------------------
 migrate_update_entrypoint() {
-  # On the helper bootstrap AND pointing somewhere that still serves scripts?
-  # Nothing to do. A dead base counts as stale even in the new format: the Gitea
-  # mirror is gone, and misc/update.sh only works around it per run. Regenerating
-  # bakes the live URL in so the workaround is needed exactly once.
+  # Helper bootstrap with a base that still serves scripts: nothing to do.
   if [[ -f /usr/bin/update ]] &&
     grep -q "misc/update.sh" /usr/bin/update 2>/dev/null &&
     ! grep -q "git.community-scripts.org" /usr/bin/update 2>/dev/null; then
@@ -327,13 +322,11 @@ migrate_update_entrypoint() {
       base="${legacy%/ct/*}"
       name="$(basename "${legacy%.sh}")"
     else
-      # Helper format: the script name is an export, and the url in the fallback
-      # line is literal ${...}, so the pattern above cannot find it.
+      # Helper format has no literal url, only the export.
       name="$(sed -n 's/^export UPDATE_SCRIPT_NAME="\(.*\)"$//p' /usr/bin/update 2>/dev/null | head -1 || true)"
     fi
   fi
 
-  # Whatever it was built from, a dead mirror cannot be preserved.
   base="$(_cs_live_base "$base")"
 
   # Fall back to the update environment when the legacy line could not be parsed.

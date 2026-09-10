@@ -30,11 +30,7 @@ set -uo pipefail
 
 SLUG="${SCRIPT_SLUG:-}"
 NAME="${UPDATE_SCRIPT_NAME:-$SLUG}"
-# git.community-scripts.org was a Gitea mirror and is gone. Containers built
-# against it kept that base in /usr/bin/update, so every update 404s on a script
-# that is really there. Map it back onto GitHub, which serves the same repos.
-# Exported, not just used here: the ct/ script inherits it and regenerates the
-# entrypoint with it, so a container heals itself on the first update.
+# The retired Gitea mirror; GitHub serves the same repos.
 _cs_github_base() {
   local u="${1%/}"
   case "$u" in
