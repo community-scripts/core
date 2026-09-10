@@ -1167,10 +1167,8 @@ _forge_stable_filter() {
 # _forge_curl()
 #
 # - GET into a file and echo the status, or 000 when the transfer did not finish
-# - curl prints %{http_code} as soon as the response headers arrive, so a body
-#   cut short by --max-time still reports 200 while the file holds a fragment.
-#   Every call site discarded curl's exit status, so that fragment reached jq:
-#   "Unfinished string at EOF" on a release list that parses on a retry
+# - %{http_code} is set once the headers arrive, so a body cut short still
+#   reports 200; only curl's exit status says the transfer failed
 # ------------------------------------------------------------------------------
 _forge_curl() {
   local out="${1:?outfile}" code status
@@ -1200,8 +1198,7 @@ _forge_http_get() {
   auth="$(_forge_descriptor "$forge" auth)"
   [[ -n "$auth" ]] && headers+=(-H "$auth")
 
-  # A dropped connection and a truncated body both land on 000, and both are
-  # worth another go: the same URL succeeds when retried by hand.
+  # Both a dropped connection and a truncated body land on 000; retry either.
   local attempt=1 delay=2
   while :; do
     code="$(_forge_curl "$out" "${headers[@]}" "$url")"

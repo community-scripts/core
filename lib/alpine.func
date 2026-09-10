@@ -163,10 +163,7 @@ github_api_call() {
     # http_code came out as "404000" -- making the 403 and 404 arms below
     # unreachable. Every failure fell through to the catch-all, and a 404 was
     # retried three times for a URL that was never going to exist.
-    # forge.func is not loaded on Alpine -- tools.func is what pulls it in, and
-    # this file replaces tools.func there -- so the status check is repeated
-    # rather than shared. curl prints %{http_code} once the headers arrive, so
-    # a body cut short still reads 200 while $output_file holds a fragment.
+    # Repeated, not shared: forge.func is not loaded on Alpine.
     local curl_rc
     http_code=$(curl -sSL --connect-timeout 10 --max-time 60 \
       -w "%{http_code}" -o "$output_file" \
