@@ -306,10 +306,12 @@ EOF
 # rather than guessing from the current environment.
 # ------------------------------------------------------------------------------
 migrate_update_entrypoint() {
-  # Helper bootstrap with a base that still serves scripts: nothing to do.
+  # Nothing to do only if it is on the helper, points somewhere that still
+  # serves scripts, and records a usable name.
   if [[ -f /usr/bin/update ]] &&
     grep -q "misc/update.sh" /usr/bin/update 2>/dev/null &&
-    ! grep -q "git.community-scripts.org" /usr/bin/update 2>/dev/null; then
+    ! grep -q "git.community-scripts.org" /usr/bin/update 2>/dev/null &&
+    grep -qE '^export UPDATE_SCRIPT_NAME="[a-zA-Z0-9._-]+"$' /usr/bin/update 2>/dev/null; then
     return 0
   fi
 
@@ -328,11 +330,14 @@ migrate_update_entrypoint() {
       name="$(basename "${legacy%.sh}")"
     else
       # Helper format has no literal url, only the export.
-      name="$(sed -n 's/^export UPDATE_SCRIPT_NAME="\(.*\)"$//p' /usr/bin/update 2>/dev/null | head -1 || true)"
+      name="$(grep -m1 '^export UPDATE_SCRIPT_NAME=' /usr/bin/update 2>/dev/null | cut -d'"' -f2 || true)"
     fi
   fi
 
   base="$(_cs_live_base "$base")"
+
+  # Anything that is not a slug is a damaged entrypoint, not a name.
+  [[ "${name:-}" =~ ^[a-zA-Z0-9._-]+$ ]] || name=""
 
   # Fall back to the update environment when the legacy line could not be parsed.
   [[ -z "${name:-}" ]] && name="${NSAPP:-${app:-${var_os:-}}}"

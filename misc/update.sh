@@ -30,6 +30,8 @@ set -uo pipefail
 
 SLUG="${SCRIPT_SLUG:-}"
 NAME="${UPDATE_SCRIPT_NAME:-$SLUG}"
+# A name that is not a slug means a damaged entrypoint; the slug still works.
+[[ "$NAME" =~ ^[a-zA-Z0-9._-]+$ ]] || NAME="$SLUG"
 # The retired Gitea mirror; GitHub serves the same repos.
 _cs_github_base() {
   local u="${1%/}"
