@@ -19,6 +19,11 @@
 [[ -n "${_CORE_FUNC_LOADED:-}" ]] && return
 _CORE_FUNC_LOADED=1
 
+if [[ -z "${HOME:-}" ]]; then
+  HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
+  export HOME="${HOME:-/root}"
+fi
+
 # ==============================================================================
 # SECTION 1: INITIALIZATION & SETUP
 # ==============================================================================
