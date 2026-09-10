@@ -30,7 +30,23 @@ set -uo pipefail
 
 SLUG="${SCRIPT_SLUG:-}"
 NAME="${UPDATE_SCRIPT_NAME:-$SLUG}"
-BASE="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+# The retired Gitea mirror; GitHub serves the same repos.
+_cs_github_base() {
+  local u="${1%/}"
+  case "$u" in
+  *//git.community-scripts.org/*)
+    u="${u#*//git.community-scripts.org/}"
+    u="${u/\/raw\/branch\//\/}"
+    u="${u/\/raw\/tag\//\/}"
+    u="${u/\/raw\/commit\//\/}"
+    printf 'https://raw.githubusercontent.com/%s' "$u"
+    ;;
+  *) printf '%s' "$u" ;;
+  esac
+}
+
+BASE="$(_cs_github_base "${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}")"
+export COMMUNITY_SCRIPTS_URL="$BASE"
 WEBSITE="${COMMUNITY_SCRIPTS_WEBSITE_URL:-https://community-scripts.org}"
 
 # ── Minimal output helpers (this runs standalone, before core.func exists) ──────
