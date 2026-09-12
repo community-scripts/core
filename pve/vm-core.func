@@ -831,8 +831,8 @@ vm_choose_settings_mode() {
 # cannot print "Host" while CPU_TYPE says otherwise.
 # ------------------------------------------------------------------------------
 vm_echo_default_settings() {
-  local cpu_label="KVM64"
-  [[ "${CPU_TYPE:-}" == *host* ]] && cpu_label="Host"
+  local cpu_label
+  cpu_label="$(vm_cpu_model_label)"
 
   local cache_label="None"
   [[ -n "${DISK_CACHE:-}" ]] && cache_label="Write Through"
@@ -1038,6 +1038,12 @@ vm_apply_machine_type() {
     FORMAT=",efitype=4m"
     MACHINE=""
   fi
+}
+
+vm_cpu_model_label() {
+  local model="${CPU_TYPE:-}"
+  model="${model# -cpu }"
+  echo "${model:-KVM64}"
 }
 
 vm_machine_type_label() {
@@ -1329,7 +1335,7 @@ vm_prompt_cpu_model() {
     4) CPU_TYPE=" -cpu x86-64-v4" ;;
     *) CPU_TYPE="" ;;
     esac
-    echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}${CPU_TYPE:+${CPU_TYPE# -cpu }}${CPU_TYPE:-KVM64}${CL}"
+    echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}$(vm_cpu_model_label)${CL}"
   else
     exit_script
   fi
