@@ -2349,24 +2349,84 @@ create_lxc_container() {
 
   ARCH="$(dpkg --print-architecture)"
 
-  # Maps OS type + version to the release variant name used by ARM64 template sources.
-  arm64_template_variant() {
-    case "$1:$2" in
-    debian:12) echo "bookworm" ;;
-    debian:13) echo "trixie" ;;
-    debian:) echo "$DEBIAN_DEFAULT_CODENAME" ;;
-
-    ubuntu:24.04) echo "noble" ;;
-    ubuntu:26.04) echo "questing" ;;
-    ubuntu:) echo "$UBUNTU_DEFAULT_CODENAME" ;;
-
-    alpine:*) echo "${2:-$ALPINE_DEFAULT_VERSION}" ;;
-
-    *) return 1 ;;
+  # A distro appears in the catalog under whichever variant names it actually
+  # builds. Nearly all use "default"; Gentoo publishes only openrc and systemd,
+  # so a hardcoded "default" filter made it permanently unfindable. First match
+  # wins, so the init system the engine expects leads.
+  _lxc_catalog_variants() {
+    case "${1,,}" in
+    gentoo) echo "openrc systemd" ;;
+    *) echo "default" ;;
     esac
   }
 
-  # Downloads an ARM64 LXC rootfs template to $1.
+  # Pulls the catalog index to $1. Kept apart from the lookup so an unreachable
+  # catalog reports as a network failure instead of "no such image".
+  _lxc_catalog_fetch() {
+    command -v jq >/dev/null 2>&1 || {
+      $STD apt-get update
+      $STD apt-get install -y jq || return 1
+    }
+    curl -fsSL --max-time 30 -o "${1:?index path}" \
+      "https://images.linuxcontainers.org/streams/v1/images.json"
+  }
+
+  # No version asked for. The catalog carries no stable/latest marker -- Debian
+  # lists forky (14, unreleased) beside trixie -- so picking by build date would
+  # hand out a testing release. Use the codenames the UI already defaults to,
+  # and otherwise only answer when the distro ships a single release at all.
+  _lxc_catalog_default_release() {
+    local os="${1,,}" arch="$2" variant="$3" index="$4"
+    case "$os" in
+    debian)
+      printf '%s' "${DEBIAN_DEFAULT_CODENAME:-}"
+      return
+      ;;
+    ubuntu)
+      printf '%s' "${UBUNTU_DEFAULT_CODENAME:-}"
+      return
+      ;;
+    alpine)
+      printf '%s' "${ALPINE_DEFAULT_VERSION:-}"
+      return
+      ;;
+    esac
+    jq -r --arg os "$os" --arg arch "$arch" --arg variant "$variant" '
+      [ .products[]
+        | select(.arch == $arch and .variant == $variant)
+        | select((.os | ascii_downcase) == $os)
+        | .release ] | unique
+      | if length == 1 then .[0] else empty end
+    ' "$index" 2>/dev/null
+  }
+
+  # Echoes the catalog path of a usable rootfs image for os/version/arch.
+  # Prefers the plain tarball. A squashfs counts as usable -- it just has to be
+  # unpacked first -- and is what Nixos ships instead of a tarball.
+  _lxc_catalog_path() {
+    local os="${1,,}" ver="$2" arch="$3" index="${4:?index path}"
+    local variant want path
+    for variant in $(_lxc_catalog_variants "$os"); do
+      want="$ver"
+      [[ -z "$want" ]] && want="$(_lxc_catalog_default_release "$os" "$arch" "$variant" "$index")"
+      [[ -z "$want" ]] && continue
+      path=$(jq -r --arg os "$os" --arg ver "$want" --arg arch "$arch" --arg variant "$variant" '
+        .products | to_entries[]
+        | select(.value.arch == $arch and .value.variant == $variant)
+        | select((.value.os | ascii_downcase) == $os)
+        | select(.value.release == $ver or ((.value.aliases // "") | split(",") | index($os + "/" + $ver)))
+        | .value.versions | to_entries | sort_by(.key) | last | .value.items
+        | (.["root.tar.xz"].path // .["root.squashfs"].path // empty)
+      ' "$index" 2>/dev/null | head -1)
+      if [[ -n "$path" ]]; then
+        printf '%s' "$path"
+        return 0
+      fi
+    done
+    return 1
+  }
+
+  # Downloads a linuxcontainers rootfs template to $1.
   # Does Proxmox offer this OS/version/arch? Local first, then the catalog.
   _pveam_offers_template() {
     local search pattern
@@ -2391,8 +2451,52 @@ create_lxc_container() {
       grep -qE "^${search}.*${pattern}"
   }
 
+  # pct wants a rootfs tarball, and a few distros (Nixos) publish only a
+  # squashfs. Unpacking beside the destination rather than in /tmp keeps a
+  # multi-GB rootfs off the root filesystem, and xz -1 because this recompresses
+  # what upstream already compressed once -- speed beats a smaller cache file.
+  _lxc_squashfs_to_tarball() {
+    local url="$1" dest="$2" sqfs rootdir rc=0
+
+    command -v unsquashfs >/dev/null 2>&1 || {
+      $STD apt-get update
+      $STD apt-get install -y squashfs-tools || {
+        msg_error "squashfs-tools is required to unpack the ${PCT_OSTYPE} template"
+        return 1
+      }
+    }
+
+    sqfs="${dest%.tar.xz}.squashfs"
+    if ! curl -fsSL -o "$sqfs" "$url"; then
+      rm -f "$sqfs"
+      msg_error "Failed to download template from: $url"
+      return 1
+    fi
+
+    rootdir="$(mktemp -d "${dest%/*}/.unsquash.XXXXXX")" || {
+      rm -f "$sqfs"
+      msg_error "Cannot create unpack directory next to $dest"
+      return 1
+    }
+
+    if ! $STD unsquashfs -f -d "$rootdir" "$sqfs"; then
+      msg_error "Failed to unpack squashfs image"
+      rc=1
+    else
+      tar -C "$rootdir" -cf - . | xz -1 -T0 -c >"$dest"
+      if ((PIPESTATUS[0] != 0 || PIPESTATUS[1] != 0)); then
+        msg_error "Failed to repack squashfs image as a tarball"
+        rc=1
+      fi
+    fi
+
+    rm -rf "$rootdir" "$sqfs"
+    ((rc == 0)) || rm -f "$dest"
+    return "$rc"
+  }
+
   # Only reached when pveam has nothing for this arch.
-  download_arm64_template() {
+  download_catalog_template() {
     local dest="$1" url
 
     mkdir -p "$(dirname "$dest")" || {
@@ -2400,17 +2504,19 @@ create_lxc_container() {
       exit 217
     }
 
-    url="https://jenkins.linuxcontainers.org/job/image-${PCT_OSTYPE}/architecture=arm64,release=${CUSTOM_TEMPLATE_VARIANT},variant=default/lastStableBuild/artifact/rootfs.tar.xz"
+    url="https://images.linuxcontainers.org/${CUSTOM_TEMPLATE_PATH}"
 
-    msg_info "Downloading ${PCT_OSTYPE^} ${CUSTOM_TEMPLATE_VARIANT} ARM64 template"
+    msg_info "Downloading ${PCT_OSTYPE^} ${CUSTOM_TEMPLATE_VARIANT} template (${ARCH})"
     local patched="${dest%/*}/.${dest##*/}.patched"
     (
       flock -x 200
       if [[ -f "$patched" ]] && [[ -s "$dest" ]] && xz -t "$dest" 2>/dev/null; then
         exit 0
       fi
-      if ! curl -fsSL -o "$dest" "$url"; then
-        msg_error "Failed to download ARM64 template from: $url"
+      if [[ "$url" == *.squashfs ]]; then
+        _lxc_squashfs_to_tarball "$url" "$dest" || exit 208
+      elif ! curl -fsSL -o "$dest" "$url"; then
+        msg_error "Failed to download template from: $url"
         exit 208
       fi
       if ! tar -tJf "$dest" 2>/dev/null | grep -q '/etc/network/$'; then
@@ -2422,7 +2528,7 @@ create_lxc_container() {
           rm -rf "$fixdir"
         else
           rm -rf "$fixdir" "$tmptar"
-          msg_error "Failed to patch ARM64 template (missing /etc/network)"
+          msg_error "Failed to patch template (missing /etc/network)"
           exit 208
         fi
       fi
@@ -2432,13 +2538,13 @@ create_lxc_container() {
     if [[ $dl_rc -ne 0 ]]; then
       exit "$dl_rc"
     fi
-    msg_ok "Downloaded ARM64 LXC template"
+    msg_ok "Downloaded LXC template from linuxcontainers.org"
   }
 
   download_template() {
     local dest="${1:-$TEMPLATE_PATH}"
-    if [[ "$ARCH" == "arm64" ]]; then
-      download_arm64_template "$dest"
+    if [[ -n "$CUSTOM_TEMPLATE_PATH" ]]; then
+      download_catalog_template "$dest"
     else
       pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" >>"${BUILD_LOG:-/dev/null}" 2>&1 || {
         msg_error "Failed to download template '$TEMPLATE' to storage '$TEMPLATE_STORAGE'"
@@ -2611,17 +2717,28 @@ create_lxc_container() {
   # Template discovery & validation
   # ------------------------------------------------------------------------------
   CUSTOM_TEMPLATE_VARIANT=""
+  CUSTOM_TEMPLATE_PATH=""
 
-  if [[ "$ARCH" == "arm64" ]] && ! _pveam_offers_template; then
-    msg_info "No Proxmox template for ${PCT_OSTYPE} on ${ARCH}, using linuxcontainers.org"
+  if ! _pveam_offers_template; then
+    msg_info "No Proxmox template for ${PCT_OSTYPE} ${PCT_OSVERSION:-} on ${ARCH}, trying linuxcontainers.org"
 
-    CUSTOM_TEMPLATE_VARIANT=$(arm64_template_variant "$PCT_OSTYPE" "${PCT_OSVERSION:-}") || {
-      msg_error "No ARM64 template mapping for ${PCT_OSTYPE} ${PCT_OSVERSION:-latest}"
-      exit 225
-    }
+    _lxc_catalog_index="$(mktemp)"
+    if ! _lxc_catalog_fetch "$_lxc_catalog_index"; then
+      msg_warn "Could not reach the linuxcontainers.org image catalog"
+    elif ! CUSTOM_TEMPLATE_PATH=$(_lxc_catalog_path "$PCT_OSTYPE" "${PCT_OSVERSION:-}" "$ARCH" "$_lxc_catalog_index"); then
+      CUSTOM_TEMPLATE_PATH=""
+      msg_warn "linuxcontainers.org has no ${PCT_OSTYPE} ${PCT_OSVERSION:-latest} for ${ARCH}"
+    fi
+    rm -f "$_lxc_catalog_index"
+  fi
 
-    TEMPLATE="${PCT_OSTYPE}-${CUSTOM_TEMPLATE_VARIANT}-rootfs.tar.xz"
-    TEMPLATE_SOURCE="custom-arm64"
+  # A catalog miss falls through to pveam rather than ending the run: asking for
+  # a version that does not exist is far more common than asking for a distro
+  # nobody publishes, and only the pveam path can offer what this host does have.
+  if [[ -n "$CUSTOM_TEMPLATE_PATH" ]]; then
+    CUSTOM_TEMPLATE_VARIANT=$(awk -F/ '{print $3}' <<<"$CUSTOM_TEMPLATE_PATH")
+    TEMPLATE="${PCT_OSTYPE}-${CUSTOM_TEMPLATE_VARIANT}-${ARCH}-rootfs.tar.xz"
+    TEMPLATE_SOURCE="custom-catalog"
 
     # Resolve template path
     TEMPLATE_PATH="$(pvesm path "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" 2>/dev/null || true)"
@@ -2637,11 +2754,11 @@ create_lxc_container() {
 
     # Download if missing, too small, or corrupt
     if [[ ! -f "$TEMPLATE_PATH" ]]; then
-      download_arm64_template "$TEMPLATE_PATH"
+      download_catalog_template "$TEMPLATE_PATH"
     elif [[ "$(stat -c%s "$TEMPLATE_PATH")" -lt 1000000 ]] || ! tar -tf "$TEMPLATE_PATH" &>/dev/null; then
       msg_warn "Local template invalid - re-downloading."
       rm -f "$TEMPLATE_PATH"
-      download_arm64_template "$TEMPLATE_PATH"
+      download_catalog_template "$TEMPLATE_PATH"
     else
       msg_ok "Template ${BL}$TEMPLATE${CL} found locally."
     fi
@@ -2954,7 +3071,7 @@ create_lxc_container() {
     download_template
     msg_ok "Template downloaded"
   elif ! tar -tf "$TEMPLATE_PATH" &>/dev/null; then
-    if [[ "$ARCH" == "arm64" || -n "$ONLINE_TEMPLATE" ]]; then
+    if [[ -n "$CUSTOM_TEMPLATE_PATH" || -n "$ONLINE_TEMPLATE" ]]; then
       msg_info "Template appears corrupted – re-downloading"
       rm -f "$TEMPLATE_PATH"
       download_template
@@ -3040,8 +3157,8 @@ create_lxc_container() {
           if [[ ! -f "$LOCAL_TEMPLATE_PATH" ]]; then
             msg_ok "Trying local storage fallback"
             msg_info "Downloading template to local"
-            if [[ "$ARCH" == "arm64" ]]; then
-              download_arm64_template "$LOCAL_TEMPLATE_PATH"
+            if [[ -n "$CUSTOM_TEMPLATE_PATH" ]]; then
+              download_catalog_template "$LOCAL_TEMPLATE_PATH"
             else
               pveam download local "$TEMPLATE" >>"${BUILD_LOG:-/dev/null}" 2>&1
             fi
