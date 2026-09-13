@@ -13,7 +13,9 @@ _download_source_tarball
 _forge_asset_urls
 _forge_curl
 _forge_descriptor
+_forge_highest_version
 _forge_http_get
+_forge_is_current
 _forge_release_json
 _forge_scan_older
 _forge_source_url

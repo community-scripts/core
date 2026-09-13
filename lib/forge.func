@@ -1156,6 +1156,22 @@ _forge_descriptor() {
 #   draft/prerelease pair; its equivalent is upcoming_release, which nothing
 #   checked before, so a published RC pushed every container into an update.
 # ------------------------------------------------------------------------------
+# Every forge lists releases newest-published first, which is not newest
+# version: a patch backported to an older line is published after the newer
+# minor. Order by version instead.
+_FORGE_JQ_VKEY='((.tag_name // "") | sub("^[vV]";"") | [scan("[0-9]+")] | map(tonumber))'
+
+# Highest of the versions on stdin.
+_forge_highest_version() {
+  sort -V | tail -n1
+}
+
+# Is $1 already at or ahead of $2?
+_forge_is_current() {
+  [[ -n "$1" ]] || return 1
+  [[ "$(printf '%s\n%s\n' "$1" "$2" | _forge_highest_version)" == "$1" ]]
+}
+
 _forge_stable_filter() {
   case "${1:?forge}" in
   gitlab) echo 'select($pre or ((.upcoming_release // false) == false))' ;;
@@ -1382,10 +1398,10 @@ _forge_release_json() {
     jq -c '.' "$raw" >"$out" 2>/dev/null
   elif [[ -n "$tag_prefix" ]]; then
     jq -c --argjson pre "$pre" --arg p "$tag_prefix" \
-      "[.[] | ${filter} | select(.tag_name | startswith(\$p))] | .[0] // empty" "$raw" >"$out" 2>/dev/null
+      "[.[] | ${filter} | select(.tag_name | startswith(\$p))] | sort_by(${_FORGE_JQ_VKEY}) | last // empty" "$raw" >"$out" 2>/dev/null
   else
     jq -c --argjson pre "$pre" \
-      "[.[] | ${filter}] | .[0] // empty" "$raw" >"$out" 2>/dev/null
+      "[.[] | ${filter}] | sort_by(${_FORGE_JQ_VKEY}) | last // empty" "$raw" >"$out" 2>/dev/null
   fi
 
   # GitHub keeps the raw payload around on purpose: hwaccel.func reads .body
@@ -1517,7 +1533,12 @@ check_for_release() {
     clean_tags+=("$(_forge_strip_v "$t")")
   done
 
-  local latest_raw="${raw_tags[0]}" latest_clean="${clean_tags[0]}"
+  local newest idx=0 i
+  newest="$(printf '%s\n' "${clean_tags[@]}" | _forge_highest_version)"
+  for i in "${!clean_tags[@]}"; do
+    [[ "${clean_tags[$i]}" == "$newest" ]] && { idx="$i"; break; }
+  done
+  local latest_raw="${raw_tags[$idx]}" latest_clean="${clean_tags[$idx]}"
 
   local current="" legacy_files=()
   if [[ -f "$current_file" ]]; then
@@ -1561,14 +1582,14 @@ check_for_release() {
     return 1
   fi
 
-  if [[ "$current" != "$latest_clean" ]]; then
-    CHECK_UPDATE_RELEASE="$latest_raw"
-    msg_ok "Update available: ${app} ${current:-not installed} -> ${latest_clean}"
-    return 0
+  if _forge_is_current "$current" "$latest_clean"; then
+    msg_ok "No update available: ${app} (${current})"
+    return 1
   fi
 
-  msg_ok "No update available: ${app} (${latest_clean})"
-  return 1
+  CHECK_UPDATE_RELEASE="$latest_raw"
+  msg_ok "Update available: ${app} ${current:-not installed} -> ${latest_clean}"
+  return 0
 }
 
 # Wrapper: the implementation is check_for_release. Kept so the 82 call
@@ -2184,7 +2205,7 @@ get_latest_gitlab_release() {
   http_code=$(curl --connect-timeout 10 --max-time 30 -sSL \
     -w "%{http_code}" -o "$temp_file" \
     "${header[@]}" \
-    "${gitlab_url}/api/v4/projects/$repo_encoded/releases?per_page=1&order_by=released_at&sort=desc" 2>/dev/null) || true
+    "${gitlab_url}/api/v4/projects/$repo_encoded/releases?per_page=100&order_by=released_at&sort=desc" 2>/dev/null) || true
 
   if [[ "$http_code" != "200" ]]; then
     rm -f "$temp_file"
@@ -2193,7 +2214,7 @@ get_latest_gitlab_release() {
   fi
 
   local version
-  version=$(jq -r '.[0].tag_name // empty' "$temp_file")
+  version=$(jq -r "sort_by(${_FORGE_JQ_VKEY}) | last | .tag_name // empty" "$temp_file")
   rm -f "$temp_file"
 
   if [[ -z "$version" ]]; then
