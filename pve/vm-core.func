@@ -1759,7 +1759,7 @@ vm_extract_image() {
   fi
 
   msg_ok "Extracted ${CL}${BL}$(basename "$target")${CL}"
-  VM_IMAGE_FILE="$target"
+  export VM_IMAGE_FILE="$target"
 }
 
 vm_expand_image() {
