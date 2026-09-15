@@ -1711,6 +1711,57 @@ _vm_root_fs() {
     ' | sort -rn | head -1
 }
 
+# Unpack a downloaded image; the format comes from the file name. Without a
+# target it lands in the tmp dir with the suffix removed. Sets VM_IMAGE_FILE
+# and leaves the archive alone, so a cached download survives.
+vm_extract_image() {
+  local src="${1:?image}" target="${2:-}" tool rc
+
+  if [[ ! -r "$src" ]]; then
+    msg_error "Cannot read ${src}"
+    return 1
+  fi
+
+  case "$src" in
+  *.xz) tool=xz ;;
+  *.gz) tool=gzip ;;
+  *.bz2) tool=bzip2 ;;
+  *.zst) tool=zstd ;;
+  *)
+    VM_IMAGE_FILE="$src"
+    return 0
+    ;;
+  esac
+
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    msg_error "${tool} is needed to unpack $(basename "$src")"
+    return 1
+  fi
+
+  [[ -n "$target" ]] || target="${VM_IMAGE_TMP_DIR:-/var/lib/vz/template/tmp}/$(basename "${src%.*}")"
+  mkdir -p "$(dirname "$target")"
+
+  msg_info "Extracting $(basename "$src")"
+  if command -v pv >/dev/null 2>&1; then
+    # pv draws its own progress, so the spinner has to go first.
+    stop_spinner 2>/dev/null || true
+    "$tool" -dc "$src" | pv -N Extracting >"$target"
+    rc=${PIPESTATUS[0]}
+  else
+    "$tool" -dc "$src" >"$target"
+    rc=$?
+  fi
+
+  if ((rc != 0)); then
+    rm -f "$target"
+    msg_error "Failed to unpack $(basename "$src")"
+    return 1
+  fi
+
+  msg_ok "Extracted ${CL}${BL}$(basename "$target")${CL}"
+  VM_IMAGE_FILE="$target"
+}
+
 vm_expand_image() {
   local src="${1:?image}" size="${2:?size}" part out before after
 
