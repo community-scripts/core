@@ -1093,7 +1093,7 @@ fetch_and_deploy_gh_branch() {
 # Strip a leading v only when a digit follows, so vault-1.0 keeps its name.
 _forge_strip_v() {
   local v="${1:-}"
-  if [[ "$v" =~ ^v[0-9] ]]; then
+  if [[ "$v" =~ ^[vV][0-9] ]]; then
     printf '%s' "${v:1}"
   else
     printf '%s' "$v"
@@ -1163,7 +1163,12 @@ _FORGE_JQ_VKEY='((.tag_name // "") | sub("^[vV]";"") | [scan("[0-9]+")] | map(to
 
 # Highest of the versions on stdin.
 _forge_highest_version() {
-  sort -V | tail -n1
+  local line key
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    key="$(printf '%s' "$line" | grep -oE '[0-9]+' | tr '\n' '.')"
+    printf '%s\t%s\n' "${key:-0}" "$line"
+  done | sort -V -k1,1 | tail -n1 | cut -f2-
 }
 
 # Is $1 already at or ahead of $2?
