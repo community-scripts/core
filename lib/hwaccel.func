@@ -26,8 +26,7 @@ _cs_apt_install_optional() {
   local missed=() failed=() pkg
   for pkg in "$@"; do
     $STD apt -y install "$pkg" 2>/dev/null && continue
-    # A broken apt state fails every install, which used to be reported as
-    # the package not existing and hid the real problem.
+    # A broken apt state fails every install, which is not the same thing.
     if apt-cache policy "$pkg" 2>/dev/null | grep -q "Candidate: (none)"; then
       missed+=("$pkg")
     else
@@ -390,9 +389,7 @@ _setup_intel_arc() {
     if [[ "$os_codename" == "trixie" || "$os_codename" == "sid" ]]; then
       msg_info "Fetching Intel compute-runtime from GitHub for Arc support"
 
-      # intel-opencl-icd declares ocl-icd-libopencl1. dpkg refuses a package whose
-      # dependency is missing, and the half-installed state it leaves behind broke
-      # every apt call afterwards -- including the application's own install.
+      # intel-opencl-icd declares it; dpkg refuses the package without it.
       _cs_apt_install_optional ocl-icd-libopencl1
 
       # Fetch a compute-runtime package first so TOOLS_GH_REL_JSON is populated,
@@ -446,9 +443,7 @@ _setup_intel_modern() {
     if [[ "$os_codename" == "trixie" || "$os_codename" == "sid" ]]; then
       msg_info "Fetching Intel compute-runtime from GitHub"
 
-      # intel-opencl-icd declares ocl-icd-libopencl1. dpkg refuses a package whose
-      # dependency is missing, and the half-installed state it leaves behind broke
-      # every apt call afterwards -- including the application's own install.
+      # intel-opencl-icd declares it; dpkg refuses the package without it.
       _cs_apt_install_optional ocl-icd-libopencl1
 
       # Fetch a compute-runtime package first so TOOLS_GH_REL_JSON is populated,
