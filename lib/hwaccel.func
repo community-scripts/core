@@ -23,11 +23,19 @@ _cs_apt_install_optional() {
   (($#)) || return 0
   $STD apt -y install "$@" 2>/dev/null && return 0
 
-  local missed=() pkg
+  local missed=() failed=() pkg
   for pkg in "$@"; do
-    $STD apt -y install "$pkg" 2>/dev/null || missed+=("$pkg")
+    $STD apt -y install "$pkg" 2>/dev/null && continue
+    # A broken apt state fails every install, which used to be reported as
+    # the package not existing and hid the real problem.
+    if apt-cache policy "$pkg" 2>/dev/null | grep -q "Candidate: (none)"; then
+      missed+=("$pkg")
+    else
+      failed+=("$pkg")
+    fi
   done
   ((${#missed[@]})) && msg_warn "Not available on this release: ${missed[*]}"
+  ((${#failed[@]})) && msg_warn "In the repository but would not install: ${failed[*]} - apt may be in a broken state"
   return 0
 }
 
@@ -382,6 +390,11 @@ _setup_intel_arc() {
     if [[ "$os_codename" == "trixie" || "$os_codename" == "sid" ]]; then
       msg_info "Fetching Intel compute-runtime from GitHub for Arc support"
 
+      # intel-opencl-icd declares ocl-icd-libopencl1. dpkg refuses a package whose
+      # dependency is missing, and the half-installed state it leaves behind broke
+      # every apt call afterwards -- including the application's own install.
+      _cs_apt_install_optional ocl-icd-libopencl1
+
       # Fetch a compute-runtime package first so TOOLS_GH_REL_JSON is populated,
       # then resolve the matching IGC tag from the release notes.
       # libigdgmm - bundled in compute-runtime releases
@@ -432,6 +445,11 @@ _setup_intel_modern() {
     # For Trixie/Sid: Fetch from GitHub (Debian packages too old or missing)
     if [[ "$os_codename" == "trixie" || "$os_codename" == "sid" ]]; then
       msg_info "Fetching Intel compute-runtime from GitHub"
+
+      # intel-opencl-icd declares ocl-icd-libopencl1. dpkg refuses a package whose
+      # dependency is missing, and the half-installed state it leaves behind broke
+      # every apt call afterwards -- including the application's own install.
+      _cs_apt_install_optional ocl-icd-libopencl1
 
       # Fetch a compute-runtime package first so TOOLS_GH_REL_JSON is populated,
       # then resolve the matching IGC tag from the release notes.

@@ -2283,6 +2283,13 @@ curl_download() {
 # Usage: _diagnose_deb_failure "/path/to/file.deb"
 # Returns: always 0 (diagnostic only — caller must return the error code)
 # ------------------------------------------------------------------------------
+# A .deb whose dependency is missing leaves dpkg half-configured, and every apt
+# call after that fails with "Unmet dependencies" -- including the application's
+# own install, which is where it actually surfaced. Put the state back.
+_cs_repair_dpkg() {
+  $STD dpkg --configure -a 2>/dev/null || true
+  DEBIAN_FRONTEND=noninteractive $STD apt-get -y --fix-broken install 2>/dev/null || true
+}
 _diagnose_deb_failure() {
   local deb_path="$1"
   local filename="${deb_path##*/}"
