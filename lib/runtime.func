@@ -140,6 +140,8 @@ setup_composer() {
 #   DOCKER_PORTAINER       - Install Portainer CE (optional, "true" to enable)
 #   DOCKER_LOG_DRIVER      - Log driver (optional, default: "journald")
 #   DOCKER_SKIP_UPDATES    - Skip container update check (optional, "true" to skip)
+#   DOCKER_LXCFS_VISIBILITY - Set to "false" to skip making LXC resource limits
+#                            visible to nested containers (default: true)
 #
 # Features:
 #   - Uses official Docker repository by default
@@ -217,6 +219,161 @@ ensure_docker() {
   fi
 }
 
+# ------------------------------------------------------------------------------
+# LXC resource visibility for nested Docker containers
+#
+# Description:
+#   Inside an LXC container, Docker gives every container it starts a fresh
+#   procfs in its own mount namespace. The lxcfs bind mounts that LXC placed on
+#   /proc/meminfo & friends live in the CT's namespace and never reach it, so
+#   each Docker container reads the *physical host's* totals rather than the
+#   CT's limits:
+#
+#     CT sees:        MemTotal:  8388608 kB
+#     container sees: MemTotal: 65648168 kB   <- the whole hypervisor
+#
+#   Enforcement is not affected (the CT cgroup still caps every descendant),
+#   but anything that self-sizes from those numbers - JVM heap ergonomics,
+#   Node, Go, OpenMP thread pools - sizes against the wrong value and gets
+#   OOM-killed instead of throttling.
+#
+#   This registers a small runc wrapper as Docker's default runtime. On each
+#   container create it re-binds the lxcfs-backed files into the container and,
+#   when the container sets no limit of its own, applies the CT's memory limit
+#   to the container cgroup. Two mechanisms are needed because runtimes read
+#   the limit two different ways: file readers use /proc, while musl and
+#   Node's uv_get_constrained_memory() consult the cgroup.
+#
+#   CPU needs no handling - cpuset is inherited down the cgroup tree, so
+#   nested containers already observe the CT's core count.
+#
+# Variables:
+#   DOCKER_LXCFS_VISIBILITY - Set to "false" to skip (default: true)
+#
+# Notes:
+#   - No-op outside an LXC container, and on any host where lxcfs is absent.
+#   - `docker run --runtime=runc` bypasses the wrapper for a single container.
+#   - An explicit --memory / mem_limit is never overridden.
+#   - The wrapper falls through to the real runc unmodified on any error, so a
+#     failure degrades to today's behaviour rather than breaking the daemon.
+#   - The limit is written at container creation. After changing the CT's
+#     memory with `pct set`, existing containers keep the old value until they
+#     are recreated, or re-synced with:
+#       docker update --memory=<new> --memory-swap=<new> <container>
+#   - Monitoring containers are the one case that wants the opposite. lxcfs
+#     resolves *usage* by the reading process's own cgroup, so a container that
+#     graphs "system memory used" from /proc/meminfo will report only its own
+#     footprint once these binds are in place. Total is correct, used is not.
+#     Run those with `--runtime=runc` (compose: `runtime: runc`). Tools that
+#     read the Docker API instead - Portainer's dashboard, Arcane's Docker
+#     info panel - are unaffected, because the daemon reads the CT's values.
+#     CPU is not affected either way: /proc/stat is not cgroup-scoped.
+# ------------------------------------------------------------------------------
+_docker_setup_lxcfs_visibility() {
+  local enabled="${DOCKER_LXCFS_VISIBILITY:-true}"
+  case "${enabled,,}" in
+  false | 0 | no) return 0 ;;
+  esac
+
+  # Only meaningful inside an LXC container whose /proc is served by lxcfs
+  grep -qs 'fuse\.lxcfs' /proc/mounts || return 0
+
+  if ! command -v runc >/dev/null 2>&1; then
+    msg_warn "runc not found - skipping LXC resource visibility for Docker"
+    return 0
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    $STD apt-get install -y jq || {
+      msg_warn "jq unavailable - skipping LXC resource visibility for Docker"
+      return 0
+    }
+  fi
+
+  msg_info "Configuring LXC resource visibility for Docker"
+
+  cat <<'RUNC_LXCFS' >/usr/local/bin/runc-lxcfs
+#!/bin/sh
+# Managed by community-scripts/ProxmoxVE - see setup_docker() in misc/tools.func
+#
+# runc wrapper: let Docker containers running inside this LXC container observe
+# the LXC container's resource limits instead of the physical host's.
+#
+# Docker mounts a fresh procfs per container, so the lxcfs binds LXC placed on
+# /proc/meminfo & friends never reach it. Re-bind them into the OCI bundle, and
+# apply the CT's memory limit to the container cgroup for runtimes that consult
+# cgroups rather than /proc.
+#
+# Bypass for a single container with: docker run --runtime=runc ...
+set -eu
+
+REAL_RUNC=
+for candidate in /usr/bin/runc /usr/sbin/runc /usr/local/bin/runc; do
+  if [ -x "$candidate" ]; then
+    REAL_RUNC=$candidate
+    break
+  fi
+done
+[ -n "$REAL_RUNC" ] || exit 127
+
+bundle=""
+prev=""
+for arg in "$@"; do
+  case "$prev" in
+  -b | --bundle) bundle="$arg" ;;
+  esac
+  case "$arg" in
+  --bundle=*) bundle="${arg#--bundle=}" ;;
+  esac
+  prev="$arg"
+done
+
+# Only "create" carries a bundle; everything else passes straight through.
+[ -n "$bundle" ] && [ -f "$bundle/config.json" ] || exec "$REAL_RUNC" "$@"
+
+mem=$(awk '/^MemTotal:/ { print $2 * 1024 }' /proc/meminfo)
+[ -n "$mem" ] || exec "$REAL_RUNC" "$@"
+
+config="$bundle/config.json"
+patched="$config.lxcfs"
+if jq --argjson mem "$mem" '
+  ["/proc/meminfo", "/proc/cpuinfo", "/proc/stat", "/proc/uptime",
+   "/proc/swaps", "/proc/loadavg", "/proc/diskstats",
+   "/sys/devices/system/cpu/online"] as $lxcfs
+  | [.mounts[].destination] as $taken
+  | .mounts += [
+    $lxcfs[]
+    | select(. as $f | $taken | index($f) | not)
+    | {destination: ., type: "bind", source: ., options: ["rbind", "rprivate", "ro"]}
+  ]
+  | if (.linux.resources.memory.limit // 0) <= 0
+    then .linux.resources.memory.limit = $mem
+    else . end
+' "$config" >"$patched" 2>/dev/null && [ -s "$patched" ]; then
+  cat "$patched" >"$config"
+fi
+rm -f "$patched"
+
+exec "$REAL_RUNC" "$@"
+RUNC_LXCFS
+
+  chmod 755 /usr/local/bin/runc-lxcfs
+
+  local tmpfile
+  tmpfile=$(mktemp)
+  if jq '. + {
+    "default-runtime": "lxcfs",
+    "runtimes": ((.runtimes // {}) + {"lxcfs": {"path": "/usr/local/bin/runc-lxcfs"}})
+  }' /etc/docker/daemon.json >"$tmpfile" && [ -s "$tmpfile" ]; then
+    mv "$tmpfile" /etc/docker/daemon.json
+    msg_ok "Configured LXC resource visibility for Docker"
+  else
+    rm -f "$tmpfile"
+    rm -f /usr/local/bin/runc-lxcfs
+    msg_warn "Could not update /etc/docker/daemon.json - LXC resource visibility not enabled"
+  fi
+}
+
 setup_docker() {
   local docker_installed=false
   local portainer_installed=false
@@ -272,6 +429,8 @@ setup_docker() {
 }
 EOF
     fi
+
+    _docker_setup_lxcfs_visibility
 
     # Enable and start Docker
     systemctl enable -q --now docker
@@ -343,6 +502,8 @@ EOF
 }
 EOF
     fi
+
+    _docker_setup_lxcfs_visibility
 
     # Enable and start Docker
     systemctl enable -q --now docker
