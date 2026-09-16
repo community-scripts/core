@@ -350,15 +350,19 @@ setup_hwaccel() {
 # so that TOOLS_GH_REL_JSON contains the compute-runtime release metadata.
 # Sets the variable named by $1 (default: igc_tag) to the discovered tag.
 # ══════════════════════════════════════════════════════════════════════════════
+# compute-runtime pins the exact intel-igc-opencl-2 it was built against, so the
+# tag has to come from its release notes. Empty means unresolved: installing the
+# newest IGC instead gives a combination dpkg refuses.
 _resolve_igc_tag() {
   local -n _out_ref="${1:-igc_tag}"
-  _out_ref="latest"
-  if [[ -n "${TOOLS_GH_REL_JSON:-}" && -f "$TOOLS_GH_REL_JSON" ]]; then
-    local _body _parsed
-    _body=$(jq -r '.body // empty' "$TOOLS_GH_REL_JSON" 2>/dev/null) || return 0
-    _parsed=$(grep -oP 'intel-graphics-compiler/releases/tag/\K[^\s\)]+' <<<"$_body" | head -1)
-    [[ -n "$_parsed" ]] && _out_ref="$_parsed"
-  fi
+  _out_ref=""
+  [[ -n "${TOOLS_GH_REL_JSON:-}" && -f "$TOOLS_GH_REL_JSON" ]] || return 0
+
+  # The file holds whatever the API returned: one release for a pinned version,
+  # a list for 'latest'.
+  local _body
+  _body=$(jq -r 'if type == "array" then .[0] else . end | .body // empty' "$TOOLS_GH_REL_JSON" 2>/dev/null) || return 0
+  _out_ref=$(grep -oP 'intel-graphics-compiler/releases/tag/\K[^\s\)]+' <<<"$_body" | head -1)
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -399,14 +403,18 @@ _setup_intel_arc() {
 
       local igc_tag
       _resolve_igc_tag igc_tag
+      if [[ -z "$igc_tag" ]]; then
+        msg_warn "Could not read the IGC version compute-runtime pins - skipping OpenCL. VA-API still works."
+      else
 
-      # Intel Graphics Compiler – pinned to the version compute-runtime expects
-      fetch_and_deploy_gh_release "intel-igc-core" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-core-2_*_amd64.deb" || true
-      fetch_and_deploy_gh_release "intel-igc-opencl" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-opencl-2_*_amd64.deb" || true
+        # Intel Graphics Compiler – pinned to the version compute-runtime expects
+        fetch_and_deploy_gh_release "intel-igc-core" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-core-2_*_amd64.deb" || true
+        fetch_and_deploy_gh_release "intel-igc-opencl" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-opencl-2_*_amd64.deb" || true
 
-      # Compute Runtime (depends on IGC and gmmlib)
-      fetch_and_deploy_gh_release "intel-opencl-icd" "intel/compute-runtime" "binary" "latest" "" "intel-opencl-icd_*_amd64.deb" || true
-      fetch_and_deploy_gh_release "intel-level-zero-gpu" "intel/compute-runtime" "binary" "latest" "" "libze-intel-gpu1_*_amd64.deb" || true
+        # Compute Runtime (depends on IGC and gmmlib)
+        fetch_and_deploy_gh_release "intel-opencl-icd" "intel/compute-runtime" "binary" "latest" "" "intel-opencl-icd_*_amd64.deb" || true
+        fetch_and_deploy_gh_release "intel-level-zero-gpu" "intel/compute-runtime" "binary" "latest" "" "libze-intel-gpu1_*_amd64.deb" || true
+      fi
     fi
 
     _cs_apt_install_optional intel-media-va-driver-non-free ocl-icd-libopencl1 libvpl2 libmfx-gen1.2 mesa-vulkan-drivers vulkan-tools vainfo intel-gpu-tools
@@ -453,13 +461,17 @@ _setup_intel_modern() {
 
       local igc_tag
       _resolve_igc_tag igc_tag
+      if [[ -z "$igc_tag" ]]; then
+        msg_warn "Could not read the IGC version compute-runtime pins - skipping OpenCL. VA-API still works."
+      else
 
-      # Intel Graphics Compiler – pinned to the version compute-runtime expects
-      fetch_and_deploy_gh_release "intel-igc-core" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-core-2_*_amd64.deb" || true
-      fetch_and_deploy_gh_release "intel-igc-opencl" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-opencl-2_*_amd64.deb" || true
+        # Intel Graphics Compiler – pinned to the version compute-runtime expects
+        fetch_and_deploy_gh_release "intel-igc-core" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-core-2_*_amd64.deb" || true
+        fetch_and_deploy_gh_release "intel-igc-opencl" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-opencl-2_*_amd64.deb" || true
 
-      # Compute Runtime
-      fetch_and_deploy_gh_release "intel-opencl-icd" "intel/compute-runtime" "binary" "latest" "" "intel-opencl-icd_*_amd64.deb" || true
+        # Compute Runtime
+        fetch_and_deploy_gh_release "intel-opencl-icd" "intel/compute-runtime" "binary" "latest" "" "intel-opencl-icd_*_amd64.deb" || true
+      fi
     fi
 
     _cs_apt_install_optional intel-media-va-driver-non-free ocl-icd-libopencl1 mesa-vulkan-drivers vulkan-tools vainfo libmfx-gen1.2 intel-gpu-tools
