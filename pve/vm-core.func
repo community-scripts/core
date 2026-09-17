@@ -1567,6 +1567,33 @@ vm_image_cache_path() {
   printf '%s/%s' "$dir" "${name##*/}"
 }
 
+# A cached image that no longer matches usually means the upstream was rebuilt,
+# not that anything is wrong. Offer the choice instead of silently re-downloading
+# several hundred MB. Unattended or without a terminal, take the new one.
+_vm_cache_choice() {
+  local file="$1" url="$2" local_size local_date remote_size remote_date head
+
+  [[ "${VM_UNATTENDED:-0}" == "1" ]] && return 0
+  [[ -t 0 ]] || return 0
+  command -v whiptail >/dev/null 2>&1 || return 0
+
+  local_size=$(stat -c%s "$file" 2>/dev/null || echo 0)
+  local_size=$(numfmt --to=iec "$local_size" 2>/dev/null || echo ?)
+  local_date=$(date -r "$file" '+%Y-%m-%d %H:%M' 2>/dev/null || echo ?)
+
+  # -L: the mirror answers 302 and only the final hop carries real headers.
+  head=$(curl -fsSIL --max-time 15 "$url" 2>/dev/null)
+  remote_size=$(grep -i '^content-length:' <<<"$head" | tail -1 | tr -dc '0-9')
+  [[ -n "$remote_size" ]] && remote_size=$(numfmt --to=iec "$remote_size" 2>/dev/null)
+  remote_date=$(grep -i '^last-modified:' <<<"$head" | tail -1 | cut -d' ' -f2- | tr -d '\r')
+
+  if vm_dialog yesno "Image Cache" \
+    "The cached image no longer matches what the mirror offers.\n\nThis normally means a newer build was published.\n\n  File:     $(basename "$file")\n  Cached:   ${local_size}, ${local_date}\n  Upstream: ${remote_size:-?}, ${remote_date:-unknown}\n\nDownload the new one? The cached copy is removed." \
+    18 74 --yes-button "Download" --no-button "Keep cached"; then
+    return 0
+  fi
+  return 1
+}
 vm_fetch_image() {
   local url="${1:?url}" target="${2:?target}"
   shift 2
@@ -1601,8 +1628,13 @@ vm_fetch_image() {
       msg_ok "Using cached ${CL}${BL}$(basename "$target")${CL}"
       return 0
     fi
-    msg_warn "Cached $(basename "$target") did not verify; downloading it again"
-    rm -f "$target"
+    if _vm_cache_choice "$target" "$url"; then
+      msg_warn "Replacing the cached $(basename "$target")"
+      rm -f "$target"
+    else
+      msg_ok "Using cached ${CL}${BL}$(basename "$target")${CL}"
+      return 0
+    fi
   fi
 
   mkdir -p "$(dirname "$target")"
