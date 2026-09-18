@@ -2,12 +2,14 @@ _build_current_app_vars_tmp
 _build_vars_diff
 _container_write_failure
 _cs_clear
+_cs_conffile_list
 _cs_engine_ref_line
 _cs_host_version_line
 _cs_live_base
 _cs_os_family
 _cs_ref_line
 _cs_run_os_section
+_cs_run_update
 _cs_runtime_cache_dir
 _cs_scripts_ref_line
 _dev_step_end
@@ -50,6 +52,8 @@ _tm_pick_logfile
 _tm_send
 _write_storage_to_vars
 advanced_settings
+apt_conffile_guard
+apt_conffile_report
 apt_update_safe
 arch_check
 arch_resolve
