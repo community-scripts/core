@@ -1113,15 +1113,14 @@ check_breaking_change_guard() {
 }
 
 # The update path, shared by the three branches of start() that reach it.
+# exit, not return: returning continues into the ct script's host-only tail.
+# Most ct scripts exit inside update_script, so the three calls after it are
+# unreachable for them.
 _cs_run_update() {
   ensure_profile_loaded
   ensure_recorded_toolchains
   get_lxc_ip
-  # Move legacy containers onto the helper-based /usr/bin/update the next time
-  # they update. No-op once migrated; preserves the container's original source.
   migrate_update_entrypoint
-  # exit, not return, for the same reason as below: returning falls through
-  # into the ct script's host-only tail.
   runtime_script_status_guard update || exit 0
   check_container_os_guard || exit 0
   check_breaking_change_guard || exit 0
@@ -1130,14 +1129,6 @@ _cs_run_update() {
   run_addon_updates
   update_motd_ip
   cleanup_lxc
-  # An update run ends here. Returning would continue in the ct script, whose
-  # next lines are build_container and description -- host code, which inside a
-  # container fails as "You need to set 'CTID' variable", "MAC: unbound
-  # variable", or on Alpine "dpkg: command not found".
-  #
-  # Every ct script papers over this with an exit at the end of its own
-  # update_script, which is why the three calls above have been unreachable.
-  # Those scripts exit before getting here, so this changes nothing for them.
   exit 0
 }
 

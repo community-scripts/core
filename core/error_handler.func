@@ -712,7 +712,7 @@ on_exit() {
   # Before anything else: the timings are only useful if they survive a failure.
   declare -f dev_mode_timing_summary >/dev/null 2>&1 && dev_mode_timing_summary
 
-  # Here rather than after update_script, which most ct scripts exit inside.
+  # Here, because most ct scripts exit inside update_script.
   declare -f apt_conffile_report >/dev/null 2>&1 && apt_conffile_report
 
   if _is_container_context; then

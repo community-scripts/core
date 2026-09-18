@@ -2409,17 +2409,9 @@ apt_update_safe() {
   return 0
 }
 
-# ------------------------------------------------------------------------------
-# apt_conffile_guard() / apt_conffile_report()
-#
-# - dpkg's "modified conffile" prompt has no tty during an update: it aborts the
-#   run, leaves the package half-configured, and stops every other pending
-#   package on the container with an error that never mentions conffiles
-# - Points APT_CONFIG at a throwaway file. apt reads it after apt.conf.d, and it
-#   dies with the process, so no drop-in can be left behind on an early exit
-# - Keeping the operator's file silently would trade a loud failure for a quiet
-#   one, so apt_conffile_report names what upstream shipped alongside it
-# ------------------------------------------------------------------------------
+# dpkg's conffile prompt has no tty during an update and takes the whole run
+# with it. APT_CONFIG is read after apt.conf.d and dies with the process, so an
+# early exit cannot leave a drop-in behind.
 _cs_conffile_list() {
   find "${_CS_CONFFILE_ROOT:-/etc}" -maxdepth 6 \( -name '*.dpkg-dist' -o -name '*.dpkg-new' \) 2>/dev/null | sort
 }
