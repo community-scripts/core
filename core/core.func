@@ -2410,6 +2410,57 @@ apt_update_safe() {
 }
 
 # ------------------------------------------------------------------------------
+# apt_conffile_guard() / apt_conffile_report()
+#
+# - dpkg's "modified conffile" prompt has no tty during an update: it aborts the
+#   run, leaves the package half-configured, and stops every other pending
+#   package on the container with an error that never mentions conffiles
+# - Points APT_CONFIG at a throwaway file. apt reads it after apt.conf.d, and it
+#   dies with the process, so no drop-in can be left behind on an early exit
+# - Keeping the operator's file silently would trade a loud failure for a quiet
+#   one, so apt_conffile_report names what upstream shipped alongside it
+# ------------------------------------------------------------------------------
+_cs_conffile_list() {
+  find "${_CS_CONFFILE_ROOT:-/etc}" -maxdepth 6 \( -name '*.dpkg-dist' -o -name '*.dpkg-new' \) 2>/dev/null | sort
+}
+
+apt_conffile_guard() {
+  command -v apt-get >/dev/null 2>&1 || return 0
+  [[ -n "${_CS_CONFFILE_GUARD:-}" ]] && return 0
+
+  local conf
+  conf="$(mktemp 2>/dev/null)" || return 0
+  printf 'Dpkg::Options { "--force-confdef"; "--force-confold"; };\n' >"$conf" 2>/dev/null || {
+    rm -f "$conf"
+    return 0
+  }
+
+  export APT_CONFIG="$conf"
+  _CS_CONFFILE_GUARD="$conf"
+  _CS_CONFFILE_BASELINE="$(_cs_conffile_list)"
+  return 0
+}
+
+apt_conffile_report() {
+  [[ -n "${_CS_CONFFILE_GUARD:-}" ]] || return 0
+
+  local added
+  added="$(comm -13 <(printf '%s\n' "${_CS_CONFFILE_BASELINE:-}") <(_cs_conffile_list) 2>/dev/null)"
+  rm -f "$_CS_CONFFILE_GUARD"
+  _CS_CONFFILE_GUARD=""
+  unset APT_CONFIG
+  [[ -n "${added//[[:space:]]/}" ]] || return 0
+
+  msg_warn "Kept your version of these config files - upstream shipped changes to them too:"
+  local f
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    echo -e "${TAB}${YW}${f%.dpkg-*}${CL} - new upstream version at ${YW}${f}${CL}"
+  done <<<"$added"
+  return 0
+}
+
+# ------------------------------------------------------------------------------
 # ensure_whiptail()
 #
 # - Ensures whiptail is installed
