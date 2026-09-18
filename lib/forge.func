@@ -1221,11 +1221,7 @@ _forge_http_get() {
   auth="$(_forge_descriptor "$forge" auth)"
   [[ -n "$auth" ]] && headers+=(-H "$auth")
 
-  # A dropped connection and a truncated body land on 000. A 200 carrying
-  # something that is not JSON -- a proxy error page, a secondary rate limit
-  # notice -- looked like success here and fell through to the caller's
-  # selection, which then found nothing and reported it as "no release".
-  # Treat it as the transport failure it is, so it enters the retry below.
+  # A dropped connection, a truncated body and a non-JSON 200 all land on 000.
   local attempt=1 delay=2 api_message=""
   while :; do
     code="$(_forge_curl "$out" "${headers[@]}" "$url")"
@@ -1233,9 +1229,6 @@ _forge_http_get() {
       if ! jq -e . >/dev/null 2>&1 <"$out"; then
         code="000"
       else
-        # A 200 can also carry an API error object -- a secondary rate limit
-        # says so in .message. Retrying that wastes the backoff, so pass the
-        # wording through instead of letting it read as an empty release list.
         api_message="$(jq -r 'if type == "object" and has("message") and (has("tag_name") | not)
           then .message else empty end' "$out" 2>/dev/null)"
       fi
@@ -1445,9 +1438,7 @@ _forge_release_json() {
     rm -f "$raw"
   fi
 
-  # _forge_http_get guarantees the payload parsed, so an empty selection here
-  # is a fact about the repository, not a failed request. Say which, or the
-  # next person debugging this cannot tell the two apart from the message.
+  # The payload parsed, so an empty selection is the repository's state.
   [[ -s "$out" ]] || {
     if [[ -n "$tag_prefix" ]]; then
       msg_error "${repo} has no stable release whose tag starts with '${tag_prefix}'"
