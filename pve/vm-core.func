@@ -131,33 +131,47 @@ load_cloud_init_functions() {
   return 1
 }
 
+# Banner slugs to try, longest first. The generator keys on the first APP= line,
+# but a few scripts append the release and type before drawing ("AlmaLinux 10
+# VM") and so ask for a banner that was never generated. Only a trailing version
+# or VM/LXC is dropped and retried; any other word ends the walk, so "Home
+# Assistant OS" cannot fall back onto a "homeassistant" banner.
+_cs_header_slugs() {
+  local -a words
+  read -ra words <<<"$1"
+  local i last
+  for ((i = ${#words[@]}; i > 0; i--)); do
+    echo "${words[*]:0:i}" | tr '[:upper:]' '[:lower:]' | tr -d ' '
+    last="${words[i - 1],,}"
+    [[ "$last" =~ ^v?[0-9][0-9.]*$ || "$last" == "vm" || "$last" == "lxc" ]] || break
+  done
+}
+
 # Function to download & save header files
 get_header() {
   local app_type=${APP_TYPE:-vm}
-
-  # Headers live only in core; the slug is APP lowercased without spaces, as
-  # its generator writes them. No banner usually means no APP= line to read.
-  local slug
-  slug=$(echo "${APP,,}" | tr -d ' ')
-  [[ -z "$slug" ]] && return 1
-
   local core_base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
-  local cache="/usr/local/community-scripts/headers/${app_type}/${slug}"
-  mkdir -p "$(dirname "$cache")"
+  local slug cache
 
-  if [ -s "$cache" ]; then
-    cat "$cache"
-    return 0
-  fi
+  while read -r slug; do
+    [[ -z "$slug" ]] && continue
+    cache="/usr/local/community-scripts/headers/${app_type}/${slug}"
+    mkdir -p "$(dirname "$cache")"
 
-  # A banner the generator has not produced yet 404s here, which is expected
-  # and not worth printing at the user. header_info simply draws nothing.
-  if curl -fsSL "${core_base}/headers/${app_type}/${slug}" -o "$cache" 2>/dev/null && [ -s "$cache" ]; then
-    cat "$cache"
-    return 0
-  fi
+    if [ -s "$cache" ]; then
+      cat "$cache"
+      return 0
+    fi
 
-  rm -f "$cache"
+    # A banner the generator has not produced yet 404s here, which is expected
+    # and not worth printing at the user. header_info simply draws nothing.
+    if curl -fsSL "${core_base}/headers/${app_type}/${slug}" -o "$cache" 2>/dev/null && [ -s "$cache" ]; then
+      cat "$cache"
+      return 0
+    fi
+    rm -f "$cache"
+  done < <(_cs_header_slugs "${1:-$APP}")
+
   return 1
 }
 
