@@ -218,6 +218,14 @@ ensure_profile_loaded() {
 
 # The retired Gitea mirror; GitHub serves the same repos. Mirrored in
 # misc/update.sh, which cannot source this file.
+#
+# Also rewrites the project's pre-rename home (tteck/Proxmox): containers
+# built long enough ago still carry this host in a baked-in
+# COMMUNITY_SCRIPTS_URL, and tteck/Proxmox's own ct/ scripts are years
+# stale (pip/venv-era installs, no longer maintained) - silently running
+# one instead of the current script is worse than the Gitea case above,
+# since it can reinstall an app with an ancient, incompatible flow instead
+# of just fetching from a redirected-but-current source.
 # ------------------------------------------------------------------------------
 _cs_live_base() {
   local u="${1%/}"
@@ -228,6 +236,9 @@ _cs_live_base() {
     u="${u/\/raw\/tag\//\/}"
     u="${u/\/raw\/commit\//\/}"
     printf 'https://raw.githubusercontent.com/%s' "$u"
+    ;;
+  *tteck/Proxmox*)
+    printf 'https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main'
     ;;
   *) printf '%s' "$u" ;;
   esac
@@ -307,10 +318,16 @@ EOF
 # ------------------------------------------------------------------------------
 migrate_update_entrypoint() {
   # Nothing to do only if it is on the helper, points somewhere that still
-  # serves scripts, and records a usable name.
+  # serves scripts, and records a usable name. Being on the helper format
+  # is not enough on its own: an entrypoint can already call misc/update.sh
+  # while still carrying a dead COMMUNITY_SCRIPTS_URL baked in at whatever
+  # point it was last (re)generated - e.g. tteck/Proxmox, this project's
+  # pre-rename home. That case must fall through to a regeneration below
+  # exactly like the retired Gitea mirror does, or it never self-heals.
   if [[ -f /usr/bin/update ]] &&
     grep -q "misc/update.sh" /usr/bin/update 2>/dev/null &&
     ! grep -q "git.community-scripts.org" /usr/bin/update 2>/dev/null &&
+    ! grep -q "tteck/Proxmox" /usr/bin/update 2>/dev/null &&
     grep -qE '^export UPDATE_SCRIPT_NAME="[a-zA-Z0-9._-]+"$' /usr/bin/update 2>/dev/null; then
     return 0
   fi
