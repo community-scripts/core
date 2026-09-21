@@ -82,6 +82,26 @@ update_motd_ip() {
   # Update dynamic LXC details profile if values changed (e.g., after OS upgrade)
   # Only update if file exists and is from community-scripts
   if [ -f "$profile_file" ] && grep -q "community-scripts" "$profile_file" 2>/dev/null; then
+    # Legacy header: re-derives the app name by grepping /usr/bin/update's own
+    # text, which breaks once migrate_update_entrypoint parameterizes that URL.
+    # Collapse it to a static line using the name already resolved there.
+    if grep -q 'APPL_NAME' "$profile_file" 2>/dev/null; then
+      local legacy_name
+      legacy_name="$(grep -m1 '^export UPDATE_SCRIPT_NAME=' /usr/bin/update 2>/dev/null | cut -d'"' -f2)"
+      if [[ "$legacy_name" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        local display_name="${legacy_name^}"
+        # Raw bytes, not $YW/$CL: unset in a login shell on affected containers.
+        local tmp_header
+        tmp_header="$(mktemp)"
+        printf 'echo -e ""\necho -e "\033[1m%s LXC Container\033[m"\n' "$display_name" >"$tmp_header"
+        sed -i "/APPL_NAME/,/LXC Container/{
+          /LXC Container/r $tmp_header
+          d
+        }" "$profile_file"
+        rm -f "$tmp_header"
+      fi
+    fi
+
     # Get current values
     local current_os="$(grep ^NAME /etc/os-release | cut -d= -f2 | tr -d '"') - Version: $(grep ^VERSION_ID /etc/os-release | cut -d= -f2 | tr -d '"')"
     local current_hostname="$(hostname)"
