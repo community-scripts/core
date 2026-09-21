@@ -110,12 +110,21 @@ update_motd_ip() {
     # a few lines above already handles that and is used for the MOTD line.
     local current_ip="$(get_current_ip)"
 
-    # Update only if values actually changed
-    if ! grep -q "OS:.*$current_os" "$profile_file" 2>/dev/null; then
-      sed -i "s|OS:.*|OS: \${GN}$current_os\${CL}\\\"|" "$profile_file"
+    # $GN/$CL are unset in a login shell, so a line using them never colors.
+    # The staleness checks below only compare the value text, so a line with a
+    # current value but a dead placeholder is never revisited; force it here.
+    local esc broken_os broken_hostname broken_ip
+    esc=$'\033'
+    grep -qE 'OS:.*\$\{GN\}' "$profile_file" 2>/dev/null && broken_os=1
+    grep -qE 'Hostname:.*\$\{GN\}' "$profile_file" 2>/dev/null && broken_hostname=1
+    grep -qE 'IP Address:.*\$\{GN\}' "$profile_file" 2>/dev/null && broken_ip=1
+
+    # Update only if values actually changed (or the color placeholder is dead)
+    if [[ -n "${broken_os:-}" ]] || ! grep -q "OS:.*$current_os" "$profile_file" 2>/dev/null; then
+      sed -i "s|OS:.*|OS: ${esc}[1;92m$current_os${esc}[m\\\"|" "$profile_file"
     fi
-    if ! grep -q "Hostname:.*$current_hostname" "$profile_file" 2>/dev/null; then
-      sed -i "s|Hostname:.*|Hostname: \${GN}$current_hostname\${CL}\\\"|" "$profile_file"
+    if [[ -n "${broken_hostname:-}" ]] || ! grep -q "Hostname:.*$current_hostname" "$profile_file" 2>/dev/null; then
+      sed -i "s|Hostname:.*|Hostname: ${esc}[1;92m$current_hostname${esc}[m\\\"|" "$profile_file"
     fi
     # motd_ssh writes the IP line as a command substitution so it follows the
     # container. Rewriting it here replaced that with whatever the address was
@@ -124,8 +133,8 @@ update_motd_ip() {
     # fired on every run. Leave a line that computes its own value alone.
     if grep -q 'IP Address:.*\$(' "$profile_file" 2>/dev/null; then
       :
-    elif ! grep -q "IP Address:.*$current_ip" "$profile_file" 2>/dev/null; then
-      sed -i "s|IP Address:.*|IP Address: \${GN}$current_ip\${CL}\\\"|" "$profile_file"
+    elif [[ -n "${broken_ip:-}" ]] || ! grep -q "IP Address:.*$current_ip" "$profile_file" 2>/dev/null; then
+      sed -i "s|IP Address:.*|IP Address: ${esc}[1;92m$current_ip${esc}[m\\\"|" "$profile_file"
     fi
   fi
 }
