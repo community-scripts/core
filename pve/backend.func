@@ -1766,6 +1766,35 @@ destroy_lxc() {
 # ------------------------------------------------------------------------------
 # Storage discovery / selection helpers
 # ------------------------------------------------------------------------------
+
+# A storage named in default.vars that no longer takes this content used to end
+# the run in a loop that asked nothing and never exited. Ask instead, and offer
+# to correct the file so the next run does not stop at the same place.
+_storage_preselect_recover() {
+  local class="$1" stale="$2" key vf
+
+  case "$class" in
+  template) key="var_template_storage" ;;
+  container) key="var_container_storage" ;;
+  *) return 1 ;;
+  esac
+
+  select_storage "$class" || return 1
+
+  vf="${CS_DEFAULT_VARS_FILE:-}"
+  [[ -n "$stale" && -n "$vf" && -f "$vf" ]] || return 0
+  [[ "$stale" == "$STORAGE_RESULT" ]] && return 0
+  grep -qE "^[#[:space:]]*${key}=" "$vf" 2>/dev/null || return 0
+  declare -f _write_storage_to_vars >/dev/null 2>&1 || return 0
+
+  if whiptail --backtitle "Proxmox VE Helper Scripts" --title "UPDATE DEFAULTS" \
+    --yesno "${key} in default.vars still points at '${stale}', which cannot hold this content.\n\nReplace it with '${STORAGE_RESULT}'?" 12 72; then
+    _write_storage_to_vars "$vf" "$key" "$STORAGE_RESULT"
+    msg_ok "Set ${key}=${STORAGE_RESULT} in ${vf}"
+  fi
+  return 0
+}
+
 resolve_storage_preselect() {
   local class="$1" preselect="$2" required_content=""
   case "$class" in
@@ -2497,16 +2526,10 @@ create_lxc_container() {
     TEMPLATE_STORAGE_INFO="$STORAGE_INFO"
     msg_ok "Storage ${BL}${TEMPLATE_STORAGE}${CL} (${TEMPLATE_STORAGE_INFO}) [Template]"
   else
-    while true; do
-      if [[ -z "${var_template_storage:-}" ]]; then
-        if select_storage template; then
-          TEMPLATE_STORAGE="$STORAGE_RESULT"
-          TEMPLATE_STORAGE_INFO="$STORAGE_INFO"
-          msg_ok "Storage ${BL}${TEMPLATE_STORAGE}${CL} (${TEMPLATE_STORAGE_INFO}) [Template]"
-          break
-        fi
-      fi
-    done
+    _storage_preselect_recover template "${TEMPLATE_STORAGE:-}" || exit 120
+    TEMPLATE_STORAGE="$STORAGE_RESULT"
+    TEMPLATE_STORAGE_INFO="$STORAGE_INFO"
+    msg_ok "Storage ${BL}${TEMPLATE_STORAGE}${CL} (${TEMPLATE_STORAGE_INFO}) [Template]"
   fi
 
   # Container storage selection
@@ -2515,13 +2538,10 @@ create_lxc_container() {
     CONTAINER_STORAGE_INFO="$STORAGE_INFO"
     msg_ok "Storage ${BL}${CONTAINER_STORAGE}${CL} (${CONTAINER_STORAGE_INFO}) [Container]"
   else
-    if [[ -z "${var_container_storage:-}" ]]; then
-      if select_storage container; then
-        CONTAINER_STORAGE="$STORAGE_RESULT"
-        CONTAINER_STORAGE_INFO="$STORAGE_INFO"
-        msg_ok "Storage ${BL}${CONTAINER_STORAGE}${CL} (${CONTAINER_STORAGE_INFO}) [Container]"
-      fi
-    fi
+    _storage_preselect_recover container "${CONTAINER_STORAGE:-}" || exit 119
+    CONTAINER_STORAGE="$STORAGE_RESULT"
+    CONTAINER_STORAGE_INFO="$STORAGE_INFO"
+    msg_ok "Storage ${BL}${CONTAINER_STORAGE}${CL} (${CONTAINER_STORAGE_INFO}) [Container]"
   fi
 
   msg_info "Validating storage '$CONTAINER_STORAGE'"

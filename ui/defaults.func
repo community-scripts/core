@@ -802,6 +802,9 @@ EOF
     msg_error "default.vars not found after ensure step"
     return 1
   }
+  # Later steps need the file they are reading from: a storage named here that
+  # no longer holds the content has to be corrected in this file, not a guess.
+  export CS_DEFAULT_VARS_FILE="$dv"
   load_vars_file "$dv" "no" "${!_HARD_ENV[*]}"
 
   # 3) Map var_verbose → VERBOSE
