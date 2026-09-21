@@ -85,7 +85,7 @@ update_motd_ip() {
     # Legacy header: re-derives the app name by grepping /usr/bin/update's own
     # text, which breaks once migrate_update_entrypoint parameterizes that URL.
     # Collapse it to a static line using the name already resolved there.
-    if grep -q 'APPL_NAME' "$profile_file" 2>/dev/null; then
+    if grep -q 'APPL_NAME' "$profile_file" 2>/dev/null && grep -q 'LXC Container' "$profile_file" 2>/dev/null; then
       local legacy_name
       legacy_name="$(grep -m1 '^export UPDATE_SCRIPT_NAME=' /usr/bin/update 2>/dev/null | cut -d'"' -f2)"
       if [[ "$legacy_name" =~ ^[a-zA-Z0-9._-]+$ ]]; then
@@ -113,17 +113,17 @@ update_motd_ip() {
     # $GN/$CL are unset in a login shell, so a line using them never colors.
     # The staleness checks below only compare the value text, so a line with a
     # current value but a dead placeholder is never revisited; force it here.
-    local esc broken_os broken_hostname broken_ip
+    local esc dead_color_os dead_color_hostname dead_color_ip
     esc=$'\033'
-    grep -qE 'OS:.*\$\{GN\}' "$profile_file" 2>/dev/null && broken_os=1
-    grep -qE 'Hostname:.*\$\{GN\}' "$profile_file" 2>/dev/null && broken_hostname=1
-    grep -qE 'IP Address:.*\$\{GN\}' "$profile_file" 2>/dev/null && broken_ip=1
+    grep -qE 'OS:.*\$\{GN\}' "$profile_file" 2>/dev/null && dead_color_os=1
+    grep -qE 'Hostname:.*\$\{GN\}' "$profile_file" 2>/dev/null && dead_color_hostname=1
+    grep -qE 'IP Address:.*\$\{GN\}' "$profile_file" 2>/dev/null && dead_color_ip=1
 
     # Update only if values actually changed (or the color placeholder is dead)
-    if [[ -n "${broken_os:-}" ]] || ! grep -q "OS:.*$current_os" "$profile_file" 2>/dev/null; then
+    if [[ -n "${dead_color_os:-}" ]] || ! grep -q "OS:.*$current_os" "$profile_file" 2>/dev/null; then
       sed -i "s|OS:.*|OS: ${esc}[1;92m$current_os${esc}[m\\\"|" "$profile_file"
     fi
-    if [[ -n "${broken_hostname:-}" ]] || ! grep -q "Hostname:.*$current_hostname" "$profile_file" 2>/dev/null; then
+    if [[ -n "${dead_color_hostname:-}" ]] || ! grep -q "Hostname:.*$current_hostname" "$profile_file" 2>/dev/null; then
       sed -i "s|Hostname:.*|Hostname: ${esc}[1;92m$current_hostname${esc}[m\\\"|" "$profile_file"
     fi
     # motd_ssh writes the IP line as a command substitution so it follows the
@@ -133,7 +133,7 @@ update_motd_ip() {
     # fired on every run. Leave a line that computes its own value alone.
     if grep -q 'IP Address:.*\$(' "$profile_file" 2>/dev/null; then
       :
-    elif [[ -n "${broken_ip:-}" ]] || ! grep -q "IP Address:.*$current_ip" "$profile_file" 2>/dev/null; then
+    elif [[ -n "${dead_color_ip:-}" ]] || ! grep -q "IP Address:.*$current_ip" "$profile_file" 2>/dev/null; then
       sed -i "s|IP Address:.*|IP Address: ${esc}[1;92m$current_ip${esc}[m\\\"|" "$profile_file"
     fi
   fi
