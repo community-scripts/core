@@ -109,6 +109,7 @@ prepare_repository_setup
 prompt_for_github_token
 remove_old_tool_version
 restore_backup
+rust_prune_toolchains
 safe_service_restart
 setup_adminer
 setup_clickhouse

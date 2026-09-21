@@ -2204,9 +2204,10 @@ cleanup_lxc() {
     $STD go clean -cache 2>/dev/null || true
   fi
 
-  # Rust (only registry cache, not build artifacts)
+  # Rust (registry cache and toolchains a build pulled in, not build artifacts)
   if command -v cargo &>/dev/null; then
     rm -rf /root/.cargo/registry/cache /root/.cargo/.package-cache 2>/dev/null || true
+    declare -f rust_prune_toolchains >/dev/null 2>&1 && rust_prune_toolchains
   fi
 
   # Ruby

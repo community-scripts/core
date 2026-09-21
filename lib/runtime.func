@@ -2262,6 +2262,21 @@ EOF
   chmod +x /etc/profile.d/99-cargo.sh
 }
 
+# A source tree with rust-toolchain.toml makes rustup install that exact
+# version on build and never remove it. Keep the default, drop the rest.
+rust_prune_toolchains() {
+  command -v rustup >/dev/null 2>&1 || return 0
+
+  local keep t
+  keep=$(rustup toolchain list 2>/dev/null | awk '/\(default\)/{print $1; exit}')
+  [[ -z "$keep" ]] && return 0
+
+  while read -r t; do
+    [[ -z "$t" || "$t" == "$keep" ]] && continue
+    $STD rustup toolchain uninstall "$t" 2>/dev/null || true
+  done < <(rustup toolchain list 2>/dev/null | awk '{print $1}')
+}
+
 setup_rust() {
   local RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-stable}"
   local RUST_PROFILE="${RUST_PROFILE:-default}"
@@ -2446,6 +2461,8 @@ setup_rust() {
 
     msg_ok "Processed Rust crates"
   fi
+
+  rust_prune_toolchains
 }
 
 # ------------------------------------------------------------------------------
