@@ -42,6 +42,7 @@ _setup_nvidia_gpu
 _setup_rocm
 _tools_cleanup_temp_dirs
 _tools_register_temp_cleanup
+_uv_required_version
 cache_installed_version
 check_for_codeberg_release
 check_for_gh_branch
