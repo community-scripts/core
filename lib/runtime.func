@@ -1608,6 +1608,16 @@ setup_nodejs() {
   # instead, so an unapproved build warns rather than aborts.
   if command -v pnpm >/dev/null 2>&1; then
     pnpm config set --global strictDepBuilds false >/dev/null 2>&1 || true
+    pnpm config set --global fetch-timeout 600000 >/dev/null 2>&1 || true
+    pnpm config set --global network-concurrency 8 >/dev/null 2>&1 || true
+  fi
+
+  if command -v yarn >/dev/null 2>&1; then
+    if [[ "$(yarn --version 2>/dev/null | cut -d. -f1)" == "1" ]]; then
+      $STD yarn config set network-timeout 600000 2>/dev/null || true
+    else
+      $STD yarn config set --home httpTimeout 600000 2>/dev/null || true
+    fi
   fi
 }
 
