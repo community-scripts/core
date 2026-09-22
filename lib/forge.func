@@ -470,21 +470,47 @@ _download_source_tarball() {
 # directory" for entries deleted on purpose. A file rather than an array,
 # because node_modules reaches tens of thousands of paths.
 _cs_clean_target_dir() {
-  local dir="${1:?directory}" list
+  local dir="${1:?directory}" list entry stash=""
   [[ -d "$dir" ]] || return 0
+  dir="${dir%/}"
+
+  # CLEAN_INSTALL_KEEP holds paths relative to the target that survive the wipe.
+  # Moved aside rather than pruned from find: a kept path can be nested, and
+  # removing its parent would take it along. mv also keeps a symlink a symlink,
+  # which is the case that brought this about.
+  local -a keep=()
+  [[ -n "${CLEAN_INSTALL_KEEP:-}" ]] && read -ra keep <<<"$CLEAN_INSTALL_KEEP"
+  if ((${#keep[@]})); then
+    stash="$(mktemp -d -p "$(dirname "$dir")" .clean-keep.XXXXXX)" || return 1
+    for entry in "${keep[@]}"; do
+      entry="${entry#/}"
+      [[ -n "$entry" && -e "$dir/$entry" ]] || continue
+      mkdir -p "$stash/$(dirname "$entry")"
+      mv "$dir/$entry" "$stash/$entry" || msg_warn "Could not preserve ${entry}"
+    done
+  fi
 
   # mountpoint lives in util-linux, which a minimal Alpine may not have. Without
   # it the -exec below would fail once per directory, and there is nothing to
   # protect anyway -- so drop the top-level entries and let rm recurse.
   if ! command -v mountpoint >/dev/null 2>&1; then
     find "${dir:?}" -mindepth 1 -maxdepth 1 -print0 | xargs -0 rm -rf --
-    return 0
+  else
+    list="$(mktemp)" || return 1
+    find "${dir:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o -print0 >"$list"
+    xargs -0 rm -rf -- <"$list"
+    rm -f "$list"
   fi
 
-  list="$(mktemp)" || return 1
-  find "${dir:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o -print0 >"$list"
-  xargs -0 rm -rf -- <"$list"
-  rm -f "$list"
+  if [[ -n "$stash" ]]; then
+    for entry in "${keep[@]}"; do
+      entry="${entry#/}"
+      [[ -n "$entry" && -e "$stash/$entry" ]] || continue
+      mkdir -p "$dir/$(dirname "$entry")"
+      mv "$stash/$entry" "$dir/$entry" || msg_warn "Could not restore ${entry}"
+    done
+    rm -rf "$stash"
+  fi
 }
 
 # ------------------------------------------------------------------------------
@@ -498,6 +524,8 @@ _cs_clean_target_dir() {
 #   - Honors CLEAN_INSTALL=1 (wipes <target> first, dotfiles included, mount
 #     points preserved — back up config dotfiles like .env via create_backup
 #     and call restore_backup BEFORE any build step that sources them).
+#   - Honors CLEAN_INSTALL_KEEP, a space-separated list of paths relative to
+#     <target> that the wipe leaves alone (e.g. "geodata .env data/uploads").
 #   - Does NOT own <workdir>: the caller creates it and is responsible for its
 #     cleanup (typically via a RETURN trap on its tmpdir).
 #   - cp failures are non-fatal here, matching the previous inline behavior.
@@ -543,6 +571,8 @@ _deploy_source_tarball() {
 #   - Honors CLEAN_INSTALL=1 (wipes <target> first, dotfiles included, mount
 #     points preserved — back up config dotfiles like .env via create_backup
 #     and call restore_backup BEFORE any build step that sources them).
+#   - Honors CLEAN_INSTALL_KEEP, a space-separated list of paths relative to
+#     <target> that the wipe leaves alone (e.g. "geodata .env data/uploads").
 #   - Does NOT own <workdir>: the caller creates it and cleans it up.
 #
 # Returns: 0 on success, 65 on unsupported format, 251 on extraction failure,
