@@ -1031,6 +1031,28 @@ stop_spinner() {
   stty sane 2>/dev/null || true
 }
 
+# msg_info opens a block, msg_ok closes it. A helper that opens a block of its
+# own in between (setup_uv, setup_nodejs, fetch_and_deploy_*) used to leave the
+# outer one dead: the inner msg_info stopped its spinner and nothing brought it
+# back, so the outer msg_ok reported on a block that had been invisible since.
+declare -ga _MSG_BLOCKS=()
+
+_msg_block_resume() {
+  ((${#_MSG_BLOCKS[@]})) || return 0
+  SPINNER_MSG="${_MSG_BLOCKS[-1]}"
+
+  if is_verbose_mode || is_alpine; then
+    printf "\r\e[2K%s %b" "${TAB}⏳${TAB}" "${YW}${SPINNER_MSG}${CL}" >&2
+    return 0
+  fi
+
+  color_spinner
+  spinner &
+  SPINNER_PID=$!
+  echo "$SPINNER_PID" >/tmp/.spinner.pid
+  disown "$SPINNER_PID" 2>/dev/null || true
+}
+
 # ------------------------------------------------------------------------------
 # _cs_os_family()
 #
@@ -1161,6 +1183,7 @@ msg_info() {
 
   stop_spinner
   SPINNER_MSG="$msg"
+  _MSG_BLOCKS+=("$msg")
 
   if is_verbose_mode || is_alpine; then
     local HOURGLASS="${TAB}⏳${TAB}"
@@ -1200,12 +1223,14 @@ msg_ok() {
   local msg="$1"
   [[ -z "$msg" ]] && return
   stop_spinner
+  ((${#_MSG_BLOCKS[@]})) && unset '_MSG_BLOCKS[-1]'
   clear_line
   echo -e "$CM${GN}${msg}${CL}$(_dev_step_end "$msg")"
   log_msg "[OK] $msg"
   local sanitized_key
   sanitized_key=$(printf '%s' "$msg" | sed 's/\x1b\[[0-9;]*m//g; s/[^a-zA-Z0-9_]/_/g')
   unset 'MSG_INFO_SHOWN['"$sanitized_key"']' 2>/dev/null || true
+  _msg_block_resume
 }
 
 # ------------------------------------------------------------------------------
@@ -1218,6 +1243,7 @@ msg_ok() {
 # ------------------------------------------------------------------------------
 msg_error() {
   stop_spinner
+  _MSG_BLOCKS=()
   local msg="$1"
   echo -e "${BFR:-}${CROSS:-✖️}${RD}${msg}${CL}" >&2
   log_msg "[ERROR] $msg"
@@ -1233,6 +1259,7 @@ msg_error() {
 # ------------------------------------------------------------------------------
 msg_warn() {
   stop_spinner
+  _MSG_BLOCKS=()
   local msg="$1"
   echo -e "${BFR:-}${INFO:-ℹ️} ${YWB}${msg}${CL}" >&2
   log_msg "[WARN] $msg"
@@ -2043,6 +2070,21 @@ prompt_select() {
 #   # Require user input (no default)
 #   db_pass=$(prompt_password "Database password:" "" 60 12)
 # ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# random_password [length]
+#
+# Alphanumeric on purpose: base64 output carries / and +, which break the DSN
+# and URL strings these passwords are pasted into. Reads a fixed chunk instead
+# of piping /dev/urandom into head, so nothing takes a SIGPIPE under pipefail.
+# ------------------------------------------------------------------------------
+random_password() {
+  local len="${1:-24}" out=""
+  while ((${#out} < len)); do
+    out+="$(LC_ALL=C tr -dc 'A-Za-z0-9' < <(head -c 256 /dev/urandom))"
+  done
+  printf '%s' "${out:0:len}"
+}
+
 prompt_password() {
   local message="${1:-Enter password:}"
   local default="${2:-}"
