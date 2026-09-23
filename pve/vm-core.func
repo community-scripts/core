@@ -2069,7 +2069,7 @@ vm_select_storage() {
     if pvesm status -storage "$STORAGE" &>/dev/null; then
       # The interactive path ends with this too. Skipping it here left
       # DISK_IMPORT_FORMAT and friends unset for every preselected storage.
-      STORAGE_TYPE=$(pvesm status -storage "$STORAGE" | awk 'NR>1 {print $2}')
+      STORAGE_TYPE=$(pvesm status -storage "$STORAGE" 2>/dev/null | awk 'NR>1 {print $2}')
       vm_apply_storage_layout "$STORAGE_TYPE"
       msg_ok "Using ${CL}${BL}$STORAGE${CL} ${GN}for Storage Location."
       return 0
@@ -2090,9 +2090,9 @@ vm_select_storage() {
       msg_max_length=$((${#item} + offset))
     fi
     storage_menu+=("$tag" "$item" "OFF")
-  done < <(pvesm status -content images | awk 'NR>1')
+  done < <(pvesm status -content images 2>/dev/null | awk 'NR>1')
 
-  valid_storage=$(pvesm status -content images | awk 'NR>1')
+  valid_storage=$(pvesm status -content images 2>/dev/null | awk 'NR>1')
   if [ -z "$valid_storage" ]; then
     msg_error "Unable to detect a valid storage location."
     exit 119 # no valid storage found
@@ -2123,7 +2123,7 @@ vm_select_storage() {
   msg_ok "Using ${CL}${BL}$STORAGE${CL} ${GN}for Storage Location."
   msg_ok "Virtual Machine ID is ${CL}${BL}$VMID${CL}."
 
-  STORAGE_TYPE=$(pvesm status -storage "$STORAGE" | awk 'NR>1 {print $2}')
+  STORAGE_TYPE=$(pvesm status -storage "$STORAGE" 2>/dev/null | awk 'NR>1 {print $2}')
   vm_apply_storage_layout "$STORAGE_TYPE"
 }
 
