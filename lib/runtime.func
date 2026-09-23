@@ -108,7 +108,6 @@ setup_composer() {
   fi
 
   chmod +x "$COMPOSER_BIN"
-  # 300s is composer's default and not enough for a large vendor tree.
   "$COMPOSER_BIN" config --global process-timeout 600 >/dev/null 2>&1 || true
   $STD "$COMPOSER_BIN" self-update --no-interaction || {
     msg_warn "Composer self-update failed after fresh install"
@@ -2265,8 +2264,7 @@ EOF
   chmod +x /etc/profile.d/99-cargo.sh
 }
 
-# cargo gives up after one retry, which a container on a busy host loses to
-# regularly. Appended rather than written, so an existing config survives.
+# Appended, not written, so an existing config survives.
 _cs_write_cargo_net() {
   local cfg="${CARGO_HOME:-${HOME:-/root}/.cargo}/config.toml"
   grep -q '^\[net\]' "$cfg" 2>/dev/null && return 0
@@ -2507,8 +2505,7 @@ _uv_required_version() {
 # UV_PROJECT_DIR - optional project directory; its uv pin wins over the latest
 # release. Set as a prefix, like PYTHON_VERSION and UV_VERSION.
 setup_uv() {
-  # uv has no config key for this; its default of 30s is too little for a large
-  # wheel over a slow link.
+  # uv has no config key for this, only the env var.
   export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-600}"
   local PROJECT_DIR="${UV_PROJECT_DIR:-}"
   local UV_BIN="/usr/local/bin/uv"

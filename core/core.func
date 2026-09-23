@@ -1031,10 +1031,8 @@ stop_spinner() {
   stty sane 2>/dev/null || true
 }
 
-# msg_info opens a block, msg_ok closes it. A helper that opens a block of its
-# own in between (setup_uv, setup_nodejs, fetch_and_deploy_*) used to leave the
-# outer one dead: the inner msg_info stopped its spinner and nothing brought it
-# back, so the outer msg_ok reported on a block that had been invisible since.
+# A helper opening its own block (setup_uv, setup_nodejs) stopped the outer
+# one's spinner and nothing brought it back.
 declare -ga _MSG_BLOCKS=()
 
 _msg_block_resume() {
@@ -2070,13 +2068,8 @@ prompt_select() {
 #   # Require user input (no default)
 #   db_pass=$(prompt_password "Database password:" "" 60 12)
 # ------------------------------------------------------------------------------
-# ------------------------------------------------------------------------------
-# random_password [length]
-#
-# Alphanumeric on purpose: base64 output carries / and +, which break the DSN
-# and URL strings these passwords are pasted into. Reads a fixed chunk instead
-# of piping /dev/urandom into head, so nothing takes a SIGPIPE under pipefail.
-# ------------------------------------------------------------------------------
+# random_password [length] - alphanumeric, because base64 carries / and +.
+# Reads a fixed chunk rather than piping urandom into head, which SIGPIPEs.
 random_password() {
   local len="${1:-24}" out=""
   while ((${#out} < len)); do

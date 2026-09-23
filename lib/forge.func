@@ -474,10 +474,8 @@ _cs_clean_target_dir() {
   [[ -d "$dir" ]] || return 0
   dir="${dir%/}"
 
-  # CLEAN_INSTALL_KEEP holds paths relative to the target that survive the wipe.
   # Moved aside rather than pruned from find: a kept path can be nested, and
-  # removing its parent would take it along. mv also keeps a symlink a symlink,
-  # which is the case that brought this about.
+  # removing its parent would take it along. mv also keeps a symlink a symlink.
   local -a keep=()
   [[ -n "${CLEAN_INSTALL_KEEP:-}" ]] && read -ra keep <<<"$CLEAN_INSTALL_KEEP"
   if ((${#keep[@]})); then
