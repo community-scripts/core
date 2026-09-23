@@ -55,7 +55,7 @@ list_available_apps() {
     find /tmp/proxmoxved-repo/install -name '*-install.sh' -printf '%f\n' |
       grep -vE "$exclude_pattern" |
       sed 's/-install\.sh$//' |
-      sort
+      sort || true
     return 0
   fi
 
@@ -70,7 +70,7 @@ list_available_apps() {
       grep -E '^[a-z0-9_-]+-install\.sh$' |
       grep -vE "$exclude_pattern" |
       sed 's/-install\.sh$//' |
-      sort
+      sort || true
     return 0
   fi
 
@@ -84,7 +84,7 @@ list_available_apps() {
       grep -E '^[a-z0-9_-]+-install\.sh$' |
       grep -vE "$exclude_pattern" |
       sed 's/-install\.sh$//' |
-      sort
+      sort || true
     return 0
   fi
 

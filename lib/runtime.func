@@ -1954,7 +1954,8 @@ get_php_fpm_socket() {
     echo "/run/php/php${PHP_VERSION}-fpm.sock"
     return 0
   fi
-  sock=$(find /run/php -maxdepth 1 -name "php*-fpm.sock" -type s 2>/dev/null | sort -V | tail -1)
+  # Unguarded, a missing /run/php aborts the caller before the message below.
+  sock=$({ find /run/php -maxdepth 1 -name "php*-fpm.sock" -type s 2>/dev/null || true; } | sort -V | tail -1)
   if [[ -z "$sock" ]]; then
     msg_error "No active PHP-FPM socket found under /run/php"
     return 1
