@@ -1505,8 +1505,11 @@ _vm_customize() {
     return 0
   fi
 
+  # Keep the tail, not the head: libguestfs echoes the whole failed command and
+  # puts the reason after it.
   detail="$(grep -m1 -iE 'error|cannot|failed' "$log" 2>/dev/null |
-    sed -E 's/^[^:]+: +//; s/[[:space:]]+$//' | cut -c1-140)"
+    sed -E 's/^[^:]+: +(error: )?//; s/[[:space:]]+$//')"
+  ((${#detail} > 160)) && detail="...${detail: -160}"
   [[ "$log" != /dev/null ]] && rm -f "$log"
 
   # Always 0: these run as bare statements under `set -e`, and the failure is
@@ -1534,7 +1537,8 @@ vm_prepare_cloud_image() {
   _vm_customize "machine-id" "$image" \
     --run-command 'truncate -s 0 /etc/machine-id; rm -f /var/lib/dbus/machine-id'
   _vm_customize "sshd password login" "$image" --run-command \
-    'sed -i "s/^#*PermitRootLogin.*/PermitRootLogin yes/;s/^#*PasswordAuthentication.*/PasswordAuthentication yes/" /etc/ssh/sshd_config'
+    '[ -f /etc/ssh/sshd_config ] || exit 0
+     sed -i "s/^#*PermitRootLogin.*/PermitRootLogin yes/;s/^#*PasswordAuthentication.*/PasswordAuthentication yes/" /etc/ssh/sshd_config'
 
   vm_enable_consoles "$image"
   vm_install_guest_agent "$image" || true
