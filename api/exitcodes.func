@@ -35,6 +35,10 @@ explain_exit_code() {
   local code="$1"
   case "$code" in
   # --- Generic / Shell ---
+  # Reached through the aborted branch of post_update_to_api: a clean exit that
+  # never reported success is someone backing out of a dialog. Every one of
+  # those records read "Unknown error".
+  0) echo "Cancelled before completion (no error)" ;;
   1) echo "General error / Operation not permitted" ;;
   2) echo "Misuse of shell builtins (e.g. syntax error)" ;;
   3) echo "General syntax or argument error" ;;
