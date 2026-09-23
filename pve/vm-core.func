@@ -1938,24 +1938,35 @@ vm_prepare_cloud_image() {
   local image="${1:?image}" hostname="${2:-${HN:-vm}}"
 
   if ! vm_ensure_virt_customize; then
-    msg_warn "Importing the image unmodified"
+    msg_warn "Importing the image unmodified - virt-customize is unavailable"
     return 1
   fi
 
+  _VM_PREPARE_FAILED=()
+  _VM_PREPARE_COLLECTING=1
+
   msg_info "Preparing the image"
-  virt-customize -q -a "$image" --hostname "$hostname" >/dev/null 2>&1 || true
+  _vm_customize "hostname" "$image" --hostname "$hostname"
   # A cloned machine-id gives every VM from this image the same DHCP lease.
-  virt-customize -q -a "$image" \
-    --run-command 'truncate -s 0 /etc/machine-id; rm -f /var/lib/dbus/machine-id' \
-    >/dev/null 2>&1 || true
+  _vm_customize "machine-id" "$image" \
+    --run-command 'truncate -s 0 /etc/machine-id; rm -f /var/lib/dbus/machine-id'
   # Cloud-Init sets a root password, which is useless if sshd refuses it.
-  virt-customize -q -a "$image" --run-command \
-    'sed -i "s/^#*PermitRootLogin.*/PermitRootLogin yes/;s/^#*PasswordAuthentication.*/PasswordAuthentication yes/" /etc/ssh/sshd_config' \
-    >/dev/null 2>&1 || true
+  _vm_customize "sshd password login" "$image" --run-command \
+    'sed -i "s/^#*PermitRootLogin.*/PermitRootLogin yes/;s/^#*PasswordAuthentication.*/PasswordAuthentication yes/" /etc/ssh/sshd_config'
 
   vm_enable_consoles "$image"
   vm_install_guest_agent "$image" || true
-  msg_ok "Prepared the image"
+  _VM_PREPARE_COLLECTING=0
+
+  if ((${#_VM_PREPARE_FAILED[@]})); then
+    msg_error "Prepared the image - ${#_VM_PREPARE_FAILED[@]} step(s) failed"
+    local step
+    for step in "${_VM_PREPARE_FAILED[@]}"; do
+      msg_warn "$step"
+    done
+  else
+    msg_ok "Prepared the image"
+  fi
   return 0
 }
 
@@ -1963,25 +1974,65 @@ vm_prepare_cloud_image() {
 # Proxmox's console stays black -- the VM is fine, nothing is drawing on it.
 # The nocloud image variants configure both consoles themselves, which is why
 # only the cloud-init path showed this.
+# Every virt-customize step used to end in `>/dev/null 2>&1 || true` and the
+# caller reported success either way, so an image none of them reached looked
+# exactly like one that worked. Failures are named instead: collected while
+# vm_prepare_cloud_image holds a msg block, warned about directly otherwise.
+declare -ga _VM_PREPARE_FAILED=()
+_VM_PREPARE_COLLECTING=0
+
+_vm_customize() {
+  local label="${1:?label}" image="${2:?image}"
+  shift 2
+  local log detail entry
+  log="$(mktemp)" || log=/dev/null
+
+  if virt-customize -q -a "$image" "$@" >"$log" 2>&1; then
+    [[ "$log" != /dev/null ]] && rm -f "$log"
+    return 0
+  fi
+
+  detail="$(grep -m1 -iE 'error|cannot|failed' "$log" 2>/dev/null |
+    sed -E 's/^[^:]+: +//; s/[[:space:]]+$//' | cut -c1-140)"
+  [[ "$log" != /dev/null ]] && rm -f "$log"
+
+  # Always 0: these run as bare statements under `set -e`, and the failure is
+  # recorded rather than lost. Callers that care compare the array length.
+  entry="${label}${detail:+ - ${detail}}"
+  _VM_PREPARE_FAILED+=("$entry")
+  ((_VM_PREPARE_COLLECTING)) || msg_warn "Image step failed: ${entry}"
+  return 0
+}
+
 vm_enable_consoles() {
-  local image="${1:?image}"
+  local image="${1:?image}" cloud_init="${2:-${USE_CLOUD_INIT:-yes}}"
   command -v virt-customize >/dev/null 2>&1 || return 0
 
-  # No autologin: cloud-init sets a password, so a prompt is the right thing.
-  virt-customize -q -a "$image" \
-    --run-command 'systemctl enable getty@tty1.service serial-getty@ttyS0.service' \
-    >/dev/null 2>&1 || true
+  # With cloud-init a password gets set, so a prompt is the right thing.
+  _vm_customize "console services" "$image" \
+    --run-command 'systemctl enable getty@tty1.service serial-getty@ttyS0.service'
+
+  # Without it nothing sets one, and the nocloud images ship a locked root: the
+  # getty above then puts an unanswerable prompt on tty1, which is exactly the
+  # login screen people hit in noVNC. Those images get in through console
+  # autologin, so give tty1 the same treatment the serial console already has.
+  if [[ "$cloud_init" != "yes" ]]; then
+    _vm_customize "tty1 autologin" "$image" --run-command \
+      'mkdir -p /etc/systemd/system/getty@tty1.service.d
+       printf "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear %%I \$TERM\n" \
+         >/etc/systemd/system/getty@tty1.service.d/autologin.conf'
+  fi
 
   # A getty alone only gets you a login prompt after boot -- the kernel still
   # talks to ttyS0 only, so the screen stays black until then. Listing tty1
   # first and ttyS0 last keeps qm terminal as the primary console while the
   # graphical one also shows the boot.
-  virt-customize -q -a "$image" --run-command \
+  _vm_customize "grub console" "$image" --run-command \
     'if [ -f /etc/default/grub ]; then
        sed -i "s/console=ttyS0[^ \"]*/console=tty1 &/" /etc/default/grub
        grep -q "console=tty1" /etc/default/grub || sed -i "s/\(GRUB_CMDLINE_LINUX_DEFAULT=\"\)/\1console=tty1 /" /etc/default/grub
        command -v update-grub >/dev/null 2>&1 && update-grub
-     fi' >/dev/null 2>&1 || true
+     fi'
   return 0
 }
 
@@ -1991,16 +2042,16 @@ vm_enable_consoles() {
 # appliance, so this reports rather than fails.
 vm_install_guest_agent() {
   local image="${1:?image}"
+  local before=${#_VM_PREPARE_FAILED[@]}
   command -v virt-customize >/dev/null 2>&1 || return 0
 
-  if virt-customize -q -a "$image" --install qemu-guest-agent >/dev/null 2>&1; then
-    virt-customize -q -a "$image" \
-      --run-command 'systemctl enable qemu-guest-agent.service' >/dev/null 2>&1 || true
-    return 0
-  fi
+  _vm_customize "qemu-guest-agent (VM shows no IP in Proxmox)" "$image" \
+    --install qemu-guest-agent
+  ((${#_VM_PREPARE_FAILED[@]} > before)) && return 1
 
-  msg_warn "Could not install qemu-guest-agent -- the VM will show no IP in Proxmox"
-  return 1
+  _vm_customize "guest agent service" "$image" \
+    --run-command 'systemctl enable qemu-guest-agent.service'
+  return 0
 }
 
 # Disk first, CD second. An empty disk is not bootable so the installer still
