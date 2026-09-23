@@ -71,6 +71,7 @@ setup_composer() {
     $STD "$COMPOSER_BIN" self-update --no-interaction || {
       msg_warn "Composer self-update failed, continuing with current version"
     }
+    "$COMPOSER_BIN" config --global process-timeout 600 >/dev/null 2>&1 || true
     local UPDATED_VERSION
     UPDATED_VERSION=$("$COMPOSER_BIN" --version 2>/dev/null | awk '{print $3}')
     cache_installed_version "composer" "$UPDATED_VERSION"
@@ -107,6 +108,7 @@ setup_composer() {
   fi
 
   chmod +x "$COMPOSER_BIN"
+  "$COMPOSER_BIN" config --global process-timeout 600 >/dev/null 2>&1 || true
   $STD "$COMPOSER_BIN" self-update --no-interaction || {
     msg_warn "Composer self-update failed after fresh install"
   }
@@ -2272,6 +2274,14 @@ EOF
   chmod +x /etc/profile.d/99-cargo.sh
 }
 
+# Appended, not written, so an existing config survives.
+_cs_write_cargo_net() {
+  local cfg="${CARGO_HOME:-${HOME:-/root}/.cargo}/config.toml"
+  grep -q '^\[net\]' "$cfg" 2>/dev/null && return 0
+  mkdir -p "$(dirname "$cfg")"
+  printf '\n[net]\nretry = 5\n' >>"$cfg"
+}
+
 # A source tree with rust-toolchain.toml makes rustup install that exact
 # version on build and never remove it. Keep the default, drop the rest.
 rust_prune_toolchains() {
@@ -2368,6 +2378,8 @@ setup_rust() {
     cache_installed_version "rust" "$RUST_VERSION"
     msg_ok "Update Rust $RUST_VERSION"
   fi
+
+  _cs_write_cargo_net
 
   # Install global crates
   if [[ -n "$RUST_CRATES" ]]; then
@@ -2503,6 +2515,8 @@ _uv_required_version() {
 # UV_PROJECT_DIR - optional project directory; its uv pin wins over the latest
 # release. Set as a prefix, like PYTHON_VERSION and UV_VERSION.
 setup_uv() {
+  # uv has no config key for this, only the env var.
+  export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-600}"
   local PROJECT_DIR="${UV_PROJECT_DIR:-}"
   local UV_BIN="/usr/local/bin/uv"
   local UVX_BIN="/usr/local/bin/uvx"

@@ -37,6 +37,7 @@ _is_whitelisted_key
 _list_os_versions
 _list_templates
 _load_vars_file_to_map
+_msg_block_resume
 _msg_fit
 _pve_version
 _pveam_available
@@ -158,6 +159,7 @@ prompt_input_required
 prompt_password
 prompt_select
 pve_check
+random_password
 reclaim_tty
 require_debian_like
 require_pve_host
