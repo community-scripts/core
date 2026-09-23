@@ -2418,7 +2418,9 @@ apt_update_safe() {
 # with it. APT_CONFIG is read after apt.conf.d and dies with the process, so an
 # early exit cannot leave a drop-in behind.
 _cs_conffile_list() {
-  find "${_CS_CONFFILE_ROOT:-/etc}" -maxdepth 6 \( -name '*.dpkg-dist' -o -name '*.dpkg-new' \) 2>/dev/null | sort
+  # 2>/dev/null hides find's message about an unreadable /etc/credstore, not its
+  # exit status, which pipefail then passes on as if sort had failed.
+  { find "${_CS_CONFFILE_ROOT:-/etc}" -maxdepth 6 \( -name '*.dpkg-dist' -o -name '*.dpkg-new' \) 2>/dev/null || true; } | sort
 }
 
 apt_conffile_guard() {
