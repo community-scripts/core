@@ -391,6 +391,15 @@ $PCT_OPTIONS_STRING"
   -timezone $_pct_timezone"
   fi
 
+  # PVE derives ostype from the template name, then rejects its own value when
+  # reading the config back - which breaks every later pct call.
+  case "${var_os:-}" in
+  openeuler | rockylinux | almalinux)
+    PCT_OPTIONS_STRING="$PCT_OPTIONS_STRING
+  -ostype centos"
+    ;;
+  esac
+
   # The password stays out of PCT_OPTIONS: that string is expanded unquoted, so
   # word splitting and globbing would reach it -- a space made two arguments, a
   # * matched a filename. It goes in as its own quoted argument.
@@ -834,7 +843,7 @@ EOF
   fix_gpu_gids
 
   local rootfs
-  rootfs=$(pct config "$CTID" | grep -E '^rootfs:' | sed 's/rootfs: //' | cut -d',' -f1 || true)
+  rootfs=$(pct config "$CTID" 2>/dev/null | grep -E '^rootfs:' | sed 's/rootfs: //' | cut -d',' -f1 || true)
   if [[ -n "$rootfs" ]]; then
     local mount_point="/var/lib/lxc/${CTID}/rootfs"
     if [[ -d "$mount_point" ]] && [[ "$(stat -c '%U' "$mount_point")" != "root" ]]; then
