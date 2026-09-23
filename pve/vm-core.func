@@ -720,16 +720,10 @@ cleanup() {
       if [[ $exit_code -ne 0 ]]; then
         post_update_to_api "failed" "$exit_code"
       elif [[ -n "${VMID:-}" ]] && qm config "$VMID" &>/dev/null; then
-        # A clean exit with the VM in place is a finished run; the script just
-        # never said so. Filing those as aborted put every debian-vm and
-        # truenas-vm success in the abort column and drove their reported
-        # failure rate to 96% and 100%. Scripts that post success themselves
-        # never reach this branch - POST_UPDATE_DONE keeps them out.
+        # Clean exit with the VM in place: a script that never said so itself.
         post_update_to_api "done" "none"
       else
-        # Clean exit and no VM: the user backed out of a dialog. Reported as
-        # aborted, NOT "failed 1" - that produced meaningless 'General error'
-        # records with no error text.
+        # Clean exit, no VM: the user backed out of a dialog.
         post_update_to_api "aborted" "0"
       fi
     fi
