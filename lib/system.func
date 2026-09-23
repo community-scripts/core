@@ -2481,6 +2481,6 @@ Suites: trixie-security
 Components: main contrib non-free non-free-firmware
 EOF
   fi
-  $STD apt update
+  apt_update_safe
   return 0
 }

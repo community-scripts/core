@@ -1052,7 +1052,7 @@ EOF
     if ! install_packages_with_retry "mysql-community-server" "mysql-community-client"; then
       msg_warn "MySQL 8.4 LTS installation failed – falling back to MariaDB"
       cleanup_old_repo_files "mysql"
-      $STD apt update
+      apt_update_safe
       install_packages_with_retry "mariadb-server" "mariadb-client" || {
         msg_error "Failed to install database engine (MySQL/MariaDB fallback)"
         return 100
