@@ -1555,22 +1555,24 @@ vm_prepare_cloud_image() {
 # `incus console` attaches to the first serial port, so a cloud image with no
 # getty on ttyS0 gives a console that shows nothing. Same fix as on Proxmox.
 vm_enable_consoles() {
-  local image="${1:?image}" cloud_init="${2:-${USE_CLOUD_INIT:-yes}}"
+  local image="${1:?image}"
   command -v virt-customize >/dev/null 2>&1 || return 0
 
   _vm_customize "console services" "$image" \
     --run-command 'systemctl enable getty@tty1.service serial-getty@ttyS0.service'
 
-  # Without cloud-init nothing sets a password, and the nocloud images ship a
-  # locked root: the getty above then puts an unanswerable prompt on tty1.
-  # Those images get in through console autologin, so give tty1 the same
-  # treatment the serial console already has.
-  if [[ "$cloud_init" != "yes" ]]; then
-    _vm_customize "tty1 autologin" "$image" --run-command \
-      'mkdir -p /etc/systemd/system/getty@tty1.service.d
+  # An image without cloud-init has nothing that will ever set a password, and
+  # trixie no longer accepts an empty one - so the getty above puts a prompt
+  # nobody can answer on tty1. Decided in the guest: the caller's
+  # USE_CLOUD_INIT is only set once vm_prompt_cloud_init has run. Template
+  # level, the way Debian ships the serial one, so it holds for whichever
+  # instance systemd starts.
+  _vm_customize "console autologin" "$image" --run-command \
+    'if ! command -v cloud-init >/dev/null 2>&1; then
+       mkdir -p /etc/systemd/system/getty@.service.d
        printf "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear %%I \$TERM\n" \
-         >/etc/systemd/system/getty@tty1.service.d/autologin.conf'
-  fi
+         >/etc/systemd/system/getty@.service.d/autologin.conf
+     fi'
 
   _vm_customize "grub console" "$image" --run-command \
     'if [ -f /etc/default/grub ]; then

@@ -2005,23 +2005,25 @@ _vm_customize() {
 }
 
 vm_enable_consoles() {
-  local image="${1:?image}" cloud_init="${2:-${USE_CLOUD_INIT:-yes}}"
+  local image="${1:?image}"
   command -v virt-customize >/dev/null 2>&1 || return 0
 
-  # With cloud-init a password gets set, so a prompt is the right thing.
   _vm_customize "console services" "$image" \
     --run-command 'systemctl enable getty@tty1.service serial-getty@ttyS0.service'
 
-  # Without it nothing sets one, and the nocloud images ship a locked root: the
-  # getty above then puts an unanswerable prompt on tty1, which is exactly the
-  # login screen people hit in noVNC. Those images get in through console
-  # autologin, so give tty1 the same treatment the serial console already has.
-  if [[ "$cloud_init" != "yes" ]]; then
-    _vm_customize "tty1 autologin" "$image" --run-command \
-      'mkdir -p /etc/systemd/system/getty@tty1.service.d
+  # An image without cloud-init has nothing that will ever set a password, and
+  # trixie no longer accepts an empty one - so the getty above puts a prompt
+  # nobody can answer on tty1. Decided in the guest: the caller's
+  # USE_CLOUD_INIT is only set once vm_prompt_cloud_init has run.
+  # Template level, the way Debian ships the serial one, so it holds for
+  # whichever instance systemd starts. serial-getty is left alone - those
+  # images already autologin there, and it carries --keep-baud.
+  _vm_customize "console autologin" "$image" --run-command \
+    'if ! command -v cloud-init >/dev/null 2>&1; then
+       mkdir -p /etc/systemd/system/getty@.service.d
        printf "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear %%I \$TERM\n" \
-         >/etc/systemd/system/getty@tty1.service.d/autologin.conf'
-  fi
+         >/etc/systemd/system/getty@.service.d/autologin.conf
+     fi'
 
   # A getty alone only gets you a login prompt after boot -- the kernel still
   # talks to ttyS0 only, so the screen stays black until then. Listing tty1
