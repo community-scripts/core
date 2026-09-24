@@ -2388,20 +2388,74 @@ create_lxc_container() {
   ARCH="$(dpkg --print-architecture)"
 
   # Maps OS type + version to the release variant name used by ARM64 template sources.
+  # The simplestreams index Incus resolves against. Its aliases carry
+  # debian/13 -> trixie, so the mapping is the index's job, not ours.
+  _LXC_INDEX=""
+  _lxc_index() {
+    if [[ -n "$_LXC_INDEX" && -s "$_LXC_INDEX" ]]; then
+      echo "$_LXC_INDEX"
+      return 0
+    fi
+    ensure_dependencies jq
+    local f
+    f="$(mktemp)" || return 1
+    if ! curl -fsSL --max-time 60 "https://images.linuxcontainers.org/streams/v1/images.json" -o "$f"; then
+      rm -f "$f"
+      return 1
+    fi
+    _LXC_INDEX="$f"
+    echo "$f"
+  }
+
+  # Most distributions publish "default"; gentoo only ships openrc/systemd.
+  _LXC_VARIANTS=(default systemd openrc)
+
   arm64_template_variant() {
-    case "$1:$2" in
-    debian:12) echo "bookworm" ;;
-    debian:13) echo "trixie" ;;
-    debian:) echo "$DEBIAN_DEFAULT_CODENAME" ;;
+    local os="${1,,}" ver="${2:-}" idx rel
+    if [[ -z "$ver" ]]; then
+      case "$os" in
+      debian) ver="$DEBIAN_DEFAULT_CODENAME" ;;
+      ubuntu) ver="$UBUNTU_DEFAULT_CODENAME" ;;
+      alpine) ver="$ALPINE_DEFAULT_VERSION" ;;
+      *) return 1 ;;
+      esac
+    fi
+    idx="$(_lxc_index)" || return 1
+    rel="$(jq -r --arg os "$os" --arg ver "$ver" '
+      [ .products[]
+        | select(.arch == "arm64" and (.variant == "default" or .variant == "systemd" or .variant == "openrc"))
+        | select(((.aliases // "") | split(",")) as $a
+                 | ($a | map(. == ($os + "/" + $ver)
+                             or startswith($os + "/" + $ver + "/")) | any)) ]
+      | .[0].release // empty' "$idx" 2>/dev/null)"
+    # CentOS ships 10 as "10-Stream". Only a suffix after a dash counts, so
+    # asking for 4 never lands on 43.
+    if [[ -z "$rel" ]]; then
+      rel="$(jq -r --arg os "$os" --arg ver "$ver" '
+        [ .products[]
+          | select(.arch == "arm64" and .variant == "default" and .os != null)
+          | select((.os | ascii_downcase) == $os or ((.aliases // "") | startswith($os + "/")))
+          | select((.release // "") | startswith($ver + "-")) ]
+        | .[0].release // empty' "$idx" 2>/dev/null)"
+    fi
+    [[ -n "$rel" ]] || return 1
+    echo "$rel"
+  }
 
-    ubuntu:24.04) echo "noble" ;;
-    ubuntu:26.04) echo "questing" ;;
-    ubuntu:) echo "$UBUNTU_DEFAULT_CODENAME" ;;
-
-    alpine:*) echo "${2:-$ALPINE_DEFAULT_VERSION}" ;;
-
-    *) return 1 ;;
-    esac
+  _arm64_rootfs_path() {
+    local os="${1,,}" rel="$2" idx variant path
+    idx="$(_lxc_index)" || return 1
+    for variant in "${_LXC_VARIANTS[@]}"; do
+      path="$(jq -r --arg k "${os}:${rel}:arm64:${variant}" '
+        (.products[$k].versions // {})
+        | to_entries | sort_by(.key) | last
+        | .value.items["root.tar.xz"].path // empty' "$idx" 2>/dev/null)"
+      [[ -n "$path" ]] && {
+        echo "$path"
+        return 0
+      }
+    done
+    return 1
   }
 
   # Downloads an ARM64 LXC rootfs template to $1.
@@ -2438,7 +2492,13 @@ create_lxc_container() {
       exit 217
     }
 
-    url="https://jenkins.linuxcontainers.org/job/image-${PCT_OSTYPE}/architecture=arm64,release=${CUSTOM_TEMPLATE_VARIANT},variant=default/lastStableBuild/artifact/rootfs.tar.xz"
+    local path
+    path="$(_arm64_rootfs_path "$PCT_OSTYPE" "$CUSTOM_TEMPLATE_VARIANT")"
+    if [[ -z "$path" ]]; then
+      msg_error "No arm64 image for ${PCT_OSTYPE} ${CUSTOM_TEMPLATE_VARIANT} at images.linuxcontainers.org"
+      exit 208
+    fi
+    url="https://images.linuxcontainers.org/${path}"
 
     msg_info "Downloading ${PCT_OSTYPE^} ${CUSTOM_TEMPLATE_VARIANT} ARM64 template"
     local patched="${dest%/*}/.${dest##*/}.patched"
