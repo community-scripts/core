@@ -1177,6 +1177,41 @@ ensure_dependencies() {
     return 0
   fi
 
+  # dnf/zypper/pacman/emerge: no cheap name-to-binary map, so go by command and
+  # let the manager skip whatever is already there.
+  local family=""
+  declare -F _cs_os_family >/dev/null 2>&1 && family="$(_cs_os_family)"
+  case "$family" in
+  rhel | suse | arch | gentoo)
+    local -a pm=()
+    case "$family" in
+    rhel)
+      if command -v dnf >/dev/null 2>&1; then pm=(dnf install -y); else pm=(yum install -y); fi
+      ;;
+    suse) pm=(zypper --non-interactive install --no-recommends) ;;
+    arch) pm=(pacman -S --noconfirm --needed) ;;
+    gentoo) pm=(emerge --quiet --noreplace) ;;
+    esac
+
+    for dep in "${deps[@]}"; do
+      command -v "$dep" >/dev/null 2>&1 || missing+=("$dep")
+    done
+    ((${#missing[@]})) || return 0
+
+    $STD "${pm[@]}" "${missing[@]}" || {
+      local failed=()
+      for pkg in "${missing[@]}"; do
+        $STD "${pm[@]}" "$pkg" 2>/dev/null || failed+=("$pkg")
+      done
+      if ((${#failed[@]})); then
+        msg_error "Failed to install dependencies: ${failed[*]}"
+        return 1
+      fi
+    }
+    return 0
+    ;;
+  esac
+
   # Debian/Ubuntu: Fast batch check using dpkg-query
   local installed_pkgs
   installed_pkgs=$(dpkg-query -W -f='${Package}\n' 2>/dev/null | sort -u)
