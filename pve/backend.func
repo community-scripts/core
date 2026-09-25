@@ -3148,15 +3148,19 @@ create_lxc_container() {
 
   # Both run as ostype centos, whose PVE plugin reads a /etc/redhat-release neither ships.
   if [[ "${var_os:-}" == "openeuler" || "${var_os:-}" == "amazonlinux" ]]; then
-    if ! tar -tf "$TEMPLATE_PATH" 2>/dev/null | grep -qE '^\.?/?etc/redhat-release$'; then
-      msg_info "Patching ${var_os} template (adding /etc/redhat-release)"
+    local _oe_rel=""
+    _oe_rel="$(tar -xOf "$TEMPLATE_PATH" --wildcards '*etc/redhat-release' 2>/dev/null | head -1)"
+    # The content, not just the file: that plugin rejects every version outside 5..10.
+    if [[ ! "$_oe_rel" =~ release[[:space:]]+([5-9]|10)([.[:space:]]|$) ]]; then
+      msg_info "Patching ${var_os} template (/etc/redhat-release)"
       local _oe_tmp
       _oe_tmp=$(mktemp -d) || _oe_tmp=""
       if [[ -n "$_oe_tmp" ]] && mkdir -p "$_oe_tmp/etc"; then
-        # Content is parsed by PVE's CentOS setup plugin (expects "<name> release <ver>")
-        local _oe_ver="${var_version:-9}"
-        echo "CentOS Linux release ${_oe_ver} (${var_os})" >"$_oe_tmp/etc/redhat-release"
+        # 10, not the real version: both images configure their own network via systemd-networkd.
+        echo "CentOS Linux release 10 (${var_os})" >"$_oe_tmp/etc/redhat-release"
         if xz -dc "$TEMPLATE_PATH" >"$_oe_tmp/template.tar" 2>/dev/null &&
+          { tar --delete -f "$_oe_tmp/template.tar" ./etc/redhat-release 2>/dev/null ||
+            tar --delete -f "$_oe_tmp/template.tar" etc/redhat-release 2>/dev/null || true; } &&
           tar -C "$_oe_tmp" --append -f "$_oe_tmp/template.tar" etc/redhat-release 2>/dev/null &&
           xz -f "$_oe_tmp/template.tar" 2>/dev/null &&
           mv -f "$_oe_tmp/template.tar.xz" "$TEMPLATE_PATH"; then
