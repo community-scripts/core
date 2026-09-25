@@ -1519,7 +1519,7 @@ EOF
 echo -e "${GATEWAY:-}${YW:-}Provided by: ${GN:-}community-scripts ORG ${YW:-}| GitHub: ${GN:-}https://github.com/community-scripts/ProxmoxVE${CL:-}"
 echo ""
 echo -e "${OS:-}${YW:-}OS: ${GN:-}${os_name} - Version: ${os_version}${CL:-}"
-echo -e "${HOSTNAME:-}${YW:-}Hostname: ${GN:-}\$(hostname)${CL:-}"
+echo -e "${HOSTNAME:-}${YW:-}Hostname: ${GN:-}\$(uname -n)${CL:-}"
 echo -e "${INFO:-}${YW:-}IP Address: ${GN:-}\$(ip -4 route get 1 2>/dev/null | sed -n 's/.* src \\([0-9.]\\+\\).*/\\1/p' | head -1)${CL:-}"
 EOF
 

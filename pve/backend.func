@@ -393,8 +393,9 @@ $PCT_OPTIONS_STRING"
 
   # PVE derives ostype from the template name, then rejects its own value when
   # reading the config back - which breaks every later pct call.
+  # Amazon Linux also needs it to be created at all: PVE resolves no ostype for ID 'amzn'.
   case "${var_os:-}" in
-  openeuler | rockylinux | almalinux)
+  openeuler | rockylinux | almalinux | amazonlinux)
     PCT_OPTIONS_STRING="$PCT_OPTIONS_STRING
   -ostype centos"
     ;;
@@ -1132,7 +1133,7 @@ EOF
     #  3. /etc/profile.d/99-pve-console-term.sh: re-asserts TERM=linux AFTER all other
     #     profile.d scripts, so readline never thinks CPR is supported (fixes R;80R garbage)
     case "$var_os" in
-    fedora | rocky | rockylinux | alma | almalinux | centos | openeuler | opensuse | archlinux | arch)
+    fedora | rocky | rockylinux | alma | almalinux | centos | openeuler | amazonlinux | oraclelinux | opensuse | archlinux | arch)
       pct exec "$CTID" -- bash -c '
         mkdir -p /etc/systemd/system/console-getty.service.d
         printf "[Service]\nEnvironment=TERM=linux\n" >/etc/systemd/system/console-getty.service.d/pve-console-term.conf
@@ -1161,7 +1162,7 @@ PROFILE
 
     # Ensure curl is present for install.func bootstrap (most templates have it, but be safe)
     case "$var_os" in
-    fedora | rocky | rockylinux | alma | almalinux | centos | openeuler)
+    fedora | rocky | rockylinux | alma | almalinux | centos | openeuler | amazonlinux | oraclelinux)
       pct exec "$CTID" -- bash -c "command -v curl >/dev/null 2>&1 || (command -v dnf >/dev/null 2>&1 && dnf install -y curl >/dev/null 2>&1) || (command -v yum >/dev/null 2>&1 && yum install -y curl >/dev/null 2>&1)" || true
       ;;
     opensuse)
@@ -3145,26 +3146,23 @@ create_lxc_container() {
     fi
   fi
 
-  # openEuler templates are detected by PVE as ostype 'centos' but ship without
-  # /etc/redhat-release, which makes PVE::LXC::Setup::post_create_hook abort with
-  # "can't open '/etc/redhat-release' - No such file or directory".
-  # Patch the cached template once to inject a CentOS-compatible release file.
-  if [[ "${var_os:-}" == "openeuler" ]]; then
+  # Both run as ostype centos, whose PVE plugin reads a /etc/redhat-release neither ships.
+  if [[ "${var_os:-}" == "openeuler" || "${var_os:-}" == "amazonlinux" ]]; then
     if ! tar -tf "$TEMPLATE_PATH" 2>/dev/null | grep -qE '^\.?/?etc/redhat-release$'; then
-      msg_info "Patching openEuler template (adding /etc/redhat-release)"
+      msg_info "Patching ${var_os} template (adding /etc/redhat-release)"
       local _oe_tmp
       _oe_tmp=$(mktemp -d) || _oe_tmp=""
       if [[ -n "$_oe_tmp" ]] && mkdir -p "$_oe_tmp/etc"; then
         # Content is parsed by PVE's CentOS setup plugin (expects "<name> release <ver>")
-        local _oe_ver="${var_version:-25.03}"
-        echo "CentOS Linux release ${_oe_ver} (openEuler)" >"$_oe_tmp/etc/redhat-release"
+        local _oe_ver="${var_version:-9}"
+        echo "CentOS Linux release ${_oe_ver} (${var_os})" >"$_oe_tmp/etc/redhat-release"
         if xz -dc "$TEMPLATE_PATH" >"$_oe_tmp/template.tar" 2>/dev/null &&
           tar -C "$_oe_tmp" --append -f "$_oe_tmp/template.tar" etc/redhat-release 2>/dev/null &&
           xz -f "$_oe_tmp/template.tar" 2>/dev/null &&
           mv -f "$_oe_tmp/template.tar.xz" "$TEMPLATE_PATH"; then
-          msg_ok "Patched openEuler template"
+          msg_ok "Patched ${var_os} template"
         else
-          msg_warn "Failed to patch openEuler template – pct create may fail in post_create_hook"
+          msg_warn "Failed to patch ${var_os} template – pct create may fail in post_create_hook"
         fi
         rm -rf "$_oe_tmp"
       fi
