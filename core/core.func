@@ -1693,9 +1693,11 @@ prompt_confirm() {
     fi
   fi
 
-  # Check if running in a TTY
-  if [[ ! -t 0 ]]; then
-    # Not a TTY, use default
+  # Incus has no /dev/tty and forwards stdin as a pipe, so a bare -t 0 gate never asked.
+  local prompt_src="/dev/stdin"
+  : 2>/dev/null </dev/tty && prompt_src="/dev/tty"
+
+  if [[ ! -t 0 && "${CS_STDIN_OK:-0}" != "1" ]]; then
     if [[ "$default" == "y" ]]; then
       return 0
     else
@@ -1706,7 +1708,7 @@ prompt_confirm() {
   # Interactive prompt with timeout
   echo -en "${YW}${message} ${hint} (auto-${default} in ${timeout}s): ${CL}"
 
-  if read -t "$timeout" -r response </dev/tty; then
+  if read -t "$timeout" -r response <"$prompt_src"; then
     # User provided input
     response="${response,,}" # lowercase
     case "$response" in
