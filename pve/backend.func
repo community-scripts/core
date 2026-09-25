@@ -2410,6 +2410,16 @@ create_lxc_container() {
   # Most distributions publish "default"; gentoo only ships openrc/systemd.
   _LXC_VARIANTS=(default systemd openrc)
 
+  # var_version has to keep matching the pveam template name (archlinux-base,
+  # devuan-5), and the catalog names those releases differently.
+  _lxc_release_alias() {
+    case "${1,,}:${2}" in
+    archlinux:base) echo "current" ;;
+    devuan:5 | devuan:5.0) echo "daedalus" ;;
+    *) echo "$2" ;;
+    esac
+  }
+
   arm64_template_variant() {
     local os="${1,,}" ver="${2:-}" idx rel
     if [[ -z "$ver" ]]; then
@@ -2420,6 +2430,7 @@ create_lxc_container() {
       *) return 1 ;;
       esac
     fi
+    ver="$(_lxc_release_alias "$os" "$ver")"
     idx="$(_lxc_index)" || return 1
     rel="$(jq -r --arg os "$os" --arg ver "$ver" '
       [ .products[]
