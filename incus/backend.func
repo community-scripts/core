@@ -1054,23 +1054,15 @@ INNEREOF" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || { msg_error "Failed to push f
   _install_script="$(_cs_fetch_text "install/${var_install}.sh")"
   _run_env="$(_incus_build_install_env)"
   _run_env+=$'\nsource /dev/stdin <<<"$(cat /tmp/incus-functions)"'
+  _run_env+=$'\n'"$(_incus_prompt_shim)"
 
-  # Deliberately NO pty here. Forcing one with `incus exec -t` looks like the
-  # fix for install scripts that prompt, but apt saves and restores stdin's
-  # terminal attributes around every dpkg call: on that pty tcsetattr returned
-  # EIO ("Setting in Stop via TCSAFLUSH for stdin failed"), killing the shell
-  # mid-install. It died before silent() could record anything, so the run was
-  # reported as a success against an empty container.
+  # No pty on purpose: under `incus exec -t` apt's tcsetattr fails with EIO and kills the shell.
   set +Eeuo pipefail
   trap - ERR
-  # stdin from /dev/null: without a pty `read -p` prints no prompt at all, so a
-  # script that asks a question waited on input nobody could see or answer.
-  # The trailing touch is a completion sentinel: all 552 install scripts run to
-  # cleanup_lxc/customize and none exits early, so the marker appears if and
-  # only if the script reached its end.
+  # The trailing touch is a completion sentinel: no install script exits early.
   incus exec "${CT_NAME}" -- bash -c "${_run_env}
 ${_install_script}
-touch /root/.install-${SESSION_ID}.done" </dev/null 2>&1 |
+touch /root/.install-${SESSION_ID}.done" 2>&1 |
     tee >(sed -u 's/.*\r//' >>"${LOGFILE:-$INCUS_BUILD_LOG}")
   # PIPESTATUS, not $?: the line above turns pipefail off, so $? is tee's
   # status - always 0. Every non-zero exit from the container was discarded
@@ -1403,7 +1395,42 @@ export REPO_SOURCE='${REPO_SOURCE:-}'
 export REPO_SLUG='${REPO_SLUG:-}'
 export TELEMETRY_PLATFORM='incus'
 export CS_ANIMATION_OK='$([ -t 1 ] && echo 1 || echo 0)'
+export CS_STDIN_OK='$([ -t 0 ] && echo 1 || echo 0)'
 EOF
+}
+
+# bash shows a `read -p` prompt only on a terminal, so without a pty the question was invisible.
+_incus_prompt_shim() {
+  cat <<'SHIMEOF'
+read() {
+  local -a _args=()
+  local _prompt="" _flags
+  while (($#)); do
+    if [[ "$1" == -*p && "$1" != --* && $# -ge 2 ]]; then
+      _flags="${1%p}"
+      [[ "$_flags" != "-" ]] && _args+=("$_flags")
+      _prompt="$2"
+      shift 2
+      continue
+    fi
+    _args+=("$1")
+    shift
+  done
+  [[ -n "$_prompt" ]] || {
+    builtin read "${_args[@]}"
+    return
+  }
+  printf '%s' "$_prompt" >&2
+  if [[ "${CS_STDIN_OK:-0}" != "1" ]]; then
+    printf '%s\n' "(no input available - using the default)" >&2
+    return 0
+  fi
+  builtin read "${_args[@]}" || {
+    printf '\n' >&2
+    return 0
+  }
+}
+SHIMEOF
 }
 
 incus_build_container() {

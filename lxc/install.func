@@ -589,12 +589,11 @@ pkg_update() {
         else
           msg_warn "Find Debian mirrors at: https://www.debian.org/mirror/list"
         fi
-        # Only ask when there is someone to answer. Headless, /dev/tty does not
-        # exist, the read fails instantly, custom_mirror stays empty and the
-        # `continue` below spins the loop forever instead of prompting. Falling
-        # through leaves apt_ok=false, which the caller reports properly.
+        # Only ask when there is someone to answer: otherwise the loop spins forever.
+        local mirror_src
         while ! is_unattended; do
-          read -rp "  Enter a mirror hostname (or 'skip' to abort): " custom_mirror </dev/tty || break
+          mirror_src="$(_cs_stdin_source)" || break
+          read -rp "  Enter a mirror hostname (or 'skip' to abort): " custom_mirror <"$mirror_src" || break
           [[ -z "$custom_mirror" ]] && continue
           [[ "$custom_mirror" == "skip" ]] && break
           [[ ! "$custom_mirror" =~ ^[a-zA-Z0-9._-]+$ ]] && {
