@@ -2441,11 +2441,32 @@ create_lxc_container() {
   # Echoes the catalog path of a usable rootfs image for os/version/arch.
   # Prefers the plain tarball. A squashfs counts as usable -- it just has to be
   # unpacked first -- and is what Nixos ships instead of a tarball.
+  # var_version has to keep matching the pveam template name (archlinux-base, devuan-5),
+  # and the catalog names those releases differently.
+  _lxc_catalog_release_alias() {
+    case "${1,,}:${2}" in
+    archlinux:base) printf 'current' ;;
+    devuan:5 | devuan:5.0) printf 'daedalus' ;;
+    *) printf '%s' "$2" ;;
+    esac
+  }
+
+  # CentOS publishes 10 as "10-Stream". Only a suffix after a dash counts, so asking for 4
+  # never lands on 43.
+  _lxc_catalog_suffixed_release() {
+    jq -r --arg os "${1,,}" --arg ver "$2" --arg arch "$3" --arg variant "$4" '
+      [ .products[]
+        | select(.arch == $arch and .variant == $variant)
+        | select((.os | ascii_downcase) == $os)
+        | select(.release | startswith($ver + "-")) | .release ] | unique | last // empty
+    ' "$5" 2>/dev/null
+  }
+
   _lxc_catalog_path() {
     local os="${1,,}" ver="$2" arch="$3" index="${4:?index path}"
     local variant want path
     for variant in $(_lxc_catalog_variants "$os"); do
-      want="$ver"
+      want="$(_lxc_catalog_release_alias "$os" "$ver")"
       [[ -z "$want" ]] && want="$(_lxc_catalog_default_release "$os" "$arch" "$variant" "$index")"
       [[ -z "$want" ]] && continue
       path=$(jq -r --arg os "$os" --arg ver "$want" --arg arch "$arch" --arg variant "$variant" '
@@ -2453,6 +2474,20 @@ create_lxc_container() {
         | select(.value.arch == $arch and .value.variant == $variant)
         | select((.value.os | ascii_downcase) == $os)
         | select(.value.release == $ver or ((.value.aliases // "") | split(",") | index($os + "/" + $ver)))
+        | .value.versions | to_entries | sort_by(.key) | last | .value.items
+        | (.["root.tar.xz"].path // .["root.squashfs"].path // empty)
+      ' "$index" 2>/dev/null | head -1)
+      if [[ -n "$path" ]]; then
+        printf '%s' "$path"
+        return 0
+      fi
+      want="$(_lxc_catalog_suffixed_release "$os" "$want" "$arch" "$variant" "$index")"
+      [[ -z "$want" ]] && continue
+      path=$(jq -r --arg os "$os" --arg ver "$want" --arg arch "$arch" --arg variant "$variant" '
+        .products | to_entries[]
+        | select(.value.arch == $arch and .value.variant == $variant)
+        | select((.value.os | ascii_downcase) == $os)
+        | select(.value.release == $ver)
         | .value.versions | to_entries | sort_by(.key) | last | .value.items
         | (.["root.tar.xz"].path // .["root.squashfs"].path // empty)
       ' "$index" 2>/dev/null | head -1)
