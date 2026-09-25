@@ -200,19 +200,34 @@ maxkeys_check() {
 
   if [[ "$used_lxc_keys" -gt "$threshold_keys" ]]; then
     msg_warn "Key usage is near the limit (${used_lxc_keys}/${per_user_maxkeys})"
-    echo -e "${INFO} Suggested action: Set ${GN}kernel.keys.maxkeys=${new_limit_keys}${CL} in ${BOLD}/etc/sysctl.d/98-community-scripts.conf${CL}."
     failure=1
   fi
   if [[ "$used_lxc_bytes" -gt "$threshold_bytes" ]]; then
     msg_warn "Key byte usage is near the limit (${used_lxc_bytes}/${per_user_maxbytes})"
-    echo -e "${INFO} Suggested action: Set ${GN}kernel.keys.maxbytes=${new_limit_bytes}${CL} in ${BOLD}/etc/sysctl.d/98-community-scripts.conf${CL}."
     failure=1
   fi
 
-  if [[ "$failure" -eq 1 ]]; then
-    msg_error "Kernel key limits exceeded - see suggestions above"
-    exit 108
+  [[ "$failure" -eq 1 ]] || return 0
+
+  # Offering beats explaining: the old text named a file that does not exist yet and left
+  # every further install on the node blocked behind a step nobody could copy.
+  local keys_conf="/etc/sysctl.d/98-community-scripts.conf"
+  if prompt_confirm "${TAB}Raise the kernel key limits now?" "y" 60; then
+    if printf 'kernel.keys.maxkeys = %s\nkernel.keys.maxbytes = %s\n' \
+      "$new_limit_keys" "$new_limit_bytes" >"$keys_conf" 2>/dev/null &&
+      sysctl --system >/dev/null 2>&1; then
+      msg_ok "Raised kernel key limits (maxkeys ${new_limit_keys}, maxbytes ${new_limit_bytes})"
+      return 0
+    fi
+    msg_error "Could not apply ${keys_conf}"
   fi
+
+  echo -e "${TAB}${INFO} Run this on the node, then start the script again:"
+  echo -e "${TAB}${GN}echo 'kernel.keys.maxkeys = ${new_limit_keys}' > ${keys_conf}${CL}"
+  echo -e "${TAB}${GN}echo 'kernel.keys.maxbytes = ${new_limit_bytes}' >> ${keys_conf}${CL}"
+  echo -e "${TAB}${GN}sysctl --system${CL}"
+  msg_error "Kernel key limits too low to create another container"
+  exit 108
 }
 
 # ==============================================================================
