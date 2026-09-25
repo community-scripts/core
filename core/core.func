@@ -2222,8 +2222,10 @@ cleanup_lxc() {
 
   msg_ok "Cleaned"
 
-  # Send progress ping if available (defined in install.func)
-  if declare -f post_progress_to_api &>/dev/null; then
+  # Installs only. An update reaches here through update_script without ever
+  # calling post_to_api, so nothing would follow the ping with a terminal
+  # status and the row stayed "configuring" for good.
+  if [[ -n "${POST_TO_API_DONE:-}" ]] && declare -f post_progress_to_api &>/dev/null; then
     post_progress_to_api
   fi
 }
