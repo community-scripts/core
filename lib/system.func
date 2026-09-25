@@ -2098,8 +2098,11 @@ verify_gpg_fingerprint() {
 create_self_signed_cert() {
   local APP_NAME="${1:-${APPLICATION}}"
   local EXTRA_SAN="${2:-}"
-  local HOSTNAME="$(hostname -f)"
-  local IP="$(hostname -I | awk '{print $1}')"
+  # RHEL-family minimal images ship no hostname binary, which left CN and SAN empty.
+  local HOSTNAME IP
+  HOSTNAME="$(hostname -f 2>/dev/null || uname -n)"
+  IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  [[ -n "$IP" ]] || IP="$(ip -4 route get 1 2>/dev/null | sed -n 's/.* src \([0-9.]\+\).*/\1/p' | head -1)"
   local APP_NAME_LC=$(echo "${APP_NAME,,}" | tr -d ' ')
   local CERT_DIR="/etc/ssl/${APP_NAME_LC}"
   local CERT_KEY="${CERT_DIR}/${APP_NAME_LC}.key"
