@@ -12,6 +12,7 @@ _cs_run_os_section
 _cs_run_update
 _cs_runtime_cache_dir
 _cs_scripts_ref_line
+_cs_stdin_source
 _dev_step_end
 _dev_step_key
 _dev_step_start
