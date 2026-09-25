@@ -19,6 +19,11 @@
 [[ -n "${_CORE_FUNC_LOADED:-}" ]] && return
 _CORE_FUNC_LOADED=1
 
+if [[ -z "${HOME:-}" ]]; then
+  HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
+  export HOME="${HOME:-/root}"
+fi
+
 # ==============================================================================
 # SECTION 1: INITIALIZATION & SETUP
 # ==============================================================================
@@ -211,6 +216,23 @@ ensure_profile_loaded() {
   export _PROFILE_LOADED=1
 }
 
+# The retired Gitea mirror; GitHub serves the same repos. Mirrored in
+# misc/update.sh, which cannot source this file.
+# ------------------------------------------------------------------------------
+_cs_live_base() {
+  local u="${1%/}"
+  case "$u" in
+  *//git.community-scripts.org/*)
+    u="${u#*//git.community-scripts.org/}"
+    u="${u/\/raw\/branch\//\/}"
+    u="${u/\/raw\/tag\//\/}"
+    u="${u/\/raw\/commit\//\/}"
+    printf 'https://raw.githubusercontent.com/%s' "$u"
+    ;;
+  *) printf '%s' "$u" ;;
+  esac
+}
+
 # ------------------------------------------------------------------------------
 # write_update_entrypoint()
 #
@@ -235,7 +257,7 @@ write_update_entrypoint() {
   [[ -z "$name" ]] && return 0
 
   local base core_url website
-  base="${base_override:-${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}}"
+  base="$(_cs_live_base "${base_override:-${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}}")"
   core_url="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
   website="${COMMUNITY_SCRIPTS_WEBSITE_URL:-https://community-scripts.org}"
 
@@ -284,8 +306,12 @@ EOF
 # rather than guessing from the current environment.
 # ------------------------------------------------------------------------------
 migrate_update_entrypoint() {
-  # Already on the helper-based bootstrap? Nothing to do.
-  if [[ -f /usr/bin/update ]] && grep -q "misc/update.sh" /usr/bin/update 2>/dev/null; then
+  # Nothing to do only if it is on the helper, points somewhere that still
+  # serves scripts, and records a usable name.
+  if [[ -f /usr/bin/update ]] &&
+    grep -q "misc/update.sh" /usr/bin/update 2>/dev/null &&
+    ! grep -q "git.community-scripts.org" /usr/bin/update 2>/dev/null &&
+    grep -qE '^export UPDATE_SCRIPT_NAME="[a-zA-Z0-9._-]+"$' /usr/bin/update 2>/dev/null; then
     return 0
   fi
 
@@ -297,12 +323,21 @@ migrate_update_entrypoint() {
   # migrated container keeps pulling from the same repo it always did.
   if [[ -f /usr/bin/update ]]; then
     local legacy
-    legacy="$(grep -oE 'https?://[^"]+/ct/[^"]+\.sh' /usr/bin/update 2>/dev/null | head -1)"
+    # No match is normal; grep exiting 1 must not trip the ERR trap.
+    legacy="$(grep -oE 'https?://[^"]+/ct/[^"]+\.sh' /usr/bin/update 2>/dev/null | head -1 || true)"
     if [[ -n "$legacy" ]]; then
       base="${legacy%/ct/*}"
       name="$(basename "${legacy%.sh}")"
+    else
+      # Helper format has no literal url, only the export.
+      name="$(grep -m1 '^export UPDATE_SCRIPT_NAME=' /usr/bin/update 2>/dev/null | cut -d'"' -f2 || true)"
     fi
   fi
+
+  base="$(_cs_live_base "$base")"
+
+  # Anything that is not a slug is a damaged entrypoint, not a name.
+  [[ "${name:-}" =~ ^[a-zA-Z0-9._-]+$ ]] || name=""
 
   # Fall back to the update environment when the legacy line could not be parsed.
   [[ -z "${name:-}" ]] && name="${NSAPP:-${app:-${var_os:-}}}"
@@ -1383,7 +1418,7 @@ ensure_tput() {
     if grep -qi 'alpine' /etc/os-release; then
       apk add --no-cache ncurses >/dev/null 2>&1
     elif command -v apt-get >/dev/null 2>&1; then
-      apt-get update -qq >/dev/null
+      apt-get update -qq >/dev/null 2>&1 || true
       apt-get install -y -qq ncurses-bin >/dev/null 2>&1
     fi
   fi
@@ -2169,9 +2204,10 @@ cleanup_lxc() {
     $STD go clean -cache 2>/dev/null || true
   fi
 
-  # Rust (only registry cache, not build artifacts)
+  # Rust (registry cache and toolchains a build pulled in, not build artifacts)
   if command -v cargo &>/dev/null; then
     rm -rf /root/.cargo/registry/cache /root/.cargo/.package-cache 2>/dev/null || true
+    declare -f rust_prune_toolchains >/dev/null 2>&1 && rust_prune_toolchains
   fi
 
   # Ruby
@@ -2186,8 +2222,10 @@ cleanup_lxc() {
 
   msg_ok "Cleaned"
 
-  # Send progress ping if available (defined in install.func)
-  if declare -f post_progress_to_api &>/dev/null; then
+  # Installs only. An update reaches here through update_script without ever
+  # calling post_to_api, so nothing would follow the ping with a terminal
+  # status and the row stayed "configuring" for good.
+  if [[ -n "${POST_TO_API_DONE:-}" ]] && declare -f post_progress_to_api &>/dev/null; then
     post_progress_to_api
   fi
 }
@@ -2336,32 +2374,36 @@ function get_lxc_ip() {
 # apt_update_safe()
 #
 # - Runs apt-get update without letting a partial failure abort the caller
-# - Disarms errexit and the ERR trap for the duration, then restores them
-# - Warns on a non-zero exit and hints at the enterprise-repo 401/403 case
+# - Retries up to three times; a mirror hiccup is the usual cause
+# - Leaves the caller's shell options and ERR trap untouched
+# - Warns after the last attempt and hints at the enterprise-repo 401/403 case
 # ------------------------------------------------------------------------------
 apt_update_safe() {
-  local logfile
+  local logfile rc=0 attempt from
   logfile="$(get_active_logfile)"
 
-  local _restore_errexit=false
-  [[ "$-" == *e* ]] && _restore_errexit=true
-
-  set +Eeuo pipefail
-  trap - ERR
-
-  apt-get update >>"$logfile" 2>&1
-  local rc=$?
-
-  if $_restore_errexit; then
-    set -Eeuo pipefail
-    trap 'error_handler' ERR
-  fi
+  # `|| rc=$?` is exempt from errexit and the ERR trap, so nothing here has to
+  # touch the caller's shell options.
+  for attempt in 1 2 3; do
+    from=$(($(wc -l <"$logfile" 2>/dev/null || echo 0) + 1))
+    rc=0
+    apt-get update >>"$logfile" 2>&1 || rc=$?
+    if [[ "${VERBOSE:-no}" == "yes" ]]; then
+      tail -n "+${from}" "$logfile" 2>/dev/null
+    fi
+    if ((rc == 0)); then
+      return 0
+    fi
+    if ((attempt < 3)); then
+      sleep $((attempt * 5))
+    fi
+  done
 
   if [[ $rc -ne 0 ]]; then
-    msg_warn "apt-get update exited with code ${rc} — some repositories may have failed."
+    msg_warn "apt-get update exited with code ${rc} after 3 attempts — some repositories may have failed."
 
     # Check log for common 401/403 enterprise repo issues
-    if grep -qiE '401\s*Unauthorized|403\s*Forbidden|enterprise\.proxmox\.com' "$logfile" 2>/dev/null; then
+    if tail -n "+${from}" "$logfile" 2>/dev/null | grep -qiE '401\s*Unauthorized|403\s*Forbidden|enterprise\.proxmox\.com'; then
       echo -e "${TAB}${INFO} ${YWB}Hint: Proxmox enterprise repository returned an auth error.${CL}"
       echo -e "${TAB}       If you don't have a subscription, you can disable the enterprise"
       echo -e "${TAB}       repo and use the no-subscription repo instead."
@@ -2371,6 +2413,51 @@ apt_update_safe() {
     echo ""
   fi
 
+  return 0
+}
+
+# dpkg's conffile prompt has no tty during an update and takes the whole run
+# with it. APT_CONFIG is read after apt.conf.d and dies with the process, so an
+# early exit cannot leave a drop-in behind.
+_cs_conffile_list() {
+  # 2>/dev/null hides find's message about an unreadable /etc/credstore, not its
+  # exit status, which pipefail then passes on as if sort had failed.
+  { find "${_CS_CONFFILE_ROOT:-/etc}" -maxdepth 6 \( -name '*.dpkg-dist' -o -name '*.dpkg-new' \) 2>/dev/null || true; } | sort
+}
+
+apt_conffile_guard() {
+  command -v apt-get >/dev/null 2>&1 || return 0
+  [[ -n "${_CS_CONFFILE_GUARD:-}" ]] && return 0
+
+  local conf
+  conf="$(mktemp 2>/dev/null)" || return 0
+  printf 'Dpkg::Options { "--force-confdef"; "--force-confold"; };\n' >"$conf" 2>/dev/null || {
+    rm -f "$conf"
+    return 0
+  }
+
+  export APT_CONFIG="$conf"
+  _CS_CONFFILE_GUARD="$conf"
+  _CS_CONFFILE_BASELINE="$(_cs_conffile_list)"
+  return 0
+}
+
+apt_conffile_report() {
+  [[ -n "${_CS_CONFFILE_GUARD:-}" ]] || return 0
+
+  local added
+  added="$(comm -13 <(printf '%s\n' "${_CS_CONFFILE_BASELINE:-}") <(_cs_conffile_list) 2>/dev/null)"
+  rm -f "$_CS_CONFFILE_GUARD"
+  _CS_CONFFILE_GUARD=""
+  unset APT_CONFIG
+  [[ -n "${added//[[:space:]]/}" ]] || return 0
+
+  msg_warn "Kept your version of these config files - upstream shipped changes to them too:"
+  local f
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    echo -e "${TAB}${YW}${f%.dpkg-*}${CL} - new upstream version at ${YW}${f}${CL}"
+  done <<<"$added"
   return 0
 }
 

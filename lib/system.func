@@ -2283,16 +2283,29 @@ curl_download() {
 # Usage: _diagnose_deb_failure "/path/to/file.deb"
 # Returns: always 0 (diagnostic only — caller must return the error code)
 # ------------------------------------------------------------------------------
+# A failed .deb leaves dpkg half-configured, which breaks every later apt call.
+_cs_repair_dpkg() {
+  $STD dpkg --configure -a 2>/dev/null || true
+  DEBIAN_FRONTEND=noninteractive $STD apt-get -y --fix-broken install 2>/dev/null || true
+}
 _diagnose_deb_failure() {
-  local deb_path="$1"
+  local deb_path="$1" err_log="${2:-}"
   local filename="${deb_path##*/}"
   local pkg_name pkg_deps pkg_version
 
   pkg_name=$(dpkg-deb -f "$deb_path" Package 2>/dev/null || echo "${filename%%_*}")
   pkg_version=$(dpkg-deb -f "$deb_path" Version 2>/dev/null || true)
   pkg_deps=$(dpkg-deb -f "$deb_path" Depends 2>/dev/null || true)
+  local pkg_conflicts
+  pkg_conflicts=$(dpkg-deb -f "$deb_path" Conflicts 2>/dev/null || true)
 
   msg_error "Failed to install '${pkg_name}${pkg_version:+ (${pkg_version})}' — both apt and dpkg reported errors"
+
+  if [[ -s "${err_log:-}" ]]; then
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && msg_custom "→" "${YWB:-}" "$line"
+    done < <(grep -vE "^\(Reading database|^Preparing to unpack|^Unpacking " "$err_log" | tail -n 6)
+  fi
 
   # Detect PostgreSQL version conflict (e.g., postgresql-16-vchord while pg17 is active)
   local pg_ver_needed pg_ver_installed
@@ -2323,7 +2336,10 @@ _diagnose_deb_failure() {
       msg_error "Unmet dependencies: ${missing_deps[*]}"
       msg_error "Hint: Run 'apt-get install -f' inside the container to attempt automatic dependency resolution."
     else
-      msg_error "Hint: Declared dependencies appear present but installation still failed. Check the log above for the exact error."
+      if [[ -n "$pkg_conflicts" ]]; then
+        msg_error "Declares Conflicts: ${pkg_conflicts}"
+      fi
+      msg_error "Hint: dependencies are present, so look at the dpkg output above - a file or package conflict is the usual cause."
     fi
   else
     msg_error "Hint: Check the installation log above for the exact dependency or configuration error."
@@ -2465,6 +2481,6 @@ Suites: trixie-security
 Components: main contrib non-free non-free-firmware
 EOF
   fi
-  $STD apt update
+  apt_update_safe
   return 0
 }

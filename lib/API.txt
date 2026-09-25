@@ -4,6 +4,7 @@ _configure_pg_cron_preload
 _cs_apt_install_optional
 _cs_clean_target_dir
 _cs_drop_pm_shim
+_cs_repair_dpkg
 _cs_write_cargo_profile
 _deploy_source_tarball
 _deploy_unpacked_archive
@@ -11,9 +12,15 @@ _diagnose_deb_failure
 _docker_is_noninteractive
 _download_source_tarball
 _forge_asset_urls
+_forge_curl
 _forge_descriptor
+_forge_designated_release
+_forge_highest_version
 _forge_http_get
+_forge_is_current
+_forge_keep_raw
 _forge_release_json
+_forge_same_shape
 _forge_scan_older
 _forge_source_url
 _forge_stable_filter
@@ -35,6 +42,7 @@ _setup_nvidia_gpu
 _setup_rocm
 _tools_cleanup_temp_dirs
 _tools_register_temp_cleanup
+_uv_required_version
 cache_installed_version
 check_for_codeberg_release
 check_for_gh_branch
@@ -105,6 +113,7 @@ prepare_repository_setup
 prompt_for_github_token
 remove_old_tool_version
 restore_backup
+rust_prune_toolchains
 safe_service_restart
 setup_adminer
 setup_clickhouse

@@ -131,41 +131,56 @@ load_cloud_init_functions() {
   return 1
 }
 
+# Banner slugs to try, longest first. The generator keys on the first APP= line,
+# but a few scripts append the release and type before drawing ("AlmaLinux 10
+# VM") and so ask for a banner that was never generated. Only a trailing version
+# or VM/LXC is dropped and retried; any other word ends the walk, so "Home
+# Assistant OS" cannot fall back onto a "homeassistant" banner.
+_cs_header_slugs() {
+  local -a words
+  read -ra words <<<"$1"
+  local i last
+  for ((i = ${#words[@]}; i > 0; i--)); do
+    echo "${words[*]:0:i}" | tr '[:upper:]' '[:lower:]' | tr -d ' '
+    last="${words[i - 1],,}"
+    [[ "$last" =~ ^v?[0-9][0-9.]*$ || "$last" == "vm" || "$last" == "lxc" ]] || break
+  done
+}
+
 # Function to download & save header files
 get_header() {
   local app_type=${APP_TYPE:-vm}
-
-  # Headers live only in core; the slug is APP lowercased without spaces, as
-  # its generator writes them. No banner usually means no APP= line to read.
-  local slug
-  slug=$(echo "${APP,,}" | tr -d ' ')
-  [[ -z "$slug" ]] && return 1
-
   local core_base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
-  local cache="/usr/local/community-scripts/headers/${app_type}/${slug}"
-  mkdir -p "$(dirname "$cache")"
+  local slug cache
 
-  if [ -s "$cache" ]; then
-    cat "$cache"
-    return 0
-  fi
+  while read -r slug; do
+    [[ -z "$slug" ]] && continue
+    cache="/usr/local/community-scripts/headers/${app_type}/${slug}"
+    mkdir -p "$(dirname "$cache")"
 
-  # A banner the generator has not produced yet 404s here, which is expected
-  # and not worth printing at the user. header_info simply draws nothing.
-  if curl -fsSL "${core_base}/headers/${app_type}/${slug}" -o "$cache" 2>/dev/null && [ -s "$cache" ]; then
-    cat "$cache"
-    return 0
-  fi
+    if [ -s "$cache" ]; then
+      cat "$cache"
+      return 0
+    fi
 
-  rm -f "$cache"
+    # A banner the generator has not produced yet 404s here, which is expected
+    # and not worth printing at the user. header_info simply draws nothing.
+    if curl -fsSL "${core_base}/headers/${app_type}/${slug}" -o "$cache" 2>/dev/null && [ -s "$cache" ]; then
+      cat "$cache"
+      return 0
+    fi
+    rm -f "$cache"
+  done < <(_cs_header_slugs "${1:-$APP}")
+
   return 1
 }
 
 header_info() {
-  local app_name=$(echo "${APP,,}" | tr ' ' '-')
+  # Hand the name over unchanged. Hyphenating it here asked for
+  # home-assistant-os instead of homeassistantos, and hid the word boundaries
+  # get_header needs to drop a trailing version.
   local header_content
-
-  header_content=$(get_header "$app_name") || header_content=""
+  header_content=$(get_header "${1:-$APP}") || header_content=""
 
   _cs_clear
   local term_width
@@ -704,10 +719,11 @@ cleanup() {
     if declare -f post_update_to_api >/dev/null 2>&1; then
       if [[ $exit_code -ne 0 ]]; then
         post_update_to_api "failed" "$exit_code"
+      elif [[ -n "${VMID:-}" ]] && qm config "$VMID" &>/dev/null; then
+        # Clean exit with the VM in place: a script that never said so itself.
+        post_update_to_api "done" "none"
       else
-        # Exited cleanly but description()/success was never called: the user
-        # backed out of a dialog. Report as aborted - NOT "failed 1" (which
-        # produced meaningless 'General error' records with no error text).
+        # Clean exit, no VM: the user backed out of a dialog.
         post_update_to_api "aborted" "0"
       fi
     fi
@@ -764,6 +780,8 @@ arch_check() {
 }
 
 ssh_check() {
+  # Purely advisory, and there is nobody to advise on an unattended run.
+  [[ "${VM_UNATTENDED:-0}" == "1" ]] && return 0
   if command -v pveversion >/dev/null 2>&1 && [ -n "${SSH_CLIENT:-}" ]; then
     if whiptail --backtitle "Proxmox VE Helper Scripts" --defaultno --title "SSH DETECTED" --yesno "It's suggested to use the Proxmox shell instead of SSH, since SSH can create issues while gathering variables. Would you like to proceed with using SSH?" 10 62; then
       :
@@ -793,6 +811,10 @@ vm_confirm_new_vm() {
   local height="${3:-10}"
   local width="${4:-58}"
 
+  # Unattended runs have nobody to answer this, and vm_start_script already
+  # skips the wizard for them -- without this the run hangs on the prompt.
+  [[ "${VM_UNATTENDED:-0}" == "1" ]] && return 0
+
   vm_dialog yesno "$title" "$message" "$height" "$width"
 }
 
@@ -800,12 +822,19 @@ vm_choose_settings_mode() {
   local message="${1:-Use Default Settings?}"
   local height="${2:-10}"
   local width="${3:-58}"
+  local rc=0
 
   # 0 is Default, 1 is the Advanced button. vm_dialog turns anything else --
   # ESC, or a dialog that could not be drawn -- into a fatal error that says
   # why, instead of falling through to Advanced and letting the next prompt
   # "exit" the operator from a wizard they never asked for.
-  vm_dialog yesno "SETTINGS" "$message" --no-button Advanced "$height" "$width"
+  vm_dialog yesno "SETTINGS" "$message" --no-button Advanced "$height" "$width" || rc=$?
+  if ((rc == 0)); then
+    VM_SETTINGS_MODE="default"
+  else
+    VM_SETTINGS_MODE="advanced"
+  fi
+  return $rc
 }
 
 # ------------------------------------------------------------------------------
@@ -818,8 +847,8 @@ vm_choose_settings_mode() {
 # cannot print "Host" while CPU_TYPE says otherwise.
 # ------------------------------------------------------------------------------
 vm_echo_default_settings() {
-  local cpu_label="KVM64"
-  [[ "${CPU_TYPE:-}" == *host* ]] && cpu_label="Host"
+  local cpu_label
+  cpu_label="$(vm_cpu_model_label)"
 
   local cache_label="None"
   [[ -n "${DISK_CACHE:-}" ]] && cache_label="Write Through"
@@ -912,7 +941,17 @@ vm_apply_env_overrides() {
   return 0
 }
 
+vm_preflight() {
+  [[ -n "${_CS_VM_PREFLIGHT_DONE:-}" ]] && return 0
+  _CS_VM_PREFLIGHT_DONE=1
+  check_root
+  [[ "${var_arm64:-no}" == "yes" ]] || arch_check
+  pve_check
+  ssh_check
+}
+
 vm_start_script() {
+  vm_preflight
   if [[ "${VM_UNATTENDED:-0}" == "1" ]]; then
     METHOD="unattended"
     default_settings
@@ -929,6 +968,11 @@ vm_start_script() {
   else
     header_info
     echo -e "${ADVANCED}${BOLD}${RD}Using Advanced Settings${CL}"
+    # Scripts that ask the Cloud-Init question before this fork -- it picks the
+    # disk image, so a default run has to answer it too -- never get to offer
+    # the rest of it. Offer it here. A no-op when Cloud-Init is off or when
+    # advanced_settings asks the question itself, which chains its own.
+    vm_prompt_cloud_init_advanced
     advanced_settings
   fi
 }
@@ -998,8 +1042,48 @@ vm_prompt_vmid() {
   done
 }
 
+vm_arch() {
+  case "${VM_ARCH:-$(dpkg --print-architecture 2>/dev/null || uname -m)}" in
+  arm64 | aarch64) echo "arm64" ;;
+  *) echo "amd64" ;;
+  esac
+}
+
+vm_arch_resolve() {
+  if [[ "$(vm_arch)" == "arm64" ]]; then
+    echo "${2:-arm64}"
+  else
+    echo "${1:-amd64}"
+  fi
+}
+
+# A script whose upstream publishes one architecture only says so here, rather
+# than downloading an image the host can never boot.
+vm_require_arch() {
+  local want="${1:-amd64}" have
+  have="$(vm_arch)"
+  [[ "$have" == "$want" ]] && return 0
+  msg_error "${APP:-This VM} is only published for ${want}, and this host is ${have}"
+  exit 106
+}
+
+# OVMF keeps its vars in 4M, AAVMF needs 64M. qm set -efidisk0 writes the
+# firmware vars into the volume allocated here, so the size has to match.
+vm_alloc_efi_disk() {
+  pvesm alloc "$STORAGE" "$VMID" "${1:-$DISK0}" "$(vm_arch_resolve 4M 64M)" 1>&/dev/null
+}
+
 vm_apply_machine_type() {
   local machine_type="${1:-i440fx}"
+
+  # aarch64 QEMU has neither chipset and no SeaBIOS: virt is the only machine
+  # type, and efitype is ignored for it.
+  if [[ "$(vm_arch)" == "arm64" ]]; then
+    MACHINE_TYPE="virt"
+    FORMAT=""
+    MACHINE=" -machine virt"
+    return 0
+  fi
 
   if [ "$machine_type" = "q35" ]; then
     MACHINE_TYPE="q35"
@@ -1012,8 +1096,21 @@ vm_apply_machine_type() {
   fi
 }
 
+vm_cpu_model_label() {
+  local model="${CPU_TYPE:-}"
+  model="${model# -cpu }"
+  if [[ -n "$model" ]]; then
+    echo "$model"
+  else
+    vm_arch_resolve "KVM64" "Host"
+  fi
+}
+
 vm_machine_type_label() {
   case "${1:-i440fx}" in
+  virt)
+    echo "virt (ARM64)"
+    ;;
   q35)
     echo "Q35 (Modern)"
     ;;
@@ -1028,6 +1125,13 @@ vm_prompt_machine_type() {
   local i440fx_default="ON"
   local q35_default="OFF"
   local machine_choice
+
+  # Nothing to choose on aarch64 - asking would offer two types QEMU refuses.
+  if [[ "$(vm_arch)" == "arm64" ]]; then
+    vm_apply_machine_type "$default_machine"
+    echo -e "${CONTAINERTYPE}${BOLD}${DGN}Machine Type: ${BGN}$(vm_machine_type_label "$MACHINE_TYPE")${CL}"
+    return 0
+  fi
 
   if [ "$default_machine" = "q35" ]; then
     i440fx_default="OFF"
@@ -1049,6 +1153,17 @@ vm_prompt_cloud_init() {
   local default_user="${1:-root}"
 
   USE_CLOUD_INIT="no"
+
+  # Interactive by nature; VM_CLOUD_INIT decides it for unattended runs.
+  if [[ "${VM_UNATTENDED:-0}" == "1" ]]; then
+    local fallback="no"
+    [[ "${CLOUDINIT_REQUIRED:-0}" == "1" ]] && fallback="yes"
+    USE_CLOUD_INIT="${VM_CLOUD_INIT:-$fallback}"
+    echo -e "${CLOUD}${BOLD}${DGN}Cloud-Init: ${BGN}${USE_CLOUD_INIT}${CL}"
+    [[ "$USE_CLOUD_INIT" == "yes" ]] && load_cloud_init_functions
+    return 0
+  fi
+
   load_cloud_init_functions
 
   if ! declare -f configure_cloud_init_interactive >/dev/null 2>&1; then
@@ -1060,9 +1175,26 @@ vm_prompt_cloud_init() {
   USE_CLOUD_INIT="${CLOUDINIT_ENABLE:-no}"
   echo -e "${CLOUD}${BOLD}${DGN}Cloud-Init: ${BGN}${USE_CLOUD_INIT}${CL}"
 
-  if [ "$USE_CLOUD_INIT" = "yes" ] && declare -f configure_cloudinit_ssh_keys >/dev/null 2>&1; then
-    configure_cloudinit_ssh_keys || true
-  fi
+  # Called from inside advanced_settings, the extra questions belong here, next
+  # to the one that opened the subject. Called before the Default/Advanced fork,
+  # vm_start_script picks them up afterwards instead.
+  [[ "${VM_SETTINGS_MODE:-}" == "advanced" ]] && vm_prompt_cloud_init_advanced
+
+  return 0
+}
+
+# Network mode, DNS and SSH keys: the Cloud-Init settings with defaults worth
+# keeping. Runs once per script, on the Advanced path only.
+vm_prompt_cloud_init_advanced() {
+  [[ "${VM_UNATTENDED:-0}" == "1" ]] && return 0
+  [[ "${USE_CLOUD_INIT:-no}" == "yes" ]] || return 0
+  [[ -n "${_CS_CI_ADVANCED_DONE:-}" ]] && return 0
+  _CS_CI_ADVANCED_DONE=1
+
+  declare -f configure_cloud_init_advanced >/dev/null 2>&1 &&
+    { configure_cloud_init_advanced || true; }
+  declare -f configure_cloudinit_ssh_keys >/dev/null 2>&1 &&
+    { configure_cloudinit_ssh_keys || true; }
 
   return 0
 }
@@ -1115,6 +1247,112 @@ vm_prompt_disk_cache() {
   fi
 }
 
+vm_prompt_bios() {
+  local default_bios="${1:-ovmf}"
+  local ovmf_default="ON" seabios_default="OFF"
+  [[ "$default_bios" == "seabios" ]] && {
+    ovmf_default="OFF"
+    seabios_default="ON"
+  }
+
+  if vm_dialog radiolist "BIOS" "Choose the firmware" --cancel-button Exit-Script 10 58 2 \
+    "ovmf" "OVMF (UEFI)" "$ovmf_default" \
+    "seabios" "SeaBIOS (Legacy)" "$seabios_default"; then
+    # SeaBIOS has no EFI vars disk, so callers must skip -efidisk0 for it.
+    if [[ "$VM_DIALOG_RESULT" == "seabios" ]]; then
+      BIOS_TYPE=" -bios seabios"
+      BIOS_UEFI="no"
+      echo -e "${OS}${BOLD}${DGN}BIOS: ${BGN}SeaBIOS${CL}"
+    else
+      BIOS_TYPE=" -bios ovmf"
+      BIOS_UEFI="yes"
+      echo -e "${OS}${BOLD}${DGN}BIOS: ${BGN}OVMF (UEFI)${CL}"
+    fi
+  else
+    exit_script
+  fi
+}
+
+vm_prompt_scsihw() {
+  local default_hw="${1:-virtio-scsi-pci}"
+  local pci_default="ON" single_default="OFF"
+  [[ "$default_hw" == "virtio-scsi-single" ]] && {
+    pci_default="OFF"
+    single_default="ON"
+  }
+
+  if vm_dialog radiolist "SCSI CONTROLLER" "Choose the controller" --cancel-button Exit-Script 10 62 2 \
+    "virtio-scsi-pci" "VirtIO SCSI (Default)" "$pci_default" \
+    "virtio-scsi-single" "VirtIO SCSI single (allows IO threads)" "$single_default"; then
+    SCSIHW="$VM_DIALOG_RESULT"
+    echo -e "${CONTAINERTYPE}${BOLD}${DGN}SCSI Controller: ${BGN}${SCSIHW}${CL}"
+  else
+    exit_script
+  fi
+}
+
+vm_prompt_display() {
+  local default_vga="${1:-serial0}"
+  local serial_default="OFF" std_default="OFF" none_default="OFF"
+  case "$default_vga" in
+  serial0) serial_default="ON" ;;
+  none) none_default="ON" ;;
+  *) std_default="ON" ;;
+  esac
+
+  if vm_dialog radiolist "DISPLAY" "Choose the graphic card" --cancel-button Exit-Script 11 62 3 \
+    "serial0" "Serial terminal 0 (cloud images)" "$serial_default" \
+    "std" "Standard VGA" "$std_default" \
+    "none" "None" "$none_default"; then
+    VGA_TYPE="$VM_DIALOG_RESULT"
+    echo -e "${CONTAINERTYPE}${BOLD}${DGN}Display: ${BGN}${VGA_TYPE}${CL}"
+  else
+    exit_script
+  fi
+}
+
+vm_prompt_nic_model() {
+  local default_model="${1:-virtio}"
+  local virtio_default="ON" e1000_default="OFF" rtl_default="OFF"
+  case "$default_model" in
+  e1000) virtio_default="OFF" e1000_default="ON" ;;
+  rtl8139) virtio_default="OFF" rtl_default="ON" ;;
+  esac
+
+  if vm_dialog radiolist "NETWORK MODEL" "Choose the NIC model" --cancel-button Exit-Script 11 62 3 \
+    "virtio" "VirtIO (paravirtualized, default)" "$virtio_default" \
+    "e1000" "Intel E1000" "$e1000_default" \
+    "rtl8139" "Realtek RTL8139" "$rtl_default"; then
+    NIC_MODEL="$VM_DIALOG_RESULT"
+    echo -e "${BRIDGE}${BOLD}${DGN}NIC Model: ${BGN}${NIC_MODEL}${CL}"
+  else
+    exit_script
+  fi
+}
+
+vm_prompt_balloon() {
+  local default_balloon="${1:-no}"
+  local yes_default="OFF" no_default="ON"
+  [[ "$default_balloon" == "yes" ]] && {
+    yes_default="ON"
+    no_default="OFF"
+  }
+
+  if vm_dialog radiolist "MEMORY BALLOONING" "Allow Proxmox to reclaim unused guest memory?" --cancel-button Exit-Script 11 62 2 \
+    "no" "Off - guest keeps the full amount" "$no_default" \
+    "yes" "On - balloon down to half on pressure" "$yes_default"; then
+    if [[ "$VM_DIALOG_RESULT" == "yes" ]]; then
+      BALLOON=$((RAM_SIZE / 2))
+      echo -e "${RAMSIZE}${BOLD}${DGN}Ballooning: ${BGN}yes (min ${BALLOON} MiB)${CL}"
+    else
+      BALLOON=0
+      echo -e "${RAMSIZE}${BOLD}${DGN}Ballooning: ${BGN}no${CL}"
+    fi
+  else
+    exit_script
+  fi
+}
+
 vm_prompt_hostname() {
   local default_hostname="${1:-vm}"
   local adjusted_hostname
@@ -1148,17 +1386,36 @@ vm_prompt_cpu_model() {
     host_default="ON"
   fi
 
-  if vm_dialog radiolist "CPU MODEL" "Choose" --cancel-button Exit-Script 10 58 2 \
-    "0" "KVM64 (Default)" "$kvm_default" \
-    "1" "Host" "$host_default"; then
+  # Every entry below is an x86 model. On aarch64 Proxmox picks host under KVM,
+  # which is what an empty CPU_TYPE leaves it to do.
+  if [[ "$(vm_arch)" == "arm64" ]]; then
+    CPU_TYPE=""
+    echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}$(vm_cpu_model_label)${CL}"
+    return 0
+  fi
+
+  local v2_default="OFF" v3_default="OFF" v4_default="OFF"
+  case "$default_model" in
+  x86-64-v2-AES) kvm_default="OFF" v2_default="ON" ;;
+  x86-64-v3) kvm_default="OFF" v3_default="ON" ;;
+  x86-64-v4) kvm_default="OFF" v4_default="ON" ;;
+  esac
+
+  if vm_dialog radiolist "CPU MODEL" "Choose" --cancel-button Exit-Script 13 64 5 \
+    "0" "KVM64 (Default, most portable)" "$kvm_default" \
+    "1" "Host (fastest, blocks migration)" "$host_default" \
+    "2" "x86-64-v2-AES (AES-NI, wide support)" "$v2_default" \
+    "3" "x86-64-v3 (AVX2, needs newer hosts)" "$v3_default" \
+    "4" "x86-64-v4 (AVX-512, few hosts)" "$v4_default"; then
     cpu_choice="$VM_DIALOG_RESULT"
-    if [ "$cpu_choice" = "1" ]; then
-      CPU_TYPE=" -cpu host"
-      echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}Host${CL}"
-    else
-      CPU_TYPE=""
-      echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}KVM64${CL}"
-    fi
+    case "$cpu_choice" in
+    1) CPU_TYPE=" -cpu host" ;;
+    2) CPU_TYPE=" -cpu x86-64-v2-AES" ;;
+    3) CPU_TYPE=" -cpu x86-64-v3" ;;
+    4) CPU_TYPE=" -cpu x86-64-v4" ;;
+    *) CPU_TYPE="" ;;
+    esac
+    echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}$(vm_cpu_model_label)${CL}"
   else
     exit_script
   fi
@@ -1382,6 +1639,41 @@ _vm_image_ok() {
   return 0
 }
 
+vm_image_cache_path() {
+  local url="${1:?url}"
+  local dir="${VM_IMAGE_CACHE_DIR:-/var/lib/vz/template/cache}"
+  local name="${url%%\?*}"
+  mkdir -p "$dir" 2>/dev/null || true
+  printf '%s/%s' "$dir" "${name##*/}"
+}
+
+# A cached image that no longer matches usually means the upstream was rebuilt,
+# not that anything is wrong. Offer the choice instead of silently re-downloading
+# several hundred MB. Unattended or without a terminal, take the new one.
+_vm_cache_choice() {
+  local file="$1" url="$2" local_size local_date remote_size remote_date head
+
+  [[ "${VM_UNATTENDED:-0}" == "1" ]] && return 0
+  [[ -t 0 ]] || return 0
+  command -v whiptail >/dev/null 2>&1 || return 0
+
+  local_size=$(stat -c%s "$file" 2>/dev/null || echo 0)
+  local_size=$(numfmt --to=iec "$local_size" 2>/dev/null || echo ?)
+  local_date=$(date -r "$file" '+%Y-%m-%d %H:%M' 2>/dev/null || echo ?)
+
+  # -L: the mirror answers 302 and only the final hop carries real headers.
+  head=$(curl -fsSIL --max-time 15 "$url" 2>/dev/null)
+  remote_size=$(grep -i '^content-length:' <<<"$head" | tail -1 | tr -dc '0-9')
+  [[ -n "$remote_size" ]] && remote_size=$(numfmt --to=iec "$remote_size" 2>/dev/null)
+  remote_date=$(grep -i '^last-modified:' <<<"$head" | tail -1 | cut -d' ' -f2- | tr -d '\r')
+
+  if vm_dialog yesno "Image Cache" \
+    "The cached image no longer matches what the mirror offers.\n\nThis normally means a newer build was published.\n\n  File:     $(basename "$file")\n  Cached:   ${local_size}, ${local_date}\n  Upstream: ${remote_size:-?}, ${remote_date:-unknown}\n\nDownload the new one? The cached copy is removed." \
+    18 74 --yes-button "Download" --no-button "Keep cached"; then
+    return 0
+  fi
+  return 1
+}
 vm_fetch_image() {
   local url="${1:?url}" target="${2:?target}"
   shift 2
@@ -1416,8 +1708,13 @@ vm_fetch_image() {
       msg_ok "Using cached ${CL}${BL}$(basename "$target")${CL}"
       return 0
     fi
-    msg_warn "Cached $(basename "$target") did not verify; downloading it again"
-    rm -f "$target"
+    if _vm_cache_choice "$target" "$url"; then
+      msg_warn "Replacing the cached $(basename "$target")"
+      rm -f "$target"
+    else
+      msg_ok "Using cached ${CL}${BL}$(basename "$target")${CL}"
+      return 0
+    fi
   fi
 
   mkdir -p "$(dirname "$target")"
@@ -1526,6 +1823,56 @@ _vm_root_fs() {
     ' | sort -rn | head -1
 }
 
+# Unpack a downloaded image; the format comes from the file name. Without a
+# target it lands in the tmp dir with the suffix removed. Sets VM_IMAGE_FILE
+# and leaves the archive alone, so a cached download survives.
+vm_extract_image() {
+  local src="${1:?image}" target="${2:-}" tool rc
+
+  if [[ ! -r "$src" ]]; then
+    msg_error "Cannot read ${src}"
+    return 1
+  fi
+
+  case "$src" in
+  *.xz) tool=xz ;;
+  *.gz) tool=gzip ;;
+  *.bz2) tool=bzip2 ;;
+  *.zst) tool=zstd ;;
+  *)
+    VM_IMAGE_FILE="$src"
+    return 0
+    ;;
+  esac
+
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    msg_error "${tool} is needed to unpack $(basename "$src")"
+    return 1
+  fi
+
+  [[ -n "$target" ]] || target="${VM_IMAGE_TMP_DIR:-/var/lib/vz/template/tmp}/$(basename "${src%.*}")"
+  mkdir -p "$(dirname "$target")"
+
+  if command -v pv >/dev/null 2>&1; then
+    # pv is the progress indicator here; a spinner would fight it for the line.
+    "$tool" -dc "$src" | pv -N "Extracting $(basename "$src")" >"$target"
+    rc=${PIPESTATUS[0]}
+  else
+    msg_info "Extracting $(basename "$src")"
+    "$tool" -dc "$src" >"$target"
+    rc=$?
+  fi
+
+  if ((rc != 0)); then
+    rm -f "$target"
+    msg_error "Failed to unpack $(basename "$src")"
+    return 1
+  fi
+
+  msg_ok "Extracted ${CL}${BL}$(basename "$target")${CL}"
+  export VM_IMAGE_FILE="$target"
+}
+
 vm_expand_image() {
   local src="${1:?image}" size="${2:?size}" part out before after
 
@@ -1580,7 +1927,10 @@ vm_expand_image() {
 vm_ensure_virt_customize() {
   command -v virt-customize >/dev/null 2>&1 && return 0
   msg_info "Installing libguestfs-tools"
-  $STD apt-get update
+  # Unguarded, a flaky mirror or a broken third-party repo on the host took the
+  # whole VM creation down through the ERR trap. The install below reports for
+  # itself and may still succeed from cache; the Incus side already guards it.
+  $STD apt-get update || true
   if ! $STD apt-get install -y libguestfs-tools; then
     msg_warn "libguestfs-tools unavailable"
     return 1
@@ -1592,24 +1942,36 @@ vm_prepare_cloud_image() {
   local image="${1:?image}" hostname="${2:-${HN:-vm}}"
 
   if ! vm_ensure_virt_customize; then
-    msg_warn "Importing the image unmodified"
+    msg_warn "Importing the image unmodified - virt-customize is unavailable"
     return 1
   fi
 
+  _VM_PREPARE_FAILED=()
+  _VM_PREPARE_COLLECTING=1
+
   msg_info "Preparing the image"
-  virt-customize -q -a "$image" --hostname "$hostname" >/dev/null 2>&1 || true
+  _vm_customize "hostname" "$image" --hostname "$hostname"
   # A cloned machine-id gives every VM from this image the same DHCP lease.
-  virt-customize -q -a "$image" \
-    --run-command 'truncate -s 0 /etc/machine-id; rm -f /var/lib/dbus/machine-id' \
-    >/dev/null 2>&1 || true
+  _vm_customize "machine-id" "$image" \
+    --run-command 'truncate -s 0 /etc/machine-id; rm -f /var/lib/dbus/machine-id'
   # Cloud-Init sets a root password, which is useless if sshd refuses it.
-  virt-customize -q -a "$image" --run-command \
-    'sed -i "s/^#*PermitRootLogin.*/PermitRootLogin yes/;s/^#*PasswordAuthentication.*/PasswordAuthentication yes/" /etc/ssh/sshd_config' \
-    >/dev/null 2>&1 || true
+  _vm_customize "sshd password login" "$image" --run-command \
+    '[ -f /etc/ssh/sshd_config ] || exit 0
+     sed -i "s/^#*PermitRootLogin.*/PermitRootLogin yes/;s/^#*PasswordAuthentication.*/PasswordAuthentication yes/" /etc/ssh/sshd_config'
 
   vm_enable_consoles "$image"
   vm_install_guest_agent "$image" || true
-  msg_ok "Prepared the image"
+  _VM_PREPARE_COLLECTING=0
+
+  if ((${#_VM_PREPARE_FAILED[@]})); then
+    msg_error "Prepared the image - ${#_VM_PREPARE_FAILED[@]} step(s) failed"
+    local step
+    for step in "${_VM_PREPARE_FAILED[@]}"; do
+      msg_warn "$step"
+    done
+  else
+    msg_ok "Prepared the image"
+  fi
   return 0
 }
 
@@ -1617,25 +1979,70 @@ vm_prepare_cloud_image() {
 # Proxmox's console stays black -- the VM is fine, nothing is drawing on it.
 # The nocloud image variants configure both consoles themselves, which is why
 # only the cloud-init path showed this.
+# Every virt-customize step used to end in `>/dev/null 2>&1 || true` and the
+# caller reported success either way, so an image none of them reached looked
+# exactly like one that worked. Failures are named instead: collected while
+# vm_prepare_cloud_image holds a msg block, warned about directly otherwise.
+declare -ga _VM_PREPARE_FAILED=()
+_VM_PREPARE_COLLECTING=0
+
+_vm_customize() {
+  local label="${1:?label}" image="${2:?image}"
+  shift 2
+  local log detail entry
+  log="$(mktemp)" || log=/dev/null
+
+  if virt-customize -q -a "$image" "$@" >"$log" 2>&1; then
+    [[ "$log" != /dev/null ]] && rm -f "$log"
+    return 0
+  fi
+
+  # Keep the tail, not the head: libguestfs echoes the whole failed command and
+  # puts the reason after it.
+  detail="$(grep -m1 -iE 'error|cannot|failed' "$log" 2>/dev/null |
+    sed -E 's/^[^:]+: +(error: )?//; s/[[:space:]]+$//')"
+  ((${#detail} > 160)) && detail="...${detail: -160}"
+  [[ "$log" != /dev/null ]] && rm -f "$log"
+
+  # Always 0: these run as bare statements under `set -e`, and the failure is
+  # recorded rather than lost. Callers that care compare the array length.
+  entry="${label}${detail:+ - ${detail}}"
+  _VM_PREPARE_FAILED+=("$entry")
+  ((_VM_PREPARE_COLLECTING)) || msg_warn "Image step failed: ${entry}"
+  return 0
+}
+
 vm_enable_consoles() {
   local image="${1:?image}"
   command -v virt-customize >/dev/null 2>&1 || return 0
 
-  # No autologin: cloud-init sets a password, so a prompt is the right thing.
-  virt-customize -q -a "$image" \
-    --run-command 'systemctl enable getty@tty1.service serial-getty@ttyS0.service' \
-    >/dev/null 2>&1 || true
+  _vm_customize "console services" "$image" \
+    --run-command 'systemctl enable getty@tty1.service serial-getty@ttyS0.service'
+
+  # An image without cloud-init has nothing that will ever set a password, and
+  # trixie no longer accepts an empty one - so the getty above puts a prompt
+  # nobody can answer on tty1. Decided in the guest: the caller's
+  # USE_CLOUD_INIT is only set once vm_prompt_cloud_init has run.
+  # Template level, the way Debian ships the serial one, so it holds for
+  # whichever instance systemd starts. serial-getty is left alone - those
+  # images already autologin there, and it carries --keep-baud.
+  _vm_customize "console autologin" "$image" --run-command \
+    'if ! command -v cloud-init >/dev/null 2>&1; then
+       mkdir -p /etc/systemd/system/getty@.service.d
+       printf "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear %%I \$TERM\n" \
+         >/etc/systemd/system/getty@.service.d/autologin.conf
+     fi'
 
   # A getty alone only gets you a login prompt after boot -- the kernel still
   # talks to ttyS0 only, so the screen stays black until then. Listing tty1
   # first and ttyS0 last keeps qm terminal as the primary console while the
   # graphical one also shows the boot.
-  virt-customize -q -a "$image" --run-command \
+  _vm_customize "grub console" "$image" --run-command \
     'if [ -f /etc/default/grub ]; then
        sed -i "s/console=ttyS0[^ \"]*/console=tty1 &/" /etc/default/grub
        grep -q "console=tty1" /etc/default/grub || sed -i "s/\(GRUB_CMDLINE_LINUX_DEFAULT=\"\)/\1console=tty1 /" /etc/default/grub
        command -v update-grub >/dev/null 2>&1 && update-grub
-     fi' >/dev/null 2>&1 || true
+     fi'
   return 0
 }
 
@@ -1645,16 +2052,16 @@ vm_enable_consoles() {
 # appliance, so this reports rather than fails.
 vm_install_guest_agent() {
   local image="${1:?image}"
+  local before=${#_VM_PREPARE_FAILED[@]}
   command -v virt-customize >/dev/null 2>&1 || return 0
 
-  if virt-customize -q -a "$image" --install qemu-guest-agent >/dev/null 2>&1; then
-    virt-customize -q -a "$image" \
-      --run-command 'systemctl enable qemu-guest-agent.service' >/dev/null 2>&1 || true
-    return 0
-  fi
+  _vm_customize "qemu-guest-agent (VM shows no IP in Proxmox)" "$image" \
+    --install qemu-guest-agent
+  ((${#_VM_PREPARE_FAILED[@]} > before)) && return 1
 
-  msg_warn "Could not install qemu-guest-agent -- the VM will show no IP in Proxmox"
-  return 1
+  _vm_customize "guest agent service" "$image" \
+    --run-command 'systemctl enable qemu-guest-agent.service'
+  return 0
 }
 
 # Disk first, CD second. An empty disk is not bootable so the installer still
@@ -1703,6 +2110,9 @@ vm_apply_storage_layout() {
     DISK_EXT=""
     DISK_REF=""
     DISK_IMPORT_FORMAT="raw"
+    # Block storage keeps whatever the script chose, but a script that never set
+    # it would otherwise hit an unbound variable in its qm set line.
+    THIN="${THIN-discard=on,ssd=1,}"
     ;;
   esac
 }
@@ -1718,6 +2128,10 @@ vm_select_storage() {
   # A named pool is already an answer, and an unattended run has nobody to ask.
   if [[ -n "${STORAGE:-}" ]]; then
     if pvesm status -storage "$STORAGE" &>/dev/null; then
+      # The interactive path ends with this too. Skipping it here left
+      # DISK_IMPORT_FORMAT and friends unset for every preselected storage.
+      STORAGE_TYPE=$(pvesm status -storage "$STORAGE" 2>/dev/null | awk 'NR>1 {print $2}')
+      vm_apply_storage_layout "$STORAGE_TYPE"
       msg_ok "Using ${CL}${BL}$STORAGE${CL} ${GN}for Storage Location."
       return 0
     fi
@@ -1725,8 +2139,9 @@ vm_select_storage() {
     exit 119
   fi
 
-  msg_info "Validating Storage"
-
+  # Enumerating is a couple of pvesm calls, so it runs silently. Only the branch
+  # that actually has to ask the user gets a spinner, and only until the dialog
+  # replaces it.
   while read -r line; do
     tag=$(echo "$line" | awk '{print $1}')
     type=$(echo "$line" | awk '{printf "%-10s", $2}')
@@ -1736,9 +2151,9 @@ vm_select_storage() {
       msg_max_length=$((${#item} + offset))
     fi
     storage_menu+=("$tag" "$item" "OFF")
-  done < <(pvesm status -content images | awk 'NR>1')
+  done < <(pvesm status -content images 2>/dev/null | awk 'NR>1')
 
-  valid_storage=$(pvesm status -content images | awk 'NR>1')
+  valid_storage=$(pvesm status -content images 2>/dev/null | awk 'NR>1')
   if [ -z "$valid_storage" ]; then
     msg_error "Unable to detect a valid storage location."
     exit 119 # no valid storage found
@@ -1769,7 +2184,7 @@ vm_select_storage() {
   msg_ok "Using ${CL}${BL}$STORAGE${CL} ${GN}for Storage Location."
   msg_ok "Virtual Machine ID is ${CL}${BL}$VMID${CL}."
 
-  STORAGE_TYPE=$(pvesm status -storage "$STORAGE" | awk 'NR>1 {print $2}')
+  STORAGE_TYPE=$(pvesm status -storage "$STORAGE" 2>/dev/null | awk 'NR>1 {print $2}')
   vm_apply_storage_layout "$STORAGE_TYPE"
 }
 
@@ -1782,6 +2197,21 @@ vm_define_disk_references() {
     printf -v "DISK${i}" '%s' "$disk_name"
     printf -v "DISK${i}_REF" '%s' "${STORAGE}:${DISK_REF:-}${disk_name}"
   done
+}
+
+vm_resize_disk() {
+  local disk="${1:-scsi0}"
+  local size="${2:-${DISK_SIZE:-${DEFAULT_DISK_SIZE:-}}}"
+  [[ -z "$size" ]] && return 0
+
+  msg_info "Resizing ${disk} to ${size}"
+  # qm refuses to shrink, and an image already expanded to the requested size
+  # is not an error. Warning beats aborting the whole build under errexit.
+  if qm resize "$VMID" "$disk" "$size" >/dev/null 2>&1; then
+    msg_ok "Resized ${disk} to ${size}"
+  else
+    msg_warn "Could not resize ${disk} to ${size} - it is likely already that size or larger"
+  fi
 }
 
 check_hostname_conflict() {

@@ -1282,7 +1282,7 @@ setup_nodejs() {
 
   # Ensure jq is available for JSON parsing
   if ! command -v jq &>/dev/null; then
-    $STD apt update
+    apt_update_safe
     $STD apt install -y jq || {
       msg_error "Failed to install jq"
       return 100
@@ -1608,6 +1608,16 @@ setup_nodejs() {
   # instead, so an unapproved build warns rather than aborts.
   if command -v pnpm >/dev/null 2>&1; then
     pnpm config set --global strictDepBuilds false >/dev/null 2>&1 || true
+    pnpm config set --global fetch-timeout 600000 >/dev/null 2>&1 || true
+    pnpm config set --global network-concurrency 8 >/dev/null 2>&1 || true
+  fi
+
+  if command -v yarn >/dev/null 2>&1; then
+    if [[ "$(yarn --version 2>/dev/null | cut -d. -f1)" == "1" ]]; then
+      $STD yarn config set network-timeout 600000 2>/dev/null || true
+    else
+      $STD yarn config set --home httpTimeout 600000 2>/dev/null || true
+    fi
   fi
 }
 
@@ -1944,7 +1954,8 @@ get_php_fpm_socket() {
     echo "/run/php/php${PHP_VERSION}-fpm.sock"
     return 0
   fi
-  sock=$(find /run/php -maxdepth 1 -name "php*-fpm.sock" -type s 2>/dev/null | sort -V | tail -1)
+  # Unguarded, a missing /run/php aborts the caller before the message below.
+  sock=$({ find /run/php -maxdepth 1 -name "php*-fpm.sock" -type s 2>/dev/null || true; } | sort -V | tail -1)
   if [[ -z "$sock" ]]; then
     msg_error "No active PHP-FPM socket found under /run/php"
     return 1
@@ -2262,6 +2273,21 @@ EOF
   chmod +x /etc/profile.d/99-cargo.sh
 }
 
+# A source tree with rust-toolchain.toml makes rustup install that exact
+# version on build and never remove it. Keep the default, drop the rest.
+rust_prune_toolchains() {
+  command -v rustup >/dev/null 2>&1 || return 0
+
+  local keep t
+  keep=$(rustup toolchain list 2>/dev/null | awk '/\(default\)/{print $1; exit}')
+  [[ -z "$keep" ]] && return 0
+
+  while read -r t; do
+    [[ -z "$t" || "$t" == "$keep" ]] && continue
+    $STD rustup toolchain uninstall "$t" 2>/dev/null || true
+  done < <(rustup toolchain list 2>/dev/null | awk '{print $1}')
+}
+
 setup_rust() {
   local RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-stable}"
   local RUST_PROFILE="${RUST_PROFILE:-default}"
@@ -2446,6 +2472,8 @@ setup_rust() {
 
     msg_ok "Processed Rust crates"
   fi
+
+  rust_prune_toolchains
 }
 
 # ------------------------------------------------------------------------------
@@ -2456,7 +2484,27 @@ setup_rust() {
 #   - Optionally installs a specific Python version via uv
 # ------------------------------------------------------------------------------
 
+# uv refuses to run when a project pins a required-version it does not match,
+# in either direction. Only the exact form is read; a range falls through to
+# whatever the caller would have installed anyway.
+_uv_required_version() {
+  local dir="${1:?dir}" f v
+  for f in "$dir/pyproject.toml" "$dir/uv.toml"; do
+    [[ -f "$f" ]] || continue
+    v="$(grep -m1 -E '^[[:space:]]*required-version[[:space:]]*=' "$f" 2>/dev/null |
+      sed -E 's/.*=[[:space:]]*"[[:space:]]*==[[:space:]]*([0-9][0-9A-Za-z.+-]*)"[[:space:]]*$/\1/')"
+    if [[ "$v" =~ ^[0-9] ]]; then
+      echo "$v"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# UV_PROJECT_DIR - optional project directory; its uv pin wins over the latest
+# release. Set as a prefix, like PYTHON_VERSION and UV_VERSION.
 setup_uv() {
+  local PROJECT_DIR="${UV_PROJECT_DIR:-}"
   local UV_BIN="/usr/local/bin/uv"
   local UVX_BIN="/usr/local/bin/uvx"
   local TMP_DIR=$(mktemp -d)
@@ -2493,8 +2541,11 @@ setup_uv() {
 
   ensure_dependencies jq
 
-  # Fetch target version (pinned via UV_VERSION or latest release)
+  # Fetch target version (UV_VERSION, then the project's own pin, then latest)
   local TARGET_VERSION="${UV_VERSION:-}"
+  if [[ -z "$TARGET_VERSION" && -n "$PROJECT_DIR" ]]; then
+    TARGET_VERSION="$(_uv_required_version "$PROJECT_DIR")" || TARGET_VERSION=""
+  fi
   if [[ -z "$TARGET_VERSION" ]]; then
     TARGET_VERSION=$(get_latest_github_release "astral-sh/uv") || {
       msg_error "Could not fetch latest uv version from GitHub API"

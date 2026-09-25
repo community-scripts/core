@@ -147,11 +147,11 @@ github_api_call() {
   local attempt=1
   while ((attempt <= max_retries)); do
     local http_code
-    http_code=$(curl -sSL -w "%{http_code}" -o "$output_file" \
+    http_code=$(_forge_curl "$output_file" \
       -H "Accept: application/vnd.github+json" \
       -H "X-GitHub-Api-Version: 2022-11-28" \
       "${header_args[@]}" \
-      "$url" 2>/dev/null) || true
+      "$url")
 
     case "$http_code" in
     200)
@@ -232,9 +232,9 @@ codeberg_api_call() {
 
   for attempt in $(seq 1 $max_retries); do
     local http_code
-    http_code=$(curl -sSL -w "%{http_code}" -o "$output_file" \
+    http_code=$(_forge_curl "$output_file" \
       -H "Accept: application/json" \
-      "$url" 2>/dev/null) || true
+      "$url")
 
     case "$http_code" in
     200)
@@ -733,7 +733,6 @@ get_latest_gl_tag() {
 
   local gitlab_url="${GITLAB_URL:-https://gitlab.com}"
   local api_base="${gitlab_url}/api/v4/projects/${repo_encoded}/repository/tags"
-  local api_timeout="--connect-timeout 10 --max-time 60"
 
   local header=()
   [[ -n "${GITLAB_TOKEN:-}" ]] && header=(-H "PRIVATE-TOKEN: $GITLAB_TOKEN")
@@ -753,8 +752,8 @@ get_latest_gl_tag() {
   temp_file=$(mktemp) || return 1
 
   local http_code
-  http_code=$(curl $api_timeout -sSL -w "%{http_code}" -o "$temp_file" \
-    "${header[@]}" "${api_base}${search_param}" 2>/dev/null) || true
+  http_code=$(_forge_curl "$temp_file" \
+    "${header[@]}" "${api_base}${search_param}")
 
   if [[ "$http_code" != "200" ]]; then
     rm -f "$temp_file"
@@ -1094,7 +1093,7 @@ fetch_and_deploy_gh_branch() {
 # Strip a leading v only when a digit follows, so vault-1.0 keeps its name.
 _forge_strip_v() {
   local v="${1:-}"
-  if [[ "$v" =~ ^v[0-9] ]]; then
+  if [[ "$v" =~ ^[vV][0-9] ]]; then
     printf '%s' "${v:1}"
   else
     printf '%s' "$v"
@@ -1116,6 +1115,7 @@ _forge_descriptor() {
   github:encode) echo "raw" ;;
   github:list) echo "/releases?per_page=100" ;;
   github:one) echo "/releases/tags" ;;
+  github:designated) echo "/releases/latest" ;;
   github:accept) echo "application/vnd.github+json" ;;
   github:auth) [[ -n "${GITHUB_TOKEN:-}" ]] && echo "Authorization: Bearer ${GITHUB_TOKEN}" ;;
   github:ratelimit) echo "403" ;;
@@ -1130,6 +1130,7 @@ _forge_descriptor() {
   gitlab:encode) echo "path" ;;
   gitlab:list) echo "/releases?per_page=100&order_by=released_at&sort=desc" ;;
   gitlab:one) echo "/releases" ;;
+  gitlab:designated) echo "/releases/permalink/latest" ;;
   gitlab:accept) echo "" ;;
   gitlab:auth) [[ -n "${GITLAB_TOKEN:-}" ]] && echo "PRIVATE-TOKEN: ${GITLAB_TOKEN}" ;;
   gitlab:ratelimit) echo "429" ;;
@@ -1140,6 +1141,7 @@ _forge_descriptor() {
   codeberg:encode) echo "raw" ;;
   codeberg:list) echo "/releases?limit=100" ;;
   codeberg:one) echo "/releases/tags" ;;
+  codeberg:designated) echo "/releases/latest" ;;
   codeberg:accept) echo "application/json" ;;
   codeberg:auth) [[ -n "${CODEBERG_TOKEN:-}" ]] && echo "Authorization: token ${CODEBERG_TOKEN}" ;;
   codeberg:ratelimit) echo "429" ;;
@@ -1157,11 +1159,62 @@ _forge_descriptor() {
 #   draft/prerelease pair; its equivalent is upcoming_release, which nothing
 #   checked before, so a published RC pushed every container into an update.
 # ------------------------------------------------------------------------------
+# Every forge lists releases newest-published first, which is not newest
+# version: a patch backported to an older line is published after the newer
+# minor. Order by version instead. This only decides between tags of the same
+# shape; which release line is current is the forge's answer, not ours.
+_FORGE_JQ_VKEY='((.tag_name // "") | sub("^[vV]";"") | [scan("[0-9]+")] | map(tonumber))'
+
+# Highest of the versions on stdin.
+_forge_highest_version() {
+  local line key
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    key="$(printf '%s' "$line" | grep -oE '[0-9]+' | tr '\n' '.')"
+    printf '%s\t%s\n' "${key:-0}" "$line"
+  done | sort -V -k1,1 | tail -n1 | cut -f2-
+}
+
+# Do both carry a separator between digits? 20260823 and nightly-20260511-414
+# are not on one scale, and ordering them picks the wrong winner either way.
+_forge_same_shape() {
+  local a=1 b=1
+  [[ "$1" =~ [0-9]+[._-][0-9]+ ]] || a=0
+  [[ "$2" =~ [0-9]+[._-][0-9]+ ]] || b=0
+  [[ "$a" == "$b" ]]
+}
+
+# Is $1 already at or ahead of $2? Unequal shapes are not comparable, and
+# withholding an update strands the container, so it reports not-current.
+_forge_is_current() {
+  [[ -n "$1" ]] || return 1
+  [[ "$1" == "$2" ]] && return 0
+  _forge_same_shape "$1" "$2" || return 1
+  [[ "$(printf '%s\n%s\n' "$1" "$2" | _forge_highest_version)" == "$1" ]]
+}
+
 _forge_stable_filter() {
   case "${1:?forge}" in
   gitlab) echo 'select($pre or ((.upcoming_release // false) == false))' ;;
   *) echo 'select(.draft != true) | select($pre or (.prerelease != true))' ;;
   esac
+}
+
+# ------------------------------------------------------------------------------
+# _forge_curl()
+#
+# - GET into a file and echo the status, or 000 when the transfer did not finish
+# - %{http_code} is set once the headers arrive, so a body cut short still
+#   reports 200; only curl's exit status says the transfer failed
+# ------------------------------------------------------------------------------
+_forge_curl() {
+  local out="${1:?outfile}" code status
+  shift
+  code="$(curl -sSL --connect-timeout 10 --max-time 60 -w "%{http_code}" \
+    -o "$out" "$@" 2>/dev/null)"
+  status=$?
+  ((status != 0)) && code="000"
+  printf '%s' "${code:-000}"
 }
 
 # ------------------------------------------------------------------------------
@@ -1182,13 +1235,34 @@ _forge_http_get() {
   auth="$(_forge_descriptor "$forge" auth)"
   [[ -n "$auth" ]] && headers+=(-H "$auth")
 
-  code="$(curl -sSL --max-time 20 -w "%{http_code}" -o "$out" \
-    "${headers[@]}" "$url" 2>/dev/null)" || true
+  # A dropped connection, a truncated body and a non-JSON 200 all land on 000.
+  local attempt=1 delay=2 api_message=""
+  while :; do
+    code="$(_forge_curl "$out" "${headers[@]}" "$url")"
+    if [[ "$code" == "200" ]] && command -v jq >/dev/null 2>&1; then
+      if ! jq -e . >/dev/null 2>&1 <"$out"; then
+        code="000"
+      else
+        api_message="$(jq -r 'if type == "object" and has("message") and (has("tag_name") | not)
+          then .message else empty end' "$out" 2>/dev/null)"
+      fi
+    fi
+    [[ "$code" != "000" ]] && break
+    ((attempt >= 3)) && break
+    sleep "$delay"
+    delay=$((delay * 2))
+    ((attempt++))
+  done
+
+  if [[ -n "$api_message" ]]; then
+    msg_error "${forge}: ${api_message}"
+    return 22
+  fi
 
   case "$code" in
   200) return 0 ;;
   000)
-    msg_error "Connection failed while querying ${forge}"
+    msg_error "${forge}: connection failed, or the response was cut short or not JSON, after ${attempt} attempts"
     return 7
     ;;
   401)
@@ -1249,6 +1323,55 @@ _forge_source_url() {
 # - GitHub keeps its interactive token recovery: on 401 or an exhausted 403 it
 #   offers prompt_for_github_token and retries with the counters reset
 # ------------------------------------------------------------------------------
+# The release the maintainer marked as latest. Returns 1 whenever that cannot be
+# answered cleanly, so the caller falls back to listing and sorting.
+_forge_designated_release() {
+  local forge="$1" base="$2" repo_path="$3" out="$4"
+  local path code tmp accept auth
+  local -a headers=()
+
+  path="$(_forge_descriptor "$forge" designated 2>/dev/null)" || return 1
+  [[ -n "$path" ]] || return 1
+
+  accept="$(_forge_descriptor "$forge" accept)"
+  [[ -n "$accept" ]] && headers+=(-H "Accept: ${accept}")
+  [[ "$forge" == "github" ]] && headers+=(-H "X-GitHub-Api-Version: 2022-11-28")
+  auth="$(_forge_descriptor "$forge" auth)"
+  [[ -n "$auth" ]] && headers+=(-H "$auth")
+
+  tmp="$(mktemp /tmp/tools-forge-desig-XXXXXX)" || return 1
+  code="$(_forge_curl "$tmp" "${headers[@]}" "${base}/${repo_path}${path}")"
+
+  # An auto-publishing repo leaves untagged placeholders behind; those carry no
+  # version anyone can act on, so sorting gets its turn.
+  if [[ "$code" != "200" ]] ||
+    ! jq -e '(.tag_name // "") != "" and (.draft != true) and ((.tag_name | startswith("untagged-")) | not)' \
+      "$tmp" >/dev/null 2>&1 ||
+    ! jq -c '.' "$tmp" >"$out" 2>/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+
+  rm -f "$tmp"
+  return 0
+}
+
+# hwaccel.func reads .body off this after the call returns.
+_forge_keep_raw() {
+  local src="$1" keep
+  keep="$(mktemp /tmp/tools-gh-rel-XXXXXX)" || return 0
+  if ! cp -f "$src" "$keep" 2>/dev/null; then
+    rm -f "$keep"
+    return 0
+  fi
+  if [[ -n "${TOOLS_GH_REL_JSON:-}" && "$TOOLS_GH_REL_JSON" != "$keep" ]]; then
+    rm -f "$TOOLS_GH_REL_JSON"
+  fi
+  TOOLS_GH_REL_JSON="$keep"
+  export TOOLS_GH_REL_JSON
+  return 0
+}
+
 _forge_release_json() {
   local forge="${1:?forge}" repo="${2:?repo}" version="${3:-latest}"
   local tag_prefix="${4:-}" out="${5:?outfile}"
@@ -1266,6 +1389,15 @@ _forge_release_json() {
     single="true"
   else
     api_url="${base}/${repo_path}${list}"
+    # The maintainer's own "latest" marking beats anything the tag strings can
+    # tell us: it is what separates a release line from nightlies, betas and a
+    # second product's tags in the same repo, none of which are reliably
+    # flagged prerelease. Only the unfiltered, stable case can use it.
+    if [[ -z "$tag_prefix" && "${GH_INCLUDE_PRERELEASE:-0}" != "1" ]] &&
+      _forge_designated_release "$forge" "$base" "$repo_path" "$out"; then
+      [[ "$forge" == "github" ]] && _forge_keep_raw "$out"
+      return 0
+    fi
   fi
 
   local host
@@ -1358,10 +1490,10 @@ _forge_release_json() {
     jq -c '.' "$raw" >"$out" 2>/dev/null
   elif [[ -n "$tag_prefix" ]]; then
     jq -c --argjson pre "$pre" --arg p "$tag_prefix" \
-      "[.[] | ${filter} | select(.tag_name | startswith(\$p))] | .[0] // empty" "$raw" >"$out" 2>/dev/null
+      "[.[] | ${filter} | select(.tag_name | startswith(\$p))] | sort_by(${_FORGE_JQ_VKEY}) | last // empty" "$raw" >"$out" 2>/dev/null
   else
     jq -c --argjson pre "$pre" \
-      "[.[] | ${filter}] | .[0] // empty" "$raw" >"$out" 2>/dev/null
+      "[.[] | ${filter}] | sort_by(${_FORGE_JQ_VKEY}) | last // empty" "$raw" >"$out" 2>/dev/null
   fi
 
   # GitHub keeps the raw payload around on purpose: hwaccel.func reads .body
@@ -1378,8 +1510,13 @@ _forge_release_json() {
     rm -f "$raw"
   fi
 
+  # The payload parsed, so an empty selection is the repository's state.
   [[ -s "$out" ]] || {
-    msg_error "No matching release found for ${repo}"
+    if [[ -n "$tag_prefix" ]]; then
+      msg_error "${repo} has no stable release whose tag starts with '${tag_prefix}'"
+    else
+      msg_error "${repo} has no stable release to install"
+    fi
     return 250
   }
   return 0
@@ -1453,6 +1590,11 @@ check_for_release() {
     releases_json="$(<"$json_file")"
   fi
 
+  if ! jq -e . >/dev/null 2>&1 <<<"$releases_json"; then
+    msg_error "Malformed response from ${forge} for ${app}"
+    return 22
+  fi
+
   # GH_INCLUDE_PRERELEASE was honoured by the deploy path and ignored here, so
   # a betas-only project reported "no update" and then deployed one anyway.
   local pre="false"
@@ -1488,7 +1630,12 @@ check_for_release() {
     clean_tags+=("$(_forge_strip_v "$t")")
   done
 
-  local latest_raw="${raw_tags[0]}" latest_clean="${clean_tags[0]}"
+  local newest idx=0 i
+  newest="$(printf '%s\n' "${clean_tags[@]}" | _forge_highest_version)"
+  for i in "${!clean_tags[@]}"; do
+    [[ "${clean_tags[$i]}" == "$newest" ]] && { idx="$i"; break; }
+  done
+  local latest_raw="${raw_tags[$idx]}" latest_clean="${clean_tags[$idx]}"
 
   local current="" legacy_files=()
   if [[ -f "$current_file" ]]; then
@@ -1532,14 +1679,14 @@ check_for_release() {
     return 1
   fi
 
-  if [[ "$current" != "$latest_clean" ]]; then
-    CHECK_UPDATE_RELEASE="$latest_raw"
-    msg_ok "Update available: ${app} ${current:-not installed} -> ${latest_clean}"
-    return 0
+  if _forge_is_current "$current" "$latest_clean"; then
+    msg_ok "No update available: ${app} (${current})"
+    return 1
   fi
 
-  msg_ok "No update available: ${app} (${latest_clean})"
-  return 1
+  CHECK_UPDATE_RELEASE="$latest_raw"
+  msg_ok "Update available: ${app} ${current:-not installed} -> ${latest_clean}"
+  return 0
 }
 
 # Wrapper: the implementation is check_for_release. Kept so the 82 call
@@ -1905,8 +2052,9 @@ fetch_and_deploy_release() {
     [[ "${DPKG_FORCE_CONFOLD:-}" == "1" ]] && dpkg_opts="-o Dpkg::Options::=--force-confold"
     [[ "${DPKG_FORCE_CONFNEW:-}" == "1" ]] && dpkg_opts="-o Dpkg::Options::=--force-confnew"
     DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 $STD apt install -y $dpkg_opts "$tmpdir/$filename" || {
-      SYSTEMD_OFFLINE=1 $STD dpkg -i "$tmpdir/$filename" || {
-        _diagnose_deb_failure "$tmpdir/$filename"
+      SYSTEMD_OFFLINE=1 dpkg -i "$tmpdir/$filename" >"$tmpdir/dpkg.log" 2>&1 || {
+        _diagnose_deb_failure "$tmpdir/$filename" "$tmpdir/dpkg.log"
+        _cs_repair_dpkg
         return 100
       }
     }
@@ -2107,8 +2255,9 @@ fetch_and_deploy_from_url() {
 
     chmod 644 "$tmpdir/$filename"
     $STD apt install -y "$tmpdir/$filename" || {
-      $STD dpkg -i "$tmpdir/$filename" || {
-        _diagnose_deb_failure "$tmpdir/$filename"
+      dpkg -i "$tmpdir/$filename" >"$tmpdir/dpkg.log" 2>&1 || {
+        _diagnose_deb_failure "$tmpdir/$filename" "$tmpdir/dpkg.log"
+        _cs_repair_dpkg
         return 100
       }
     }
@@ -2155,7 +2304,7 @@ get_latest_gitlab_release() {
   http_code=$(curl --connect-timeout 10 --max-time 30 -sSL \
     -w "%{http_code}" -o "$temp_file" \
     "${header[@]}" \
-    "${gitlab_url}/api/v4/projects/$repo_encoded/releases?per_page=1&order_by=released_at&sort=desc" 2>/dev/null) || true
+    "${gitlab_url}/api/v4/projects/$repo_encoded/releases?per_page=100&order_by=released_at&sort=desc" 2>/dev/null) || true
 
   if [[ "$http_code" != "200" ]]; then
     rm -f "$temp_file"
@@ -2164,7 +2313,7 @@ get_latest_gitlab_release() {
   fi
 
   local version
-  version=$(jq -r '.[0].tag_name // empty' "$temp_file")
+  version=$(jq -r "sort_by(${_FORGE_JQ_VKEY}) | last | .tag_name // empty" "$temp_file")
   rm -f "$temp_file"
 
   if [[ -z "$version" ]]; then

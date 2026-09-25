@@ -196,7 +196,7 @@ network_check() {
 
 update_os() {
   msg_info "Updating Container OS"
-  $STD apt update
+  apt_update_safe
   $STD apt upgrade -y
   msg_ok "Updated Container OS"
 }
@@ -260,7 +260,7 @@ _bootstrap() {
 
     if [[ "$need_bootstrap" -eq 1 ]]; then
       msg_info "Installing Base Dependencies"
-      $STD apt update
+      apt_update_safe
       $STD apt install -y "${base_pkgs[@]}"
       msg_ok "Installed Base Dependencies"
     fi

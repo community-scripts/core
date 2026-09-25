@@ -598,11 +598,8 @@ setup_meilisearch() {
       fi
 
       # Replace the binary
-      if [[ "$(arch_resolve)" == "arm64" ]]; then
-        fetch_and_deploy_gh_release "meilisearch" "meilisearch/meilisearch" "singlefile" "latest" "/usr/bin" "meilisearch-linux-aarch64"
-      else
-        fetch_and_deploy_gh_release "meilisearch" "meilisearch/meilisearch" "binary"
-      fi
+      fetch_and_deploy_gh_release "meilisearch" "meilisearch/meilisearch" "singlefile" "latest" \
+        "/usr/bin" "meilisearch-linux-$(arch_resolve amd64 aarch64)"
 
       if [[ "$NEEDS_MIGRATION" == "true" ]]; then
         # One-time in-place migration via --experimental-dumpless-upgrade (replaced with --upgrade-db)
@@ -652,18 +649,14 @@ setup_meilisearch() {
   # Fresh install
   msg_info "Setup MeiliSearch"
 
-  # Install binary (meilisearch publishes only an amd64 .deb; arm64 uses the raw linux-aarch64 binary)
-  if [[ "$(arch_resolve)" == "arm64" ]]; then
-    fetch_and_deploy_gh_release "meilisearch" "meilisearch/meilisearch" "singlefile" "latest" "/usr/bin" "meilisearch-linux-aarch64" || {
-      msg_error "Failed to install MeiliSearch binary"
-      return 250
-    }
-  else
-    fetch_and_deploy_gh_release "meilisearch" "meilisearch/meilisearch" "binary" || {
-      msg_error "Failed to install MeiliSearch binary"
-      return 250
-    }
-  fi
+  # The .deb comes and goes between releases (absent in 1.52.3 and again from
+  # 1.54.0); the raw binaries are in every one. Config and unit are written
+  # below either way, so the package never carried anything else.
+  fetch_and_deploy_gh_release "meilisearch" "meilisearch/meilisearch" "singlefile" "latest" \
+    "/usr/bin" "meilisearch-linux-$(arch_resolve amd64 aarch64)" || {
+    msg_error "Failed to install MeiliSearch binary"
+    return 250
+  }
 
   # Download default config
   curl -fsSL https://raw.githubusercontent.com/meilisearch/meilisearch/latest/config.toml -o /etc/meilisearch.toml || {
@@ -1059,7 +1052,7 @@ EOF
     if ! install_packages_with_retry "mysql-community-server" "mysql-community-client"; then
       msg_warn "MySQL 8.4 LTS installation failed – falling back to MariaDB"
       cleanup_old_repo_files "mysql"
-      $STD apt update
+      apt_update_safe
       install_packages_with_retry "mariadb-server" "mariadb-client" || {
         msg_error "Failed to install database engine (MySQL/MariaDB fallback)"
         return 100
