@@ -2023,14 +2023,15 @@ vm_enable_consoles() {
   # trixie no longer accepts an empty one - so the getty above puts a prompt
   # nobody can answer on tty1. Decided in the guest: the caller's
   # USE_CLOUD_INIT is only set once vm_prompt_cloud_init has run.
-  # Template level, the way Debian ships the serial one, so it holds for
-  # whichever instance systemd starts. serial-getty is left alone - those
-  # images already autologin there, and it carries --keep-baud.
+  # Template level, so it holds for whichever instance systemd starts. The
+  # nocloud images no longer ship an autologin of their own on either console.
   _vm_customize "console autologin" "$image" --run-command \
     'if ! command -v cloud-init >/dev/null 2>&1; then
-       mkdir -p /etc/systemd/system/getty@.service.d
+       mkdir -p /etc/systemd/system/getty@.service.d /etc/systemd/system/serial-getty@.service.d
        printf "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear %%I \$TERM\n" \
          >/etc/systemd/system/getty@.service.d/autologin.conf
+       printf "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --keep-baud 115200,57600,38400,9600 %%I \$TERM\n" \
+         >/etc/systemd/system/serial-getty@.service.d/autologin.conf
      fi'
 
   # A getty alone only gets you a login prompt after boot -- the kernel still
