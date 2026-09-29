@@ -20,7 +20,10 @@ permissions: {}
 
 jobs:
   notify:
-    if: github.repository == 'community-scripts/core' && github.event.pull_request.merged == true
+    if: >-
+      github.repository == 'community-scripts/core' &&
+      github.event.pull_request.merged == true &&
+      !contains(github.event.pull_request.labels.*.name, 'automated pr')
     runs-on: ubuntu-latest
     steps:
       - name: Tell ProxmoxVE to refresh its changelog
