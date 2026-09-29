@@ -47,7 +47,7 @@ _cs_github_base() {
   esac
 }
 
-BASE="$(_cs_github_base "${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}")"
+BASE="$(_cs_github_base "${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}")"
 export COMMUNITY_SCRIPTS_URL="$BASE"
 WEBSITE="${COMMUNITY_SCRIPTS_WEBSITE_URL:-https://community-scripts.org}"
 

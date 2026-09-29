@@ -13,7 +13,7 @@
 [[ -n "${_INCUS_BUILD_FUNC_LOADED:-}" ]] && return
 _INCUS_BUILD_FUNC_LOADED=1
 
-INCUS_COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+INCUS_COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}"
 
 # Mark update-mode when we are inside an Incus container (not the host daemon).
 if declare -f is_incus_container >/dev/null 2>&1 && is_incus_container; then

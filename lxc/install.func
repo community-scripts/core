@@ -356,7 +356,7 @@ _bootstrap() {
   # Two roots: the engine (core) and the scripts live in separate repos, and
   # inside the container there is no resolver — the host exports both bases.
   # Override either independently for fork/branch testing.
-  COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+  COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}"
   COMMUNITY_SCRIPTS_CORE_URL="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
 
   # A TMPDIR pointing at something that does not exist kills every mktemp in the
@@ -1819,7 +1819,7 @@ EOF
     write_update_entrypoint "$app" "$update_script_name"
   else
     # Defensive fallback if core.func is not loaded: legacy direct-pull entrypoint.
-    echo "bash -c \"\$(curl -fsSL ${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}/ct/${update_script_name}.sh)\"" >/usr/bin/update
+    echo "bash -c \"\$(curl -fsSL ${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}/ct/${update_script_name}.sh)\"" >/usr/bin/update
     chmod +x /usr/bin/update
   fi
 
