@@ -17,7 +17,7 @@
 [[ -n "${_INCUS_TOOLS_FUNC_LOADED:-}" ]] && return
 _INCUS_TOOLS_FUNC_LOADED=1
 
-INCUS_COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+INCUS_COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}"
 
 # Load Incus core first so msg_*/silent/catch_errors aliases are available.
 if [[ -z "${_INCUS_CORE_FUNC_LOADED:-}" ]]; then

@@ -27,7 +27,7 @@
 [[ -n "${_INCUS_CORE_FUNC_LOADED:-}" ]] && return
 _INCUS_CORE_FUNC_LOADED=1
 
-INCUS_COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+INCUS_COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}"
 
 # Load upstream misc/core.func for full helper parity (prompt_*, dev-mode, etc.).
 # Incus-specific behavior is provided through incus_* functions and aliases below.

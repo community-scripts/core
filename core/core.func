@@ -257,7 +257,7 @@ write_update_entrypoint() {
   [[ -z "$name" ]] && return 0
 
   local base core_url website
-  base="$(_cs_live_base "${base_override:-${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}}")"
+  base="$(_cs_live_base "${base_override:-${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}}")"
   core_url="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
   website="${COMMUNITY_SCRIPTS_WEBSITE_URL:-https://community-scripts.org}"
 
@@ -609,7 +609,7 @@ _cs_scripts_ref_line() {
   [[ -n "$url" ]] || return 0
 
   # Both official mains count as default, not just one literal: _CS_DEFAULT_URL
-  # is not exported either, and CI rewrites VED to VE on promotion.
+  # is not exported either, and ProxmoxVED scripts pin their own.
   for d in "${_CS_DEFAULT_URL:-}" \
     https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main \
     https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main; do
