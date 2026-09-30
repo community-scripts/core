@@ -223,6 +223,7 @@ download_gpg_key() {
     if [[ "$mode" == "dearmor" ]]; then
       if gpg --dearmor --yes -o "$output" <"$temp_key" 2>/dev/null && [[ -s "$output" ]]; then
         rm -f "$temp_key"
+        chmod 644 "$output"
         debug_log "GPG key installed (dearmored): $output"
         return 0
       fi
