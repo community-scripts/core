@@ -17,8 +17,10 @@ Packages and repositories: `install_packages_with_retry`,
 `cleanup_tool_keyrings`, `manage_tool_repository`. Plus OS probes (`is_debian`,
 `is_ubuntu`, `get_os_info`, `get_system_arch`), service handling
 (`stop_all_services`, `safe_service_restart`, `enable_and_start_service`),
-downloads with retry (`curl_with_retry`, `download_file`), and temp-directory
-tracking that cleans up on exit.
+downloads with retry (`curl_with_retry`, `download_file`), the version
+bookkeeping the `setup_*` helpers use (`cache_installed_version`,
+`should_update_tool`, `verify_tool_version`), and temp-directory tracking that
+cleans up on exit.
 
 Retries exist because APT and network failures during an install are usually
 transient; a single failure would otherwise abort a build that would have
@@ -26,17 +28,19 @@ succeeded on the next attempt.
 
 ## [`forge.func`](../lib/forge.func)
 
-Releases, tags and branches from GitHub, GitLab and Codeberg behind one pair of
-entry points:
+Releases from GitHub, GitLab and Codeberg behind one pair of entry points:
 
 ```bash
-check_for_release        github   owner/repo
-fetch_and_deploy_release gitlab   owner/repo  ...
+check_for_release        github   myapp  owner/repo
+fetch_and_deploy_release gitlab   myapp  owner/repo  ...
 ```
 
-The per-forge names (`check_for_gh_release`, `fetch_and_deploy_gl_release`,
-`fetch_and_deploy_codeberg_release`, and the tag and branch variants) still
-exist as one-line wrappers, so existing scripts keep working.
+The per-forge release names (`check_for_gh_release`,
+`fetch_and_deploy_gl_release`, `fetch_and_deploy_codeberg_release`, ...) still
+exist as one-line wrappers, so existing scripts keep working. Tags and branches
+have their own helpers outside that pair: `fetch_and_deploy_gh_tag`,
+`check_for_gh_tag`, `fetch_and_deploy_gl_tag`, `fetch_and_deploy_gh_branch`,
+`check_for_gh_branch`.
 
 Deploy modes: prebuilt release asset, source tarball, `.deb` package, or a
 plain URL through `fetch_and_deploy_from_url`.
@@ -46,14 +50,13 @@ plain URL through `fetch_and_deploy_from_url`.
 Language runtimes and the application-level installers: `setup_nodejs`,
 `setup_uv`, `setup_php`, `setup_go`, `setup_ruby`, `setup_rust`,
 `setup_java`, `setup_dotnet`, `setup_composer`, `setup_ffmpeg`,
-`setup_imagemagick`, `setup_yq`, and the version bookkeeping around them
-(`cache_installed_version`, `should_update_tool`, `verify_tool_version`).
+`setup_imagemagick`, `setup_yq`, `setup_adminer`.
 
 ## [`db.func`](../lib/db.func)
 
 `setup_postgresql`, `setup_mysql`, `setup_mariadb`, `setup_mongodb`,
-`setup_clickhouse`, `setup_meilisearch`, `setup_adminer`, and the
-`setup_*_db` helpers that create a database and user.
+`setup_clickhouse`, `setup_meilisearch`, and the `setup_*_db` helpers that
+create a database and user.
 
 ## [`hwaccel.func`](../lib/hwaccel.func)
 

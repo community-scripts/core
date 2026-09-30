@@ -14,7 +14,7 @@
 _TOOLS_SYSTEM_LOADED=1
 
 # ------------------------------------------------------------------------------
-# Debug helper - outputs to stderr when TOOLS_DEBUG is enabled
+# Debug helper - outputs to stderr when TOOLS_DEBUG=true|1 or DEBUG=1
 # Usage: debug_log "message"
 # ------------------------------------------------------------------------------
 debug_log() {
@@ -34,14 +34,14 @@ debug_log() {
 # Parameters:
 #   $1 - URL to download
 #   $2 - Output file path (use "-" for stdout)
-#   $3 - (optional) Additional curl options as string
+#   $3 - (optional) Additional curl options, split on whitespace (no quoting)
 #
 # Variables:
-#   CURL_RETRIES     - Number of retries (default: 3)
-#   CURL_TIMEOUT     - Max time per attempt in seconds (default: 60)
+#   CURL_RETRIES     - Total attempts (default: 3)
+#   CURL_TIMEOUT     - --max-time of the first attempt (default: 60), doubled per retry
 #   CURL_CONNECT_TO  - Connection timeout in seconds (default: 10)
 #
-# Returns: 0 on success, 1 on failure after all retries
+# Returns: 0 on success, 6 if the host does not resolve, 7 after all attempts fail
 # ------------------------------------------------------------------------------
 curl_with_retry() {
   local url="$1"
@@ -107,15 +107,15 @@ curl_with_retry() {
 # Robust curl wrapper for API calls (returns HTTP code + body)
 #
 # Usage:
-#   response=$(curl_api_with_retry "https://api.github.com/repos/owner/repo/releases/latest")
 #   http_code=$(curl_api_with_retry "https://api.github.com/..." "/tmp/body.json")
 #
 # Parameters:
 #   $1 - URL to call
-#   $2 - (optional) Output file for body (default: stdout)
-#   $3 - (optional) Additional curl options as string
+#   $2 - (optional) Output file for body (default: stdout, followed by the HTTP code)
+#   $3 - (optional) Additional curl options, split on whitespace (no quoting)
 #
-# Returns: HTTP status code, body in file or stdout
+# Output: HTTP code on stdout (after the body when $2 is omitted)
+# Returns: 0 on 2xx, 7 after CURL_RETRIES attempts
 # ------------------------------------------------------------------------------
 curl_api_with_retry() {
   local url="$1"
@@ -176,14 +176,13 @@ curl_api_with_retry() {
 # Parameters:
 #   $1 - URL to GPG key
 #   $2 - Output path for keyring file
-#   $3 - (optional) "dearmor" to convert ASCII-armored key to binary
+#   $3 - (optional) auto (default) | dearmor | binary
 #
 # Features:
 #   - Auto-detects key format (binary vs armored)
-#   - Validates downloaded key
-#   - Multiple mirror fallback support
+#   - Checks the dearmored keyring is non-empty
 #
-# Returns: 0 on success, 1 on failure
+# Returns: 0 on success, 7 on failure
 # ------------------------------------------------------------------------------
 download_gpg_key() {
   local url="$1"
@@ -249,9 +248,10 @@ download_gpg_key() {
 # Edit a key-value pair in a YAML configuration file.
 #
 # Description:
-#   - Finds the first occurrence of the given key in the YAML file and replaces
-#     its value in-place using sed.
-#   - Handles both quoted and unquoted values on the same line.
+#   - Replaces the value on EVERY line whose key matches, at any indentation
+#     (nested keys with the same name all change), in-place using sed.
+#   - The value is written verbatim (quote it yourself); a trailing comment on
+#     the line is dropped.
 #   - The key is matched at the start of a line (optionally preceded by spaces),
 #     followed by a colon and optional whitespace.
 #   - If the key is not found, the function exits with a non-zero status and
@@ -324,8 +324,8 @@ cleanup_tool_keyrings() {
 }
 
 # ------------------------------------------------------------------------------
-# Stop and disable all service instances matching a pattern
-# Usage: stop_all_services "php*-fpm" "mysql" "mariadb"
+# Stop and disable all service instances matching a pattern (grep -E regex, not a glob)
+# Usage: stop_all_services "php.*-fpm" "mysql" "mariadb"
 # ------------------------------------------------------------------------------
 stop_all_services() {
   local service_patterns=("$@")
@@ -347,8 +347,8 @@ stop_all_services() {
 }
 
 # ------------------------------------------------------------------------------
-# Verify installed tool version matches expected version
-# Returns: 0 if match, 1 if mismatch (with warning)
+# Verify installed tool MAJOR version matches expected (minor/patch ignored)
+# Returns: 0 if the majors match, 1 otherwise (with warning)
 # Usage: verify_tool_version "nodejs" "22" "$(node -v | grep -oP '^v\K[0-9]+')"
 # ------------------------------------------------------------------------------
 verify_tool_version() {
@@ -584,8 +584,10 @@ upgrade_packages_with_retry() {
 
 # ------------------------------------------------------------------------------
 # Check if tool is already installed and optionally verify exact version
-# Returns: 0 if installed (with optional version match), 1 if not installed
-# Usage: is_tool_installed "mariadb" "11.4" || echo "Not installed"
+# Echoes the detected version (mariadb/mysql x.y.z, mongodb/php/ruby x.y,
+# node/postgresql major, others full); $2 must equal it exactly
+# Returns: 0 if installed (and equal to $2 if given), 1 if not installed or different
+# Usage: is_tool_installed "mariadb" >/dev/null || echo "Not installed"
 # ------------------------------------------------------------------------------
 is_tool_installed() {
   local tool_name="$1"
@@ -692,7 +694,8 @@ _purge_is_safe() {
 }
 
 # ------------------------------------------------------------------------------
-# Remove old tool version completely (purge + cleanup repos)
+# Remove old tool version (purge + cleanup repos; data directories are kept)
+# Returns 1 without purging when the purge would also remove other packages
 # Usage: remove_old_tool_version "mariadb" "repository-name"
 # ------------------------------------------------------------------------------
 remove_old_tool_version() {

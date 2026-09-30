@@ -13,12 +13,12 @@
 #
 # Flow:
 #   1. Ask the website (/api/update-info?slug=<slug>) for this app's state.
-#   2. active | disabled → pull and run ct/<name>.sh exactly as before. The
-#      in-script guards (runtime_script_status_guard, check_breaking_change_guard)
+#   2. active | disabled | unknown → pull and run ct/<name>.sh exactly as before.
+#      The in-script guards (runtime_script_status_guard, check_breaking_change_guard)
 #      then run as usual, so nothing about a normal update changes.
-#   3. deleted | unknown → print the reason (deleted message, breaking-change
-#      summary, or a generic notice) and do NOT pull. Still offer to update any
-#      addons, which are independent scripts and keep working.
+#   3. deleted → print the reason (deleted message or a generic notice) and do
+#      NOT pull. Still offer to update any addons, which are independent scripts
+#      and keep working.
 #   4. Website unreachable → fail open: attempt the normal update.
 #
 # Context is passed in by the entrypoint via the environment:

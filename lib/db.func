@@ -1389,7 +1389,7 @@ setup_postgresql() {
 #
 # Usage:
 #   PG_DB_NAME="myapp_db" PG_DB_USER="myapp_user" setup_postgresql_db
-#   PG_DB_NAME="immich" PG_DB_USER="immich" PG_DB_EXTENSIONS="pgvector" setup_postgresql_db
+#   PG_DB_NAME="discourse" PG_DB_USER="discourse" PG_DB_EXTENSIONS="vector" setup_postgresql_db
 #   PG_DB_NAME="ghostfolio" PG_DB_USER="ghostfolio" PG_DB_GRANT_SUPERUSER="true" setup_postgresql_db
 #   PG_DB_NAME="adventurelog" PG_DB_USER="adventurelog" PG_DB_EXTENSIONS="postgis" setup_postgresql_db
 #   PG_DB_NAME="splitpro" PG_DB_USER="splitpro" PG_DB_EXTENSIONS="pg_cron" setup_postgresql_db
@@ -1398,7 +1398,8 @@ setup_postgresql() {
 #   PG_DB_NAME             - Database name (required)
 #   PG_DB_USER             - Database user (required)
 #   PG_DB_PASS             - Database password (optional, auto-generated if empty)
-#   PG_DB_EXTENSIONS       - Comma-separated list of extensions (optional, e.g. "postgis,pgvector")
+#   PG_DB_EXTENSIONS       - Comma-separated CREATE EXTENSION names (optional, e.g. "postgis,vector";
+#                            pgvector's extension is "vector" - its package comes from PG_MODULES="pgvector")
 #   PG_DB_GRANT_SUPERUSER  - Grant SUPERUSER privilege (optional, "true" to enable, security risk!)
 #   PG_DB_SCHEMA_PERMS     - Grant schema-level permissions (optional, "true" to enable)
 #   PG_DB_SKIP_ALTER_ROLE  - Skip ALTER ROLE settings (optional, "true" to skip)

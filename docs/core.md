@@ -29,7 +29,7 @@ The runtime every other file assumes: `color`, `formatting`, `icons`, the
 `msg_info` / `msg_ok` / `msg_error` / `msg_warn` family, the spinner, `silent()`,
 log handling and the `prompt_*` helpers.
 
-Two things worth knowing:
+Worth knowing:
 
 - `silent()` runs a command with its output captured, and records the failing
   command, line and log path so the error handler can report the real failure
