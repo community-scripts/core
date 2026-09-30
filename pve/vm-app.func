@@ -55,7 +55,7 @@ list_available_apps() {
     find /tmp/proxmoxved-repo/install -name '*-install.sh' -printf '%f\n' |
       grep -vE "$exclude_pattern" |
       sed 's/-install\.sh$//' |
-      sort
+      sort || true
     return 0
   fi
 
@@ -70,7 +70,7 @@ list_available_apps() {
       grep -E '^[a-z0-9_-]+-install\.sh$' |
       grep -vE "$exclude_pattern" |
       sed 's/-install\.sh$//' |
-      sort
+      sort || true
     return 0
   fi
 
@@ -84,7 +84,7 @@ list_available_apps() {
       grep -E '^[a-z0-9_-]+-install\.sh$' |
       grep -vE "$exclude_pattern" |
       sed 's/-install\.sh$//' |
-      sort
+      sort || true
     return 0
   fi
 
@@ -450,6 +450,11 @@ ExecStart=
 ExecStart=-/sbin/agetty --autologin root --noclear %I \$TERM
 EOF' >/dev/null 2>&1 || true
   fi
+
+  # Outside the branch on purpose: the nocloud arm above configures both
+  # consoles, the cloud-init arm configured neither, so that path booted to a
+  # black Proxmox console.
+  vm_enable_consoles "$WORK_FILE"
 
   msg_ok "Finalized image"
 

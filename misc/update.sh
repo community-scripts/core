@@ -13,12 +13,12 @@
 #
 # Flow:
 #   1. Ask the website (/api/update-info?slug=<slug>) for this app's state.
-#   2. active | disabled → pull and run ct/<name>.sh exactly as before. The
-#      in-script guards (runtime_script_status_guard, check_breaking_change_guard)
+#   2. active | disabled | unknown → pull and run ct/<name>.sh exactly as before.
+#      The in-script guards (runtime_script_status_guard, check_breaking_change_guard)
 #      then run as usual, so nothing about a normal update changes.
-#   3. deleted | unknown → print the reason (deleted message, breaking-change
-#      summary, or a generic notice) and do NOT pull. Still offer to update any
-#      addons, which are independent scripts and keep working.
+#   3. deleted → print the reason (deleted message or a generic notice) and do
+#      NOT pull. Still offer to update any addons, which are independent scripts
+#      and keep working.
 #   4. Website unreachable → fail open: attempt the normal update.
 #
 # Context is passed in by the entrypoint via the environment:
@@ -30,7 +30,25 @@ set -uo pipefail
 
 SLUG="${SCRIPT_SLUG:-}"
 NAME="${UPDATE_SCRIPT_NAME:-$SLUG}"
-BASE="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+# A name that is not a slug means a damaged entrypoint; the slug still works.
+[[ "$NAME" =~ ^[a-zA-Z0-9._-]+$ ]] || NAME="$SLUG"
+# The retired Gitea mirror; GitHub serves the same repos.
+_cs_github_base() {
+  local u="${1%/}"
+  case "$u" in
+  *//git.community-scripts.org/*)
+    u="${u#*//git.community-scripts.org/}"
+    u="${u/\/raw\/branch\//\/}"
+    u="${u/\/raw\/tag\//\/}"
+    u="${u/\/raw\/commit\//\/}"
+    printf 'https://raw.githubusercontent.com/%s' "$u"
+    ;;
+  *) printf '%s' "$u" ;;
+  esac
+}
+
+BASE="$(_cs_github_base "${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}")"
+export COMMUNITY_SCRIPTS_URL="$BASE"
 WEBSITE="${COMMUNITY_SCRIPTS_WEBSITE_URL:-https://community-scripts.org}"
 
 # ── Minimal output helpers (this runs standalone, before core.func exists) ──────
@@ -49,9 +67,36 @@ json_str() {
   printf '%s' "$1" | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
 }
 
-# Pull and run the app update script, exactly as the legacy entrypoint did.
+script_exists() {
+  curl -fsSL --connect-timeout 5 --max-time 10 -o /dev/null "${BASE}/ct/${1}.sh" 2>/dev/null
+}
+
+# ct/ scripts get renamed; a container keeps whatever slug it was built with. 
+# Try the successors, but only accept one that actually exists.
+# A successful update regenerates /usr/bin/update, so this self-heals.
+resolve_script_name() {
+  local n="$1" c
+  script_exists "$n" && { printf '%s' "$n"; return 0; }
+  for c in "${n#alpine-}" "$(printf '%s' "$n" | sed -E 's/-v[0-9]+$//')"; do
+    [[ -n "$c" && "$c" != "$n" ]] || continue
+    script_exists "$c" && { printf '%s' "$c"; return 0; }
+  done
+  case "$n" in
+  pbs) script_exists proxmox-backup-server && { printf '%s' proxmox-backup-server; return 0; } ;;
+  esac
+  return 1
+}
+
+# Pull and run the app update script. An unresolvable name used to curl a 404 into
+# bash -c "", which did nothing and still exited 0.
 run_app_update() {
-  bash -c "$(curl -fsSL "${BASE}/ct/${NAME}.sh")"
+  local resolved
+  resolved="$(resolve_script_name "$NAME")" || {
+    msg_err "No update script found for '${NAME}' (${BASE}/ct/${NAME}.sh)"
+    return 1
+  }
+  [[ "$resolved" != "$NAME" ]] && msg_info "Script was renamed: ${NAME} -> ${resolved}"
+  bash -c "$(curl -fsSL "${BASE}/ct/${resolved}.sh")"
 }
 
 # Offer to update addons installed on top of the app. Addons drop an

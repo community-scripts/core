@@ -9,9 +9,10 @@ PR — CI compares against it.
 ## The one-event rule
 
 Exactly one terminal event reaches the server per execution, and it comes from
-the host. Code running inside a container never calls the API: it writes
-`/root/.install-<SESSION_ID>.failed` and an `.errinfo` capture, which the host
-picks up after `lxc-attach` returns. See
+the host. Code running inside a container sends only progress pings
+(`post_progress_to_api` in [`lxc/install.func`](../lxc/install.func)), never a
+terminal status: it writes `/root/.install-<SESSION_ID>.failed` and an
+`.errinfo` capture, which the host picks up after `lxc-attach` returns. See
 [`core/error_handler.func`](../core/error_handler.func).
 
 ## [`exitcodes.func`](../api/exitcodes.func)
@@ -25,8 +26,9 @@ for the container case where this file is not loaded.
 Extracting the useful part of a failed run's log: `get_error_log`,
 `get_error_text`, `get_full_log`, `write_errinfo`, `build_error_string`.
 
-Which log is the active one is decided by `get_active_logfile` in
-[`core/core.func`](../core/core.func), not here.
+Which log to read is picked by `_tm_pick_logfile`: the combined install log,
+then `INSTALL_LOG`, `BUILD_LOG`, `SILENT_LOGFILE`. The log a run writes to is
+decided by `get_active_logfile` in [`core/core.func`](../core/core.func).
 
 ## [`sysinfo.func`](../api/sysinfo.func)
 

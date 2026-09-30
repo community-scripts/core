@@ -30,7 +30,8 @@ location is deliberate — conflating the two is what used to break local
    ([`host/source-origin.func`](../host/source-origin.func)). GitHub remotes
    only; a checkout hosted anywhere else needs the URL set by hand.
 3. **Defaults** — `community-scripts/core@main` for the engine,
-   `community-scripts/ProxmoxVED@main` for the scripts
+   `community-scripts/ProxmoxVE@main` for the scripts. ProxmoxVED and Incus
+   scripts override the latter with `_CS_DEFAULT_URL` on their second line.
 
 ## Environment variables
 

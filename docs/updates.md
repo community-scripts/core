@@ -44,10 +44,12 @@ migrated container keeps pulling from the repo it always did.
 whether the app can still be updated **before** any app script is pulled:
 
 1. Ask the website — `/api/update-info?slug=<slug>` — for this app's state.
-2. `active` or `disabled` → pull and run `ct/<name>.sh` exactly as before.
-   Nothing about a normal update changes; the in-script guards below still run.
-3. `deleted` or `unknown` → print the reason and do **not** pull. Add-ons are
-   still offered, because they are independent scripts and keep working.
+2. `active`, `disabled` or `unknown` → pull and run `ct/<name>.sh` exactly as
+   before. Nothing about a normal update changes; the in-script guards below
+   still run. `unknown` means no catalog record (base-OS containers land here),
+   not a removal.
+3. `deleted` → print the reason and do **not** pull. Add-ons are still offered,
+   because they are independent scripts and keep working.
 4. Website unreachable → fail open and attempt the normal update.
 
 The entrypoint falls back to a direct pull if the helper itself cannot be
@@ -66,9 +68,12 @@ PocketBase directly for `is_deleted`, `is_disabled`, `pinned_version` and
 and warns rather than blocking when it cannot reach the API.
 
 **`check_breaking_change_guard`** ([`ui/menu.func`](../ui/menu.func)) asks
-`/api/breaking-changes?slug=<slug>` for advisories a maintainer marked as
-blocking. It fails open on any error — an unreachable advisory endpoint must
-never block an update — and remembers what it has already shown in
+`/api/breaking-changes?slug=<slug>` for active advisories and shows them before
+anything is touched. One a maintainer marked as blocking stops the update
+unless `var_force_breaking_update` is set; any other asks interactively and only
+warns when unattended. It fails open on any error — an
+unreachable advisory endpoint must never block an update — and remembers what
+it has already shown in
 `/usr/local/community-scripts/breaking-changes.seen`, so the same advisory does
 not re-warn on every run. `var_ignore_breaking_changes` opts a fleet out
 entirely.

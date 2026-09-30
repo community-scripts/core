@@ -391,6 +391,15 @@ $PCT_OPTIONS_STRING"
   -timezone $_pct_timezone"
   fi
 
+  # PVE derives ostype from the template name, then rejects its own value when
+  # reading the config back - which breaks every later pct call.
+  case "${var_os:-}" in
+  openeuler | rockylinux | almalinux)
+    PCT_OPTIONS_STRING="$PCT_OPTIONS_STRING
+  -ostype centos"
+    ;;
+  esac
+
   # The password stays out of PCT_OPTIONS: that string is expanded unquoted, so
   # word splitting and globbing would reach it -- a space made two arguments, a
   # * matched a filename. It goes in as its own quoted argument.
@@ -576,111 +585,136 @@ EOF
       return 0
     fi
 
-    local selected_gpu=""
+    # Several types can be passed through at once: the device nodes are disjoint,
+    # and an iGPU next to a discrete card is the normal case rather than an
+    # either/or. This used to pick exactly one, defaulting to the first entry --
+    # always INTEL, since that is the order they are collected in. On a host with
+    # an Intel iGPU and an NVIDIA card that silently passed through the iGPU and
+    # left /dev/nvidia* out, so CUDA never saw a device.
+    local -a selected_types=()
 
     if [[ $gpu_count -eq 1 ]]; then
-      selected_gpu="${available_gpus[0]}"
-      msg_ok "Automatically configuring ${selected_gpu} GPU passthrough"
+      selected_types=("${available_gpus[0]}")
+      msg_ok "Automatically configuring ${selected_types[0]} GPU passthrough"
     else
       echo -e "\n${INFO} Multiple GPU types detected:"
-      for gpu in "${available_gpus[@]}"; do
-        echo "  - $gpu"
+      local i
+      for i in "${!available_gpus[@]}"; do
+        echo "  $((i + 1))) ${available_gpus[$i]}"
       done
-      selected_gpu=$(prompt_select "Which GPU type to passthrough?" 1 60 "${available_gpus[@]}")
-      selected_gpu="${selected_gpu^^}"
+      echo "  A) Pass through ALL of them"
 
-      # Validate selection
-      local valid=0
-      for gpu in "${available_gpus[@]}"; do
-        [[ "$selected_gpu" == "$gpu" ]] && valid=1
-      done
+      local type_selection=""
+      read -r -t 60 -p "Select GPU type(s) (1-${gpu_count}, comma-separated, A=all) [timeout 60s, default=all]: " type_selection </dev/tty || type_selection=""
+      type_selection="${type_selection^^}"
 
-      if [[ $valid -eq 0 ]]; then
-        msg_warn "Invalid selection. Skipping GPU passthrough."
-        return 0
+      if [[ -z "$type_selection" || "$type_selection" == "A" ]]; then
+        selected_types=("${available_gpus[@]}")
+      else
+        local -a nums=()
+        local num
+        IFS=',' read -ra nums <<<"$type_selection"
+        for num in "${nums[@]}"; do
+          num="${num// /}"
+          if [[ "$num" =~ ^[0-9]+$ ]] && ((num >= 1 && num <= gpu_count)); then
+            selected_types+=("${available_gpus[$((num - 1))]}")
+          fi
+        done
+        # Nothing usable typed. Passing everything through beats passing nothing:
+        # a spare device node is harmless, a missing one is the bug being fixed.
+        if [[ ${#selected_types[@]} -eq 0 ]]; then
+          msg_warn "No valid selection - passing through all detected GPUs"
+          selected_types=("${available_gpus[@]}")
+        fi
       fi
     fi
 
-    # Apply passthrough configuration based on selection
-    local dev_idx=0
+    # One counter across every selected type: each branch used to start at dev0,
+    # which was harmless while only one branch could run and would overwrite
+    # entries now that several can.
+    local dev_index=0
+    local -a configured_types=()
 
-    case "$selected_gpu" in
-    INTEL | AMD)
-      local devices=()
-      [[ "$selected_gpu" == "INTEL" ]] && devices=("${INTEL_DEVICES[@]}")
-      [[ "$selected_gpu" == "AMD" ]] && devices=("${AMD_DEVICES[@]}")
+    local selected_gpu
+    for selected_gpu in "${selected_types[@]}"; do
+      case "$selected_gpu" in
+      INTEL | AMD)
+        local devices=()
+        [[ "$selected_gpu" == "INTEL" ]] && devices=("${INTEL_DEVICES[@]}")
+        [[ "$selected_gpu" == "AMD" ]] && devices=("${AMD_DEVICES[@]}")
 
-      # Use pct set to add devices with proper dev0/dev1 format
-      # GIDs will be detected and set after container starts
-      local dev_index=0
-      for dev in "${devices[@]}"; do
-        # Add to config using pct set (will be visible in GUI)
-        echo "dev${dev_index}: ${dev},gid=44" >>"$LXC_CONFIG"
-        dev_index=$((dev_index + 1))
-      done
-
-      export GPU_TYPE="$selected_gpu"
-      msg_ok "${selected_gpu} GPU passthrough configured (${#devices[@]} devices)"
-      ;;
-
-    NVIDIA)
-      if [[ ${#NVIDIA_DEVICES[@]} -eq 0 ]]; then
-        msg_warn "No NVIDIA devices available for passthrough"
-        return 0
-      fi
-
-      # Separate per-card device nodes (/dev/nvidia0, /dev/nvidia1, ...) from
-      # the shared control nodes (nvidiactl, nvidia-uvm*, nvidia-caps/*,
-      # nvidia-modeset), so a host with several NVIDIA cards can pass through
-      # only some of them instead of always all-or-nothing.
-      local -a nvidia_cards=() nvidia_shared=()
-      for dev in "${NVIDIA_DEVICES[@]}"; do
-        if [[ "$dev" =~ ^/dev/nvidia[0-9]+$ ]]; then
-          nvidia_cards+=("$dev")
-        else
-          nvidia_shared+=("$dev")
-        fi
-      done
-
-      local -a selected_cards=("${nvidia_cards[@]}")
-      if [[ ${#nvidia_cards[@]} -gt 1 ]]; then
-        echo -e "\n${INFO} Multiple NVIDIA GPUs detected:"
-        local i
-        for i in "${!nvidia_cards[@]}"; do
-          echo "  $((i + 1))) ${nvidia_cards[$i]}"
+        # dev0/dev1 format so the entries show up in the GUI.
+        # GIDs are detected and corrected once the container has started.
+        for dev in "${devices[@]}"; do
+          echo "dev${dev_index}: ${dev},gid=44" >>"$LXC_CONFIG"
+          dev_index=$((dev_index + 1))
         done
-        echo "  A) Configure ALL GPUs"
-        local gpu_selection=""
-        read -r -t 60 -p "Select GPU(s) to pass through (1-${#nvidia_cards[@]}, A=all) [timeout 60s, default=all]: " gpu_selection </dev/tty || gpu_selection=""
-        gpu_selection="${gpu_selection^^}"
 
-        if [[ -n "$gpu_selection" && "$gpu_selection" != "A" ]]; then
-          selected_cards=()
-          local -a nums
-          IFS=',' read -ra nums <<<"$gpu_selection"
-          local num
-          for num in "${nums[@]}"; do
-            num=$(echo "$num" | tr -d ' ')
-            if [[ "$num" =~ ^[0-9]+$ ]] && ((num >= 1 && num <= ${#nvidia_cards[@]})); then
-              selected_cards+=("${nvidia_cards[$((num - 1))]}")
-            fi
-          done
-          [[ ${#selected_cards[@]} -eq 0 ]] && selected_cards=("${nvidia_cards[@]}")
+        configured_types+=("$selected_gpu")
+        msg_ok "${selected_gpu} GPU passthrough configured (${#devices[@]} devices)"
+        ;;
+
+      NVIDIA)
+        if [[ ${#NVIDIA_DEVICES[@]} -eq 0 ]]; then
+          msg_warn "No NVIDIA devices available for passthrough"
+          continue
         fi
-      fi
 
-      # Use pct set for NVIDIA devices
-      local -a devices_to_add=("${selected_cards[@]}" "${nvidia_shared[@]}")
-      local dev_index=0
-      for dev in "${devices_to_add[@]}"; do
-        echo "dev${dev_index}: ${dev},gid=44" >>"$LXC_CONFIG"
-        dev_index=$((dev_index + 1))
-      done
+        # Separate per-card device nodes (/dev/nvidia0, /dev/nvidia1, ...) from
+        # the shared control nodes (nvidiactl, nvidia-uvm*, nvidia-caps/*,
+        # nvidia-modeset), so a host with several NVIDIA cards can pass through
+        # only some of them instead of always all-or-nothing.
+        local -a nvidia_cards=() nvidia_shared=()
+        for dev in "${NVIDIA_DEVICES[@]}"; do
+          if [[ "$dev" =~ ^/dev/nvidia[0-9]+$ ]]; then
+            nvidia_cards+=("$dev")
+          else
+            nvidia_shared+=("$dev")
+          fi
+        done
 
-      export GPU_TYPE="NVIDIA"
-      msg_ok "NVIDIA GPU passthrough configured (${#selected_cards[@]}/${#nvidia_cards[@]} GPU(s), ${#devices_to_add[@]} devices) - install drivers in container if needed"
-      ;;
-    esac
+        local -a selected_cards=("${nvidia_cards[@]}")
+        if [[ ${#nvidia_cards[@]} -gt 1 ]]; then
+          echo -e "\n${INFO} Multiple NVIDIA GPUs detected:"
+          local i
+          for i in "${!nvidia_cards[@]}"; do
+            echo "  $((i + 1))) ${nvidia_cards[$i]}"
+          done
+          echo "  A) Configure ALL GPUs"
+          local gpu_selection=""
+          read -r -t 60 -p "Select GPU(s) to pass through (1-${#nvidia_cards[@]}, A=all) [timeout 60s, default=all]: " gpu_selection </dev/tty || gpu_selection=""
+          gpu_selection="${gpu_selection^^}"
+
+          if [[ -n "$gpu_selection" && "$gpu_selection" != "A" ]]; then
+            selected_cards=()
+            local -a nums
+            IFS=',' read -ra nums <<<"$gpu_selection"
+            local num
+            for num in "${nums[@]}"; do
+              num=$(echo "$num" | tr -d ' ')
+              if [[ "$num" =~ ^[0-9]+$ ]] && ((num >= 1 && num <= ${#nvidia_cards[@]})); then
+                selected_cards+=("${nvidia_cards[$((num - 1))]}")
+              fi
+            done
+            [[ ${#selected_cards[@]} -eq 0 ]] && selected_cards=("${nvidia_cards[@]}")
+          fi
+        fi
+
+        local -a devices_to_add=("${selected_cards[@]}" "${nvidia_shared[@]}")
+        for dev in "${devices_to_add[@]}"; do
+          echo "dev${dev_index}: ${dev},gid=44" >>"$LXC_CONFIG"
+          dev_index=$((dev_index + 1))
+        done
+
+        configured_types+=("NVIDIA")
+        msg_ok "NVIDIA GPU passthrough configured (${#selected_cards[@]}/${#nvidia_cards[@]} GPU(s), ${#devices_to_add[@]} devices) - install drivers in container if needed"
+        ;;
+      esac
+    done
+
+    # Space separated, so the readers below can test for one type without
+    # caring how many others came with it.
+    export GPU_TYPE="${configured_types[*]}"
   }
 
   # Additional device passthrough
@@ -705,7 +739,9 @@ EOF
   configure_gpu_passthrough
   configure_additional_devices
 
-  if [[ "${GPU_TYPE:-}" == "AMD" ]]; then
+  # GPU_TYPE can now name several types at once, so this asks whether AMD is
+  # among them rather than whether it is the only one.
+  if [[ " ${GPU_TYPE:-} " == *" AMD "* ]]; then
     local rocm_extra=4
     local new_disk_size=$((PCT_DISK_SIZE + rocm_extra))
     if pct resize "$CTID" rootfs "${new_disk_size}G" >/dev/null 2>&1; then
@@ -807,7 +843,7 @@ EOF
   fix_gpu_gids
 
   local rootfs
-  rootfs=$(pct config "$CTID" | grep -E '^rootfs:' | sed 's/rootfs: //' | cut -d',' -f1 || true)
+  rootfs=$(pct config "$CTID" 2>/dev/null | grep -E '^rootfs:' | sed 's/rootfs: //' | cut -d',' -f1 || true)
   if [[ -n "$rootfs" ]]; then
     local mount_point="/var/lib/lxc/${CTID}/rootfs"
     if [[ -d "$mount_point" ]] && [[ "$(stat -c '%U' "$mount_point")" != "root" ]]; then
@@ -1181,7 +1217,13 @@ PROFILE
     if [[ -n "${SESSION_ID:-}" ]]; then
       local error_flag="/root/.install-${SESSION_ID}.failed"
       if pct exec "$CTID" -- test -f "$error_flag" 2>/dev/null; then
-        install_exit_code=$(pct exec "$CTID" -- cat "$error_flag" 2>/dev/null || echo "1")
+        # The flag holds the container's own code. When it cannot be read, or
+        # comes back as something that is not a number, fall back to what
+        # lxc-attach returned rather than to 1: that is a code we actually
+        # observed, and it is already in hand a few lines up.
+
+        install_exit_code=$(pct exec "$CTID" -- cat "$error_flag" 2>/dev/null | tr -d '[:space:]') || true
+        [[ "$install_exit_code" =~ ^[0-9]+$ ]] || install_exit_code="${lxc_exit:-199}"
         pct exec "$CTID" -- rm -f "$error_flag" 2>/dev/null || true
       fi
     fi
@@ -1733,6 +1775,35 @@ destroy_lxc() {
 # ------------------------------------------------------------------------------
 # Storage discovery / selection helpers
 # ------------------------------------------------------------------------------
+
+# A storage named in default.vars that no longer takes this content used to end
+# the run in a loop that asked nothing and never exited. Ask instead, and offer
+# to correct the file so the next run does not stop at the same place.
+_storage_preselect_recover() {
+  local class="$1" stale="$2" key vf
+
+  case "$class" in
+  template) key="var_template_storage" ;;
+  container) key="var_container_storage" ;;
+  *) return 1 ;;
+  esac
+
+  select_storage "$class" || return 1
+
+  vf="${CS_DEFAULT_VARS_FILE:-}"
+  [[ -n "$stale" && -n "$vf" && -f "$vf" ]] || return 0
+  [[ "$stale" == "$STORAGE_RESULT" ]] && return 0
+  grep -qE "^[#[:space:]]*${key}=" "$vf" 2>/dev/null || return 0
+  declare -f _write_storage_to_vars >/dev/null 2>&1 || return 0
+
+  if whiptail --backtitle "Proxmox VE Helper Scripts" --title "UPDATE DEFAULTS" \
+    --yesno "${key} in default.vars still points at '${stale}', which cannot hold this content.\n\nReplace it with '${STORAGE_RESULT}'?" 12 72; then
+    _write_storage_to_vars "$vf" "$key" "$STORAGE_RESULT"
+    msg_ok "Set ${key}=${STORAGE_RESULT} in ${vf}"
+  fi
+  return 0
+}
+
 resolve_storage_preselect() {
   local class="$1" preselect="$2" required_content=""
   case "$class" in
@@ -2334,8 +2405,31 @@ create_lxc_container() {
   }
 
   # Downloads an ARM64 LXC rootfs template to $1.
-  # Debian: fetches latest release from community-scripts/debian-arm64-lxc on GitHub.
-  # Others: fetches from jenkins.linuxcontainers.org.
+  # Does Proxmox offer this OS/version/arch? Local first, then the catalog.
+  _pveam_offers_template() {
+    local search pattern
+    search="${PCT_OSTYPE}-${PCT_OSVERSION:-}"
+    case "$PCT_OSTYPE" in
+    debian | ubuntu) pattern="-standard_" ;;
+    alpine | fedora | rocky | centos) pattern="-default_" ;;
+    *) pattern="" ;;
+    esac
+
+    if pveam list "$TEMPLATE_STORAGE" 2>/dev/null |
+      awk -v s="$search" -v p="$pattern" -v a="$ARCH" \
+        '$1 ~ s && $1 ~ p && $1 ~ ("_" a "\\.(tar\\.zst|tar\\.xz|tar\\.gz)$") {found=1}
+         END {exit !found}'; then
+      return 0
+    fi
+
+    _pveam_update >/dev/null 2>&1 || true
+    _pveam_available |
+      grep -E "_${ARCH}\.(tar\.zst|tar\.xz|tar\.gz)([[:space:]]|$)" |
+      awk '{print $2}' |
+      grep -qE "^${search}.*${pattern}"
+  }
+
+  # Only reached when pveam has nothing for this arch.
   download_arm64_template() {
     local dest="$1" url
 
@@ -2344,21 +2438,7 @@ create_lxc_container() {
       exit 217
     }
 
-    if [[ "$PCT_OSTYPE" == "debian" ]]; then
-      url=$(
-        curl -fsSL "https://api.github.com/repos/community-scripts/debian-arm64-lxc/releases/latest" |
-          jq -r --arg v "$CUSTOM_TEMPLATE_VARIANT" \
-            '.assets[].browser_download_url | select(test("debian-" + $v + "-arm64-rootfs\\.tar\\.xz$"))' |
-          head -n1
-      )
-
-      [[ -n "$url" ]] || {
-        msg_error "Could not find Debian ${CUSTOM_TEMPLATE_VARIANT} ARM64 template URL."
-        exit 225
-      }
-    else
-      url="https://jenkins.linuxcontainers.org/job/image-${PCT_OSTYPE}/architecture=arm64,release=${CUSTOM_TEMPLATE_VARIANT},variant=default/lastStableBuild/artifact/rootfs.tar.xz"
-    fi
+    url="https://jenkins.linuxcontainers.org/job/image-${PCT_OSTYPE}/architecture=arm64,release=${CUSTOM_TEMPLATE_VARIANT},variant=default/lastStableBuild/artifact/rootfs.tar.xz"
 
     msg_info "Downloading ${PCT_OSTYPE^} ${CUSTOM_TEMPLATE_VARIANT} ARM64 template"
     local patched="${dest%/*}/.${dest##*/}.patched"
@@ -2455,16 +2535,10 @@ create_lxc_container() {
     TEMPLATE_STORAGE_INFO="$STORAGE_INFO"
     msg_ok "Storage ${BL}${TEMPLATE_STORAGE}${CL} (${TEMPLATE_STORAGE_INFO}) [Template]"
   else
-    while true; do
-      if [[ -z "${var_template_storage:-}" ]]; then
-        if select_storage template; then
-          TEMPLATE_STORAGE="$STORAGE_RESULT"
-          TEMPLATE_STORAGE_INFO="$STORAGE_INFO"
-          msg_ok "Storage ${BL}${TEMPLATE_STORAGE}${CL} (${TEMPLATE_STORAGE_INFO}) [Template]"
-          break
-        fi
-      fi
-    done
+    _storage_preselect_recover template "${TEMPLATE_STORAGE:-}" || exit 120
+    TEMPLATE_STORAGE="$STORAGE_RESULT"
+    TEMPLATE_STORAGE_INFO="$STORAGE_INFO"
+    msg_ok "Storage ${BL}${TEMPLATE_STORAGE}${CL} (${TEMPLATE_STORAGE_INFO}) [Template]"
   fi
 
   # Container storage selection
@@ -2473,13 +2547,10 @@ create_lxc_container() {
     CONTAINER_STORAGE_INFO="$STORAGE_INFO"
     msg_ok "Storage ${BL}${CONTAINER_STORAGE}${CL} (${CONTAINER_STORAGE_INFO}) [Container]"
   else
-    if [[ -z "${var_container_storage:-}" ]]; then
-      if select_storage container; then
-        CONTAINER_STORAGE="$STORAGE_RESULT"
-        CONTAINER_STORAGE_INFO="$STORAGE_INFO"
-        msg_ok "Storage ${BL}${CONTAINER_STORAGE}${CL} (${CONTAINER_STORAGE_INFO}) [Container]"
-      fi
-    fi
+    _storage_preselect_recover container "${CONTAINER_STORAGE:-}" || exit 119
+    CONTAINER_STORAGE="$STORAGE_RESULT"
+    CONTAINER_STORAGE_INFO="$STORAGE_INFO"
+    msg_ok "Storage ${BL}${CONTAINER_STORAGE}${CL} (${CONTAINER_STORAGE_INFO}) [Container]"
   fi
 
   msg_info "Validating storage '$CONTAINER_STORAGE'"
@@ -2570,9 +2641,8 @@ create_lxc_container() {
   # ------------------------------------------------------------------------------
   CUSTOM_TEMPLATE_VARIANT=""
 
-  if [[ "$ARCH" == "arm64" ]]; then
-    # ARM64: use custom template download from linuxcontainers.org / GitHub
-    msg_info "Preparing ARM64 template"
+  if [[ "$ARCH" == "arm64" ]] && ! _pveam_offers_template; then
+    msg_info "No Proxmox template for ${PCT_OSTYPE} on ${ARCH}, using linuxcontainers.org"
 
     CUSTOM_TEMPLATE_VARIANT=$(arm64_template_variant "$PCT_OSTYPE" "${PCT_OSVERSION:-}") || {
       msg_error "No ARM64 template mapping for ${PCT_OSTYPE} ${PCT_OSVERSION:-latest}"
@@ -2665,9 +2735,9 @@ create_lxc_container() {
         exit 225
       fi
 
-      msg_warn "No ${TEMPLATE_PATTERN#-} template found for ${PCT_OSTYPE} ${PCT_OSVERSION}"
-      msg_custom "ℹ️" "${YW}" "Select a different available version or press Enter to cancel."
-
+      # Build the list before offering a choice: pveam carries no template at all
+      # for some distros, and announcing "select a different version" first left
+      # the user reading an offer that was never going to appear.
       AVAILABLE_VERSIONS=()
       mapfile -t AVAILABLE_VERSIONS < <(
         _pveam_available |
@@ -2679,6 +2749,9 @@ create_lxc_container() {
       )
 
       if [[ ${#AVAILABLE_VERSIONS[@]} -gt 0 ]]; then
+        msg_warn "No ${TEMPLATE_PATTERN#-} template found for ${PCT_OSTYPE} ${PCT_OSVERSION}"
+        msg_custom "ℹ️" "${YW}" "Select a different available version or press Enter to cancel."
+
         echo ""
         echo "${BL}Available ${PCT_OSTYPE} versions:${CL}"
         for i in "${!AVAILABLE_VERSIONS[@]}"; do
@@ -2697,12 +2770,13 @@ create_lxc_container() {
 
           mapfile -t LOCAL_TEMPLATES < <(
             pveam list "$TEMPLATE_STORAGE" 2>/dev/null |
-              awk -v search="${TEMPLATE_SEARCH}-" -v pattern="${TEMPLATE_PATTERN}" '$1 ~ search && $1 ~ pattern {print $1}' |
+                awk -v search="${TEMPLATE_SEARCH}-" -v pattern="${TEMPLATE_PATTERN}" -v arch="${ARCH}" \
+                  '$1 ~ search && $1 ~ pattern && $1 ~ ("_" arch "\\.(tar\\.zst|tar\\.xz|tar\\.gz)$") {print $1}' |
               sed 's|.*/||' | sort -t - -k 2 -V || true
           )
           mapfile -t ONLINE_TEMPLATES < <(
             _pveam_available |
-              grep -E '\.(tar\.zst|tar\.xz|tar\.gz)$' |
+              grep -E "_${ARCH}\.(tar\.zst|tar\.xz|tar\.gz)([[:space:]]|$)" |
               awk '{print $2}' |
               grep -E "^${TEMPLATE_SEARCH}-.*${TEMPLATE_PATTERN}" |
               sort -t - -k 2 -V 2>/dev/null || true
@@ -2727,7 +2801,9 @@ create_lxc_container() {
           exit 0
         fi
       else
-        msg_error "No ${PCT_OSTYPE} templates available at all"
+        msg_error "Proxmox offers no ${PCT_OSTYPE} template for ${ARCH}"
+        msg_custom "ℹ️" "${YW}" "Check what this host offers:"
+        echo -e "${TAB}  pveam update && pveam available -section system | grep '${PCT_OSTYPE}-'"
         exit 225
       fi
     fi
@@ -3138,8 +3214,12 @@ description() {
   # every Incus container to a repository it has nothing to do with.
   local repo_slug="${REPO_SLUG:-community-scripts/ProxmoxVE}"
   local repo_url="https://github.com/${repo_slug}"
+  # NSAPP is the slug the website serves, and what menu.func and the update
+  # entrypoint already look the app up by. Dashing the spaces instead of
+  # dropping them pointed "Arch Linux" at /scripts/arch-linux, which 404s.
   local script_slug
-  script_slug="$(printf '%s' "${APP}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+  script_slug="${SCRIPT_SLUG:-${NSAPP:-$APP}}"
+  script_slug="$(printf '%s' "$script_slug" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
 
   # A script under test asks for feedback here too: the description shows in the
   # Proxmox UI without entering the container and outlives the install output.
@@ -3375,11 +3455,18 @@ api_exit_script() {
   fi
 }
 
+# All five traps report telemetry, so all five belong to the host. EXIT was
+# already guarded; the other four were not, and core/build.func sources this
+# file unconditionally -- including inside a container, where a ct script runs
+# again for an update. A Ctrl-C or any ERR during an update therefore posted a
+# failed record, typed lxc, indistinguishable from a failed install. Their pct
+# calls were dead weight in a container anyway.
+#
+# NOTE: never use `local` inside trap strings — traps do not run in a function scope.
 if command -v pveversion >/dev/null 2>&1; then
   trap 'api_exit_script' EXIT
+  trap '_ec=$?; if [[ $_ec -ne 0 ]]; then post_update_to_api "failed" "$_ec" 2>/dev/null || true; if declare -f ensure_log_on_host &>/dev/null; then ensure_log_on_host 2>/dev/null || true; fi; fi' ERR
+  trap 'post_update_to_api "failed" "129" 2>/dev/null || true; if [[ -n "${CTID:-}" ]] && command -v pct &>/dev/null; then pct stop "$CTID" 2>/dev/null || true; fi; exit 129' SIGHUP
+  trap 'post_update_to_api "failed" "130" 2>/dev/null || true; if [[ -n "${CTID:-}" ]] && command -v pct &>/dev/null; then pct stop "$CTID" 2>/dev/null || true; fi; exit 130' SIGINT
+  trap 'post_update_to_api "failed" "143" 2>/dev/null || true; if [[ -n "${CTID:-}" ]] && command -v pct &>/dev/null; then pct stop "$CTID" 2>/dev/null || true; fi; exit 143' SIGTERM
 fi
-# NOTE: never use `local` inside trap strings — traps do not run in a function scope.
-trap '_ec=$?; if [[ $_ec -ne 0 ]]; then post_update_to_api "failed" "$_ec" 2>/dev/null || true; if declare -f ensure_log_on_host &>/dev/null; then ensure_log_on_host 2>/dev/null || true; fi; fi' ERR
-trap 'post_update_to_api "failed" "129" 2>/dev/null || true; if [[ -n "${CTID:-}" ]] && command -v pct &>/dev/null; then pct stop "$CTID" 2>/dev/null || true; fi; exit 129' SIGHUP
-trap 'post_update_to_api "failed" "130" 2>/dev/null || true; if [[ -n "${CTID:-}" ]] && command -v pct &>/dev/null; then pct stop "$CTID" 2>/dev/null || true; fi; exit 130' SIGINT
-trap 'post_update_to_api "failed" "143" 2>/dev/null || true; if [[ -n "${CTID:-}" ]] && command -v pct &>/dev/null; then pct stop "$CTID" 2>/dev/null || true; fi; exit 143' SIGTERM

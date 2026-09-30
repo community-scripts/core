@@ -114,7 +114,7 @@ variables() {
 
 # Configurable base URL for development — override with COMMUNITY_SCRIPTS_URL
 # See docs/DEV_MODE.md for details
-COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}"
 
 # Repeated per file rather than shared: there is nowhere to put a shared copy
 # that does not itself need downloading first. See core/build.func.

@@ -92,8 +92,17 @@ detect_repo_source() {
     REPO_SOURCE="ProxmoxVED"
     REPO_SLUG="community-scripts/ProxmoxVED"
     ;;
-  "")
-    # No URL detected — hardcoded fallback (CI rewrites VED → VE on promotion)
+  "" | community-scripts/core)
+    # No script repo identified — hardcoded fallback (CI rewrites VED → VE on
+    # promotion).
+    #
+    # core lands here rather than in the fork branch below. The bootstrap line
+    # names the engine, not the repo the ct/ script came from, so the scraping
+    # above finds "community-scripts/core" for every run where
+    # COMMUNITY_SCRIPTS_URL was not set. That is not a fork, and filing it as
+    # one attributed thousands of official runs to "external" and gave the
+    # slug its own row on the dashboard, second only to ProxmoxVE.
+
     REPO_SOURCE="ProxmoxVED"
     REPO_SLUG="community-scripts/ProxmoxVED"
     ;;

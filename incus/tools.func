@@ -17,7 +17,7 @@
 [[ -n "${_INCUS_TOOLS_FUNC_LOADED:-}" ]] && return
 _INCUS_TOOLS_FUNC_LOADED=1
 
-INCUS_COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+INCUS_COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}"
 
 # Load Incus core first so msg_*/silent/catch_errors aliases are available.
 if [[ -z "${_INCUS_CORE_FUNC_LOADED:-}" ]]; then
@@ -114,6 +114,13 @@ update_motd_ip() {
 setup_hwaccel() {
   # GPU/device passthrough is applied at create time (incus config device add gpu …).
   # Inside the CT we only verify visibility and permissions.
+  export HWACCEL_VENDOR="none"
+  if ldconfig -p 2>/dev/null | grep -q 'libcuda\.so\.1' && compgen -G '/dev/nvidia[0-9]*' &>/dev/null; then
+    export HWACCEL_VENDOR="nvidia"
+  elif [[ -e /dev/kfd ]]; then
+    export HWACCEL_VENDOR="amd"
+  fi
+
   if [[ -d /dev/dri ]] && compgen -G '/dev/dri/*' &>/dev/null; then
     msg_ok "Hardware acceleration devices present under /dev/dri"
     return 0
@@ -189,7 +196,7 @@ network_check() {
 
 update_os() {
   msg_info "Updating Container OS"
-  $STD apt update
+  apt_update_safe
   $STD apt upgrade -y
   msg_ok "Updated Container OS"
 }
@@ -253,7 +260,7 @@ _bootstrap() {
 
     if [[ "$need_bootstrap" -eq 1 ]]; then
       msg_info "Installing Base Dependencies"
-      $STD apt update
+      apt_update_safe
       $STD apt install -y "${base_pkgs[@]}"
       msg_ok "Installed Base Dependencies"
     fi

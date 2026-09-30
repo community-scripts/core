@@ -45,23 +45,35 @@ _cs_core_url() {
   echo "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/${1:?func path}"
 }
 
-# Retry options for engine fetches. Repeated here rather than taken from
-# core/build.func, which stays on the host while this file is piped into the
-# container and has to stand alone. A container is at its most fragile right
-# after boot, before DNS is up; core/build.func carries the full reasoning.
 _CS_CURL_RETRY=(--retry 3 --retry-delay 1 --retry-connrefused --connect-timeout 10)
 
 # curl -S prints one line per failed attempt, so a download that recovers on the
-# second try would show the user two errors and then quietly work — during a
-# spinner, no less. Hold stderr back and release it only if every attempt failed.
+
 _cs_curl_retry() {
   local url="${1:?url}" err rc=0
+  local attempt=1 max_attempts=4 backoff=1 timeout=30
+
   err="$(mktemp 2>/dev/null)" || {
-    curl -fsSL "${_CS_CURL_RETRY[@]}" "$url"
+    curl -fsSL --connect-timeout 10 --max-time "$timeout" "$url"
     return
   }
-  curl -fsSL "${_CS_CURL_RETRY[@]}" "$url" 2>"$err" || rc=$?
-  ((rc != 0)) && cat "$err" >&2
+
+  while [[ $attempt -le $max_attempts ]]; do
+    if curl -fsSL --connect-timeout 10 --max-time "$timeout" "$url" 2>"$err"; then
+      rm -f "$err"
+      return 0
+    else
+      rc=$?
+    fi
+    ((attempt == max_attempts)) && break
+    sleep "$backoff"
+    backoff=$((backoff * 2))
+    ((backoff > 30)) && backoff=30
+    timeout=$((timeout * 2))
+    ((attempt++))
+  done
+
+  cat "$err" >&2
   rm -f "$err"
   return "$rc"
 }
@@ -193,6 +205,16 @@ detect_os() {
     OS_FAMILY="debian"
     PKG_MANAGER="apt"
     ;;
+  kali)
+    OS_FAMILY="debian"
+    PKG_MANAGER="apt"
+    ;;
+  # /etc/os-release says linuxmint; the image catalog and var_os say mint.
+  linuxmint | mint)
+    OS_TYPE="mint"
+    OS_FAMILY="debian"
+    PKG_MANAGER="apt"
+    ;;
   alpine)
     OS_FAMILY="alpine"
     PKG_MANAGER="apk"
@@ -225,6 +247,18 @@ detect_os() {
     PKG_MANAGER="dnf"
     ;;
   openeuler)
+    OS_FAMILY="rhel"
+    PKG_MANAGER="dnf"
+    ;;
+  # Oracle Linux reports ID=ol, Amazon Linux ID=amzn. Both normalize to the
+  # name the image catalog and var_os use, so one spelling covers both ends.
+  ol | oracle | oraclelinux)
+    OS_TYPE="oracle"
+    OS_FAMILY="rhel"
+    PKG_MANAGER="dnf"
+    ;;
+  amzn | amazonlinux)
+    OS_TYPE="amazonlinux"
     OS_FAMILY="rhel"
     PKG_MANAGER="dnf"
     ;;
@@ -322,7 +356,7 @@ _bootstrap() {
   # Two roots: the engine (core) and the scripts live in separate repos, and
   # inside the container there is no resolver — the host exports both bases.
   # Override either independently for fork/branch testing.
-  COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+  COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}"
   COMMUNITY_SCRIPTS_CORE_URL="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
 
   # A TMPDIR pointing at something that does not exist kills every mktemp in the
@@ -555,12 +589,11 @@ pkg_update() {
         else
           msg_warn "Find Debian mirrors at: https://www.debian.org/mirror/list"
         fi
-        # Only ask when there is someone to answer. Headless, /dev/tty does not
-        # exist, the read fails instantly, custom_mirror stays empty and the
-        # `continue` below spins the loop forever instead of prompting. Falling
-        # through leaves apt_ok=false, which the caller reports properly.
+        # Only ask when there is someone to answer: otherwise the loop spins forever.
+        local mirror_src
         while ! is_unattended; do
-          read -rp "  Enter a mirror hostname (or 'skip' to abort): " custom_mirror </dev/tty || break
+          mirror_src="$(_cs_stdin_source)" || break
+          read -rp "  Enter a mirror hostname (or 'skip' to abort): " custom_mirror <"$mirror_src" || break
           [[ -z "$custom_mirror" ]] && continue
           [[ "$custom_mirror" == "skip" ]] && break
           [[ ! "$custom_mirror" =~ ^[a-zA-Z0-9._-]+$ ]] && {
@@ -1212,9 +1245,26 @@ network_check() {
   local ipv6_connected=false
   sleep 1
 
-  # Check IPv4 connectivity to Google, Cloudflare & Quad9 DNS servers.
+  # ICMP is not connectivity. A firewall that permits outbound 80/443 and drops
+  # ping is an ordinary setup, and apt works perfectly behind it -- one reporter
+  # watched this branch condemn a container while the DNS check below resolved
+  # deb.debian.org without complaint. Ping first because it is fast, then ask
+  # the question that matters: can we reach what an install actually needs?
+  _net_tcp_reachable() {
+    local hp host port
+    for hp in "deb.debian.org 443" "github.com 443" "1.1.1.1 443"; do
+      host="${hp% *}"
+      port="${hp#* }"
+      timeout 3 bash -c "exec 3<>/dev/tcp/${host}/${port}" 2>/dev/null && return 0
+    done
+    return 1
+  }
+
   if ping -c 1 -W 1 1.1.1.1 &>/dev/null || ping -c 1 -W 1 8.8.8.8 &>/dev/null || ping -c 1 -W 1 9.9.9.9 &>/dev/null; then
     msg_ok "IPv4 Internet Connected"
+    ipv4_connected=true
+  elif _net_tcp_reachable; then
+    msg_ok "IPv4 Internet Connected (TCP reachable; ICMP is filtered)"
     ipv4_connected=true
   else
     msg_error "IPv4 Internet Not Connected"
@@ -1232,10 +1282,16 @@ network_check() {
 
   # If both IPv4 and IPv6 checks fail, prompt the user
   if [[ $ipv4_connected == false && $ipv6_connected == false ]]; then
-    # prompt_confirm, not a bare read from /dev/tty: an install driven from cron
-    # or any other headless context has no /dev/tty, and reading from it there
-    # aborted with a device error instead of answering the question.
-    if prompt_confirm "No Internet detected, would you like to continue anyway?" "n"; then
+    # The installer runs under lxc-attach, where stdin is never a terminal, so
+    # this question cannot be asked here at all -- prompt_confirm applied its
+    # "n" default and the exit was reported as "user declined to continue" to
+    # people who were never asked. The host already decided to continue after
+    # its own failed test; contradicting that by destroying the container is the
+    # wrong way to resolve a question nobody could answer.
+    if [[ ! -t 0 ]]; then
+      msg_warn "No Internet detected and no terminal to ask - continuing anyway"
+      echo -e "${INFO}${RD}Expect Issues Without Internet${CL}"
+    elif prompt_confirm "No Internet detected, would you like to continue anyway?" "n"; then
       echo -e "${INFO}${RD}Expect Issues Without Internet${CL}"
     else
       echo -e "${NETWORK}Check Network Settings"
@@ -1459,9 +1515,11 @@ EOF
   fi
 
   cat >>"$PROFILE_FILE" <<EOF
-echo -e "${YW:-} OS: ${GN:-}${os_name} - Version: ${os_version}${CL:-}"
-echo -e "${YW:-} Hostname: ${GN:-}\$(hostname)${CL:-}"
-echo -e "${YW:-} IP Address: ${GN:-}\$(ip -4 route get 1 2>/dev/null | sed -n 's/.* src \\([0-9.]\\+\\).*/\\1/p' | head -1)${CL:-}"
+echo -e "${GATEWAY:-}${YW:-}Provided by: ${GN:-}community-scripts ORG ${YW:-}| GitHub: ${GN:-}https://github.com/community-scripts/ProxmoxVE${CL:-}"
+echo ""
+echo -e "${OS:-}${YW:-}OS: ${GN:-}${os_name} - Version: ${os_version}${CL:-}"
+echo -e "${HOSTNAME:-}${YW:-}Hostname: ${GN:-}\$(hostname)${CL:-}"
+echo -e "${INFO:-}${YW:-}IP Address: ${GN:-}\$(ip -4 route get 1 2>/dev/null | sed -n 's/.* src \\([0-9.]\\+\\).*/\\1/p' | head -1)${CL:-}"
 EOF
 
   if [[ -n "${CS_TESTING_URL:-}" ]]; then
@@ -1682,9 +1740,18 @@ EOF
       # rewrite it with --autologin, preserving the original inittab id.
       if [[ -f /etc/inittab ]]; then
         if command -v agetty &>/dev/null; then
-          sed -i -E 's#^([A-Za-z0-9]*:[0-9]*:respawn:).*[ag]etty.*tty1.*#\1/sbin/agetty --autologin root --noclear tty1 38400 linux#' /etc/inittab
-          sed -i -E 's#^([A-Za-z0-9]*:[0-9]*:respawn:).*[ag]etty.*console.*#\1/sbin/agetty --autologin root --noclear console 115200 linux#' /etc/inittab
-          telinit q &>/dev/null || kill -HUP 1 &>/dev/null || true
+          # Re-applied on every boot: a one-time edit does not survive one, which
+          # is why autologin worked on a fresh container and was gone afterwards.
+          mkdir -p /etc/local.d
+          cat >/etc/local.d/autologin.start <<'EOF'
+#!/bin/sh
+sed -i -E 's#^([A-Za-z0-9]*:[0-9]*:respawn:).*[ag]etty.*tty1.*#\1/sbin/agetty --autologin root --noclear tty1 38400 linux#' /etc/inittab
+sed -i -E 's#^([A-Za-z0-9]*:[0-9]*:respawn:).*[ag]etty.*console.*#\1/sbin/agetty --autologin root --noclear console 115200 linux#' /etc/inittab
+kill -HUP 1
+EOF
+          chmod +x /etc/local.d/autologin.start
+          $STD rc-update add local default 2>/dev/null || true
+          /etc/local.d/autologin.start &>/dev/null || true
           sleep 1
           pkill -f 'agetty.*tty1' &>/dev/null || true
           pkill -f 'agetty.*console' &>/dev/null || true
@@ -1752,7 +1819,7 @@ EOF
     write_update_entrypoint "$app" "$update_script_name"
   else
     # Defensive fallback if core.func is not loaded: legacy direct-pull entrypoint.
-    echo "bash -c \"\$(curl -fsSL ${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}/ct/${update_script_name}.sh)\"" >/usr/bin/update
+    echo "bash -c \"\$(curl -fsSL ${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}/ct/${update_script_name}.sh)\"" >/usr/bin/update
     chmod +x /usr/bin/update
   fi
 
