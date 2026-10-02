@@ -16,9 +16,50 @@
 [[ -n "${_LXC_PLATFORM_FUNC_LOADED:-}" ]] && return
 _LXC_PLATFORM_FUNC_LOADED=1
 
+# The client is not always on PATH: a non-login shell misses /snap/bin, and
+# sudo's secure_path can drop it too. `command -v incus` then failed, detection
+# answered "container", and the ct script updated the host instead of building.
+_lxc_incus_bin() {
+  if command -v incus &>/dev/null; then
+    command -v incus
+    return 0
+  fi
+  local p
+  for p in /usr/bin/incus /usr/local/bin/incus /snap/bin/incus /opt/incus/bin/incus; do
+    [[ -x "$p" ]] && {
+      printf '%s\n' "$p"
+      return 0
+    }
+  done
+  return 1
+}
+
+# Detection finding the client is not enough - every later `incus` call in the
+# engine has to resolve too. Idempotent, and a no-op when it is already there.
+ensure_incus_on_path() {
+  command -v incus &>/dev/null && return 0
+  local bin dir
+  bin="$(_lxc_incus_bin)" || return 1
+  dir="$(dirname "$bin")"
+  case ":${PATH}:" in
+  *":${dir}:"*) ;;
+  *)
+    PATH="${dir}:${PATH}"
+    export PATH
+    ;;
+  esac
+}
+
 detect_lxc_platform() {
   if [[ -n "${LXC_PLATFORM:-}" ]]; then
     echo "$LXC_PLATFORM"
+    return
+  fi
+
+  # Container markers come first now: the host test below no longer needs a
+  # reachable daemon, so a container carrying the client could match it.
+  if [[ -S /dev/incus/sock ]] || [[ -f /etc/profile.d/incus-motd.sh ]]; then
+    echo "incus-container"
     return
   fi
 
@@ -27,14 +68,14 @@ detect_lxc_platform() {
     return
   fi
 
-  if command -v incus &>/dev/null && incus info &>/dev/null 2>&1; then
-    echo "incus"
-    return
-  fi
-
-  if [[ -S /dev/incus/sock ]] || [[ -f /etc/profile.d/incus-motd.sh ]]; then
-    echo "incus-container"
-    return
+  # `incus info` needs a running daemon AND group membership, neither of which
+  # a non-root operator is guaranteed. On-disk state settles it either way.
+  local bin
+  if bin="$(_lxc_incus_bin)"; then
+    if "$bin" info &>/dev/null 2>&1 || [[ -d /var/lib/incus ]] || [[ -S /var/run/incus/unix.socket ]]; then
+      echo "incus"
+      return
+    fi
   fi
 
   echo "container"

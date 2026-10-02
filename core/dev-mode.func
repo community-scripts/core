@@ -154,7 +154,7 @@ _dev_step_start() {
   [[ "${DEV_MODE_TIMING:-false}" == "true" ]] || return 0
   local d
   d="$(_dev_timing_dir)" || return 0
-  printf '%s' "${EPOCHREALTIME/./}" >"${d}/s.$(_dev_step_key "$1")" 2>/dev/null
+  printf '%s' "${EPOCHREALTIME/[.,]/}" >"${d}/s.$(_dev_step_key "$1")" 2>/dev/null
 }
 
 _dev_step_end() {
@@ -165,7 +165,7 @@ _dev_step_end() {
   [[ -s "${d}/s.${key}" ]] || return 0
   read -r start <"${d}/s.${key}"
   rm -f "${d}/s.${key}"
-  ms=$(((${EPOCHREALTIME/./} - start) / 1000))
+  ms=$(((${EPOCHREALTIME/[.,]/} - start) / 1000))
   printf '%s %s
 ' "$ms" "$key" >>"${d}/done"
   printf ' %s(%s ms)%s' "${DGN:-}" "$ms" "${CL:-}"

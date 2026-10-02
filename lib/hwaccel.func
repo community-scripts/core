@@ -14,26 +14,27 @@
 _TOOLS_HWACCEL_LOADED=1
 
 # Install a best-effort package list without letting one absentee take the rest.
-#
-# apt is all-or-nothing: name twelve packages, have one of them renamed or
-# missing on this release, and none of the other eleven get installed. Every
-# driver list in this file is best-effort by design -- the caller wants whatever
-# is available -- but each was written as `apt -y install a b c … || msg_warn`,
-# one absent package away from installing nothing at all and leaving the
-# container without acceleration while reporting only a warning.
-#
-# The batch is still tried first: that is one apt run instead of twelve, and it
-# is what normally happens. Only when it fails does this go package by package,
-# which is also the only way to say which one was actually missing.
+# apt is all-or-nothing, so one package missing on a release meant none of the
+# other eleven were installed and the container ran without acceleration on a
+# single warning line. The batch is still tried first -- one apt run, and the
+# normal case -- and only a failure falls back to one at a time, which is also
+# the only way to name the package that was actually missing.
 _cs_apt_install_optional() {
   (($#)) || return 0
   $STD apt -y install "$@" 2>/dev/null && return 0
 
-  local missed=() pkg
+  local missed=() failed=() pkg
   for pkg in "$@"; do
-    $STD apt -y install "$pkg" 2>/dev/null || missed+=("$pkg")
+    $STD apt -y install "$pkg" 2>/dev/null && continue
+    # A broken apt state fails every install, which is not the same thing.
+    if apt-cache policy "$pkg" 2>/dev/null | grep -q "Candidate: (none)"; then
+      missed+=("$pkg")
+    else
+      failed+=("$pkg")
+    fi
   done
   ((${#missed[@]})) && msg_warn "Not available on this release: ${missed[*]}"
+  ((${#failed[@]})) && msg_warn "In the repository but would not install: ${failed[*]} - apt may be in a broken state"
   return 0
 }
 
@@ -55,6 +56,9 @@ _cs_apt_install_optional() {
 # ------------------------------------------------------------------------------
 setup_hwaccel() {
   local service_user="${1:-}"
+
+  export HWACCEL_VENDOR="none"
+  _cs_nvidia_usable=0
 
   # Check if user explicitly disabled GPU in advanced settings
   # ENABLE_GPU is exported from build.func
@@ -151,14 +155,9 @@ setup_hwaccel() {
   local -a SELECTED_INDICES=()
   local install_nvidia_drivers="yes"
 
-  # What this picks is a driver stack, not a card. Two NVIDIA cards install the
-  # same libraries either way, so there is nothing to decide -- and the host has
-  # already asked which cards to pass through, making this a second prompt for a
-  # question already answered. It enumerates through lspci, which sees every GPU
-  # on the host regardless of what was passed in, so it appeared even after the
-  # host selection had narrowed things down.
-  #
-  # A genuinely mixed set, Intel alongside NVIDIA, is still a real choice.
+  # Picks a driver stack, not a card: two NVIDIA cards install the same
+  # libraries, and the host already asked which to pass through. lspci sees every
+  # GPU regardless, so this asked twice. A mixed set is still a real choice.
   local unique_types
   unique_types="$(printf '%s\n' "${GPU_TYPES[@]}" | sort -u | wc -l)"
 
@@ -325,6 +324,22 @@ setup_hwaccel() {
   # ═══════════════════════════════════════════════════════════════════════════
   _setup_gpu_permissions "$in_ct" "$service_user"
 
+  local _gpu_type
+  for idx in "${SELECTED_INDICES[@]}"; do
+    _gpu_type="${GPU_TYPES[$idx]}"
+    if [[ "$_gpu_type" == "NVIDIA" && $_cs_nvidia_usable -eq 1 ]]; then
+      HWACCEL_VENDOR="nvidia"
+      break
+    fi
+    if [[ "$HWACCEL_VENDOR" == "none" ]]; then
+      case "$_gpu_type" in
+      AMD) HWACCEL_VENDOR="amd" ;;
+      INTEL*) HWACCEL_VENDOR="intel" ;;
+      esac
+    fi
+  done
+  export HWACCEL_VENDOR
+
   cache_installed_version "hwaccel" "1.0"
   msg_ok "Setup Hardware Acceleration"
 }
@@ -335,15 +350,19 @@ setup_hwaccel() {
 # so that TOOLS_GH_REL_JSON contains the compute-runtime release metadata.
 # Sets the variable named by $1 (default: igc_tag) to the discovered tag.
 # ══════════════════════════════════════════════════════════════════════════════
+# compute-runtime pins the exact intel-igc-opencl-2 it was built against, so the
+# tag has to come from its release notes. Empty means unresolved: installing the
+# newest IGC instead gives a combination dpkg refuses.
 _resolve_igc_tag() {
   local -n _out_ref="${1:-igc_tag}"
-  _out_ref="latest"
-  if [[ -n "${TOOLS_GH_REL_JSON:-}" && -f "$TOOLS_GH_REL_JSON" ]]; then
-    local _body _parsed
-    _body=$(jq -r '.body // empty' "$TOOLS_GH_REL_JSON" 2>/dev/null) || return 0
-    _parsed=$(grep -oP 'intel-graphics-compiler/releases/tag/\K[^\s\)]+' <<<"$_body" | head -1)
-    [[ -n "$_parsed" ]] && _out_ref="$_parsed"
-  fi
+  _out_ref=""
+  [[ -n "${TOOLS_GH_REL_JSON:-}" && -f "$TOOLS_GH_REL_JSON" ]] || return 0
+
+  # The file holds whatever the API returned: one release for a pinned version,
+  # a list for 'latest'.
+  local _body
+  _body=$(jq -r 'if type == "array" then .[0] else . end | .body // empty' "$TOOLS_GH_REL_JSON" 2>/dev/null) || return 0
+  _out_ref=$(grep -oP 'intel-graphics-compiler/releases/tag/\K[^\s\)]+' <<<"$_body" | head -1)
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -374,6 +393,9 @@ _setup_intel_arc() {
     if [[ "$os_codename" == "trixie" || "$os_codename" == "sid" ]]; then
       msg_info "Fetching Intel compute-runtime from GitHub for Arc support"
 
+      # intel-opencl-icd declares it; dpkg refuses the package without it.
+      _cs_apt_install_optional ocl-icd-libopencl1
+
       # Fetch a compute-runtime package first so TOOLS_GH_REL_JSON is populated,
       # then resolve the matching IGC tag from the release notes.
       # libigdgmm - bundled in compute-runtime releases
@@ -381,14 +403,18 @@ _setup_intel_arc() {
 
       local igc_tag
       _resolve_igc_tag igc_tag
+      if [[ -z "$igc_tag" ]]; then
+        msg_warn "Could not read the IGC version compute-runtime pins - skipping OpenCL. VA-API still works."
+      else
 
-      # Intel Graphics Compiler – pinned to the version compute-runtime expects
-      fetch_and_deploy_gh_release "intel-igc-core" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-core-2_*_amd64.deb" || true
-      fetch_and_deploy_gh_release "intel-igc-opencl" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-opencl-2_*_amd64.deb" || true
+        # Intel Graphics Compiler – pinned to the version compute-runtime expects
+        fetch_and_deploy_gh_release "intel-igc-core" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-core-2_*_amd64.deb" || true
+        fetch_and_deploy_gh_release "intel-igc-opencl" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-opencl-2_*_amd64.deb" || true
 
-      # Compute Runtime (depends on IGC and gmmlib)
-      fetch_and_deploy_gh_release "intel-opencl-icd" "intel/compute-runtime" "binary" "latest" "" "intel-opencl-icd_*_amd64.deb" || true
-      fetch_and_deploy_gh_release "intel-level-zero-gpu" "intel/compute-runtime" "binary" "latest" "" "libze-intel-gpu1_*_amd64.deb" || true
+        # Compute Runtime (depends on IGC and gmmlib)
+        fetch_and_deploy_gh_release "intel-opencl-icd" "intel/compute-runtime" "binary" "latest" "" "intel-opencl-icd_*_amd64.deb" || true
+        fetch_and_deploy_gh_release "intel-level-zero-gpu" "intel/compute-runtime" "binary" "latest" "" "libze-intel-gpu1_*_amd64.deb" || true
+      fi
     fi
 
     _cs_apt_install_optional intel-media-va-driver-non-free ocl-icd-libopencl1 libvpl2 libmfx-gen1.2 mesa-vulkan-drivers vulkan-tools vainfo intel-gpu-tools
@@ -425,6 +451,9 @@ _setup_intel_modern() {
     if [[ "$os_codename" == "trixie" || "$os_codename" == "sid" ]]; then
       msg_info "Fetching Intel compute-runtime from GitHub"
 
+      # intel-opencl-icd declares it; dpkg refuses the package without it.
+      _cs_apt_install_optional ocl-icd-libopencl1
+
       # Fetch a compute-runtime package first so TOOLS_GH_REL_JSON is populated,
       # then resolve the matching IGC tag from the release notes.
       # libigdgmm first (bundled in compute-runtime releases)
@@ -432,13 +461,17 @@ _setup_intel_modern() {
 
       local igc_tag
       _resolve_igc_tag igc_tag
+      if [[ -z "$igc_tag" ]]; then
+        msg_warn "Could not read the IGC version compute-runtime pins - skipping OpenCL. VA-API still works."
+      else
 
-      # Intel Graphics Compiler – pinned to the version compute-runtime expects
-      fetch_and_deploy_gh_release "intel-igc-core" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-core-2_*_amd64.deb" || true
-      fetch_and_deploy_gh_release "intel-igc-opencl" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-opencl-2_*_amd64.deb" || true
+        # Intel Graphics Compiler – pinned to the version compute-runtime expects
+        fetch_and_deploy_gh_release "intel-igc-core" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-core-2_*_amd64.deb" || true
+        fetch_and_deploy_gh_release "intel-igc-opencl" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-opencl-2_*_amd64.deb" || true
 
-      # Compute Runtime
-      fetch_and_deploy_gh_release "intel-opencl-icd" "intel/compute-runtime" "binary" "latest" "" "intel-opencl-icd_*_amd64.deb" || true
+        # Compute Runtime
+        fetch_and_deploy_gh_release "intel-opencl-icd" "intel/compute-runtime" "binary" "latest" "" "intel-opencl-icd_*_amd64.deb" || true
+      fi
     fi
 
     _cs_apt_install_optional intel-media-va-driver-non-free ocl-icd-libopencl1 mesa-vulkan-drivers vulkan-tools vainfo libmfx-gen1.2 intel-gpu-tools
@@ -873,37 +906,42 @@ NVIDIA_PIN
     fi
   fi
 
-  # Report what actually happened, not that the function reached its end.
-  #
-  # This used to print "NVIDIA GPU configured" unconditionally. A user running
-  # Debian 13 with a 580 host driver reported exactly the failure that hides
-  # behind it: every install path above had found nothing, `dpkg -l | grep -i
-  # nvidia` came back empty, and the install still finished on a green line.
-  #
-  # ldconfig rather than dpkg, because the library can legitimately arrive by
-  # bind mount from the host as well as by package. What matters is whether a
-  # CUDA program can link it, not who put it there.
-  #
-  # Deliberately not a non-zero return: hardware acceleration is optional for
-  # most applications, and install scripts run under an ERR trap, so failing
-  # here would abort installs that used to complete without a GPU.
-  if ldconfig -p 2>/dev/null | grep -q 'libcuda\.so\.1'; then
-    msg_ok "NVIDIA GPU configured (host driver ${nvidia_host_version})"
+  # Report what happened, not that the function reached its end -- this printed
+  # "NVIDIA GPU configured" even when every path above had found nothing.
+  # ldconfig rather than dpkg: the library can arrive by bind mount too, and what
+  # matters is whether a CUDA program can link it. Not a non-zero return, since
+  # acceleration is optional and install scripts run under an ERR trap.
+  # Libraries alone are not enough, and this is the half that used to be missed:
+  # lspci sees every GPU on the host whether or not it was passed through, so
+  # this function will happily install the userspace stack for a card the
+  # container cannot reach. That reported success while torch.cuda.is_available()
+  # stayed False, and the real fault -- no device nodes -- went unmentioned.
+  local -a nvidia_nodes=()
+  local _nvdev
+  for _nvdev in /dev/nvidia*; do
+    [[ -c "$_nvdev" ]] && nvidia_nodes+=("$_nvdev")
+  done
+
+  local have_libcuda=0
+  ldconfig -p 2>/dev/null | grep -q 'libcuda\.so\.1' && have_libcuda=1
+
+  if [[ $have_libcuda -eq 1 && ${#nvidia_nodes[@]} -gt 0 ]]; then
+    _cs_nvidia_usable=1
+    msg_ok "NVIDIA GPU configured (host driver ${nvidia_host_version}, ${#nvidia_nodes[@]} device nodes)"
+  elif [[ ${#nvidia_nodes[@]} -eq 0 ]]; then
+    msg_error "NVIDIA GPU not usable: no /dev/nvidia* device nodes in this container"
+    msg_warn "The userspace driver is in place, but the devices were never passed through."
+    msg_warn "On the host, check the container config lists /dev/nvidia0, /dev/nvidiactl and /dev/nvidia-uvm."
   else
     msg_error "NVIDIA GPU not usable: libcuda.so.1 is not available in this container"
     msg_warn "The host driver is ${nvidia_host_version}. CUDA workloads will fail until a matching userspace library is present."
   fi
 
-  # nvidia-smi gets its own check because installing it can succeed and still
-  # leave nothing behind: in NVIDIA's CUDA repositories the package is an empty
-  # transitional stub -- 610.57.04-1 declares no Depends and ships no binary --
-  # so dpkg reports it installed while `nvidia-smi` is not on PATH. A user hit
-  # exactly that and assumed the driver install had failed.
-  #
-  # CUDA itself does not need it: libnvidia-ml1 above carries NVML, which is what
-  # libraries actually call. So this reports rather than tries harder; pulling the
-  # package that does ship the binary would drag the full driver stack, kernel
-  # DKMS included, into a container that shares the host's kernel.
+  # nvidia-smi separately: in NVIDIA's CUDA repos the package is an empty
+  # transitional stub, so dpkg reports it installed while the binary is absent.
+  # CUDA does not need it -- libnvidia-ml1 carries NVML -- so this reports rather
+  # than pulling the package that ships it, which would drag the full driver
+  # stack, DKMS included, into a container sharing the host kernel.
   if ! command -v nvidia-smi >/dev/null 2>&1; then
     msg_warn "nvidia-smi is not available: the CUDA repository ships it as an empty transitional package"
     msg_warn "CUDA workloads are unaffected. For the tool itself, use the matching .run installer with --no-kernel-module."

@@ -130,7 +130,7 @@ advanced_settings() {
     if [[ -n "$BRIDGES" ]]; then
       while IFS= read -r bridge; do
         if [[ -n "$bridge" ]]; then
-          local description=$(grep -A 10 "iface $bridge" /etc/network/interfaces 2>/dev/null | grep '^#' | head -n1 | sed 's/^#\s*//')
+          local description=$(grep -A 10 "iface $bridge" /etc/network/interfaces 2>/dev/null | grep '^#' | head -n1 | sed 's/^#[[:space:]-]*//')
           BRIDGE_MENU_OPTIONS+=("$bridge" "${description:- }")
         fi
       done <<<"$BRIDGES"
@@ -1235,7 +1235,12 @@ Advanced:
   trap - RETURN
 
   # Display final summary
-  echo -e "\n${INFO}${BOLD}${DGN}PVE Version ${PVEVERSION} (Kernel: ${KERNEL_VERSION})${CL}"
+  echo -e "\n${INFO}${BOLD}${DGN}$(_cs_host_version_line) (Kernel: ${KERNEL_VERSION})${CL}"
+  local engine_ref scripts_ref
+  engine_ref="$(_cs_engine_ref_line)"
+  scripts_ref="$(_cs_scripts_ref_line)"
+  [[ -n "$engine_ref" ]] && echo -e "${OVERRIDE}${BOLD}${YWB}${engine_ref}${CL}"
+  [[ -n "$scripts_ref" ]] && echo -e "${OVERRIDE}${BOLD}${YWB}${scripts_ref}${CL}"
   echo -e "${OS}${BOLD}${DGN}Operating System: ${BGN}$var_os${CL}"
   echo -e "${OSVERSION}${BOLD}${DGN}Version: ${BGN}$var_version${CL}"
   echo -e "${CONTAINERTYPE}${BOLD}${DGN}Container Type: ${BGN}$([ "$CT_TYPE" == "1" ] && echo "Unprivileged" || echo "Privileged")${CL}"
@@ -1267,7 +1272,9 @@ Advanced:
   # Log settings to file
   log_section "CONTAINER SETTINGS (ADVANCED) - ${APP}"
   log_msg "Application: ${APP}"
-  log_msg "PVE Version: ${PVEVERSION} (Kernel: ${KERNEL_VERSION})"
+  log_msg "$(_cs_host_version_line) (Kernel: ${KERNEL_VERSION})"
+  [[ -n "$engine_ref" ]] && log_msg "$engine_ref"
+  [[ -n "$scripts_ref" ]] && log_msg "$scripts_ref"
   log_msg "Operating System: $var_os ($var_version)"
   log_msg "Container Type: $([ "$CT_TYPE" == "1" ] && echo "Unprivileged" || echo "Privileged")"
   log_msg "Container ID: $CT_ID"

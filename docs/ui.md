@@ -44,6 +44,6 @@ The entry points and the menus:
 - `install_script` — default / advanced / settings selection, then the build
 - `settings_menu`, `diagnostics_menu`
 
-`start` also backgrounds the `pvesh get /cluster/nextid` call so it overlaps
+`install_script` also backgrounds the `pvesh get /cluster/nextid` call so it overlaps
 with the checks that follow, and falls back to a foreground call if that
 returns nothing.

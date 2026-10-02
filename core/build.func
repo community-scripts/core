@@ -26,7 +26,7 @@
 [[ -n "${_LXC_BUILD_DISPATCHED:-}" ]] && return
 _LXC_BUILD_DISPATCHED=1
 
-_CS_DEFAULT_URL="${_CS_DEFAULT_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+_CS_DEFAULT_URL="${_CS_DEFAULT_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}"
 _CS_CORE_DEFAULT_URL="${_CS_CORE_DEFAULT_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
 
 # ── Engine layout ─────────────────────────────────────────────────────────────
@@ -153,26 +153,13 @@ _cs_net_log() {
 ' "$1" "$2" "$3" >&2
 }
 
-# Retry options shared by every engine fetch.
+# Retry options shared by every engine fetch. Fourteen days of telemetry showed
+# roughly 240 failures that were the engine unable to download its own parts,
+# each given a single attempt. curl's own --retry rather than a loop, because it
+# already knows which failures are worth repeating and leaves a 404 alone.
 #
-# Fourteen days of telemetry showed roughly 240 failures that were the engine
-# unable to download its own parts: 189 runs across 63 apps hit exit 115
-# ("install.func download failed"), and 51 more across 31 apps took an HTTP error
-# straight from the .func fetch. None of those are the fault of the script being
-# installed, and a single attempt was all any of them got.
-#
-# curl's own --retry rather than a loop around it, because it already knows which
-# failures are worth repeating: timeouts, 408, 429 and 5xx. A 404 is not retried,
-# so a genuinely missing file still fails at once instead of costing three
-# attempts. --retry-connrefused adds the case where the far end is briefly gone.
-#
-# Three attempts with a one second base delay; curl doubles it, so the worst case
-# adds about three seconds to a download that was going to fail anyway.
-#
-# The wget fallbacks deliberately stay a single attempt: --tries/--waitretry are
-# GNU options, and the fallback exists for exactly the minimal systems that ship
-# BusyBox wget, where an unrecognised option is a hard failure rather than a
-# slower download.
+# The wget fallbacks stay single-attempt: --tries/--waitretry are GNU options,
+# and that path exists for the BusyBox systems where they are a hard error.
 _CS_CURL_RETRY=(--retry 3 --retry-delay 1 --retry-connrefused --connect-timeout 10)
 
 # curl -S prints one line per failed attempt, so a download that recovers on the
@@ -194,13 +181,13 @@ _cs_download() {
   local url="${1:?url}"
   local t0 code
   if [[ ",${dev_mode:-}," == *,net,* ]] && command -v curl >/dev/null 2>&1; then
-    t0=${EPOCHREALTIME/./}
+    t0=${EPOCHREALTIME/[.,]/}
     local body
     body="$(curl -fsSL "${_CS_CURL_RETRY[@]}" -w '
 %{http_code}' "$url" 2>/dev/null)"
     code="${body##*$'
 '}"
-    _cs_net_log "$code" "$((( ${EPOCHREALTIME/./} - t0 ) / 1000))" "$url"
+    _cs_net_log "$code" "$((( ${EPOCHREALTIME/[.,]/} - t0 ) / 1000))" "$url"
     printf '%s' "${body%$'
 '*}"
     return 0
@@ -287,7 +274,7 @@ _cs_prefetch_engine() {
   done
   [[ -z "$dir" ]] && return 1
 
-  local _cs_t0=${EPOCHREALTIME/./}
+  local _cs_t0=${EPOCHREALTIME/[.,]/}
   local args=() rel
   for rel in "${_CS_ENGINE_FILES[@]}"; do
     mkdir -p "${dir}/${rel%/*}" 2>/dev/null || true
@@ -307,7 +294,7 @@ _cs_prefetch_engine() {
       missing=$((missing + 1))
     fi
   done
-  _cs_net_log "200" "$(( ( ${EPOCHREALTIME/./} - _cs_t0 ) / 1000 ))"     "prefetch: ${kept} files, ${missing} missing -> ${dir}"
+  _cs_net_log "200" "$(( ( ${EPOCHREALTIME/[.,]/} - _cs_t0 ) / 1000 ))"     "prefetch: ${kept} files, ${missing} missing -> ${dir}"
   if ((kept == 0)); then
     rm -rf "$dir" 2>/dev/null
     return 1
@@ -322,21 +309,19 @@ _cs_prefetch_engine || true
 
 _cs_source_func "lxc/platform.func"
 
-# Inside a container the OS is a fact, not a choice. A script that supports both
-# Debian and Alpine picks its resource defaults by branching on var_os near the
-# top of the file, and only offers the menu on a host -- so an `update` run
-# reached that branch with var_os empty and took the Debian arm. An Alpine
-# container whose update is `apk upgrade` plus a service restart was told it
-# needed the Debian build's 6 GB of RAM and four cores.
-#
-# base_settings() already derives both of these, but it runs long after the ct
-# script has branched. Doing it here, while that script is still on its `source`
-# line, is early enough to be of use. var_version comes along because the same
-# branches set it, and a static default there would otherwise survive
-# base_settings and be compared against the running system as a mismatch.
-#
-# detect_lxc_platform, not `command -v pveversion`: an Incus host has no
-# pveversion either, and guessing its OS there would break container creation.
+# Before anything asks which platform this is: the client has to be resolvable,
+# or an Incus host detects as a plain container and the ct script below runs its
+# update path against the host.
+declare -f ensure_incus_on_path >/dev/null 2>&1 && ensure_incus_on_path
+true
+
+# Inside a container the OS is a fact, not a choice. A dual-OS script branches
+# on var_os near the top of the file and only offers the menu on a host, so an
+# update took the Debian arm and told an Alpine container it needed 6 GB and
+# four cores. base_settings() derives this too, but long after that branch.
+# var_version comes along or the branch's static default would survive and be
+# read as a version mismatch. detect_lxc_platform, not `command -v pveversion`:
+# an Incus host has none either, and guessing its OS would break creation.
 case "$(detect_lxc_platform)" in
 container | incus-container)
   if [[ -r /etc/os-release ]]; then

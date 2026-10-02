@@ -62,6 +62,15 @@ def main(repos: list[str]) -> int:
     written: dict[tuple[str, str], str] = {}
     skipped: list[str] = []
 
+    # A repo that failed to check out would otherwise look like a repo whose
+    # scripts were all deleted, and the rewrite below would prune every header
+    # only that repo provides. Refuse instead of silently shrinking the tree.
+    missing = [r for r in repos if not any((Path(r) / s).is_dir() for s, _ in SCRIPT_DIRS)]
+    if missing:
+        for r in missing:
+            print(f"::error::{r} has none of {[s for s, _ in SCRIPT_DIRS]} - checkout failed?")
+        return 1
+
     for repo in repos:
         root = Path(repo)
         for sub, pattern in SCRIPT_DIRS:
@@ -95,6 +104,12 @@ def main(repos: list[str]) -> int:
                     continue
                 written[key] = art
 
+    # Checked before the rewrite below, which deletes first: an empty result
+    # would otherwise wipe every header and only then report the failure.
+    if not written:
+        print("::error::no headers generated - script layout probably changed")
+        return 1
+
     # Rewrite the tree so removed apps do not leave orphans behind.
     for stale in sorted(OUT.rglob("*")):
         if stale.is_file():
@@ -115,9 +130,6 @@ def main(repos: list[str]) -> int:
         for s in skipped:
             print("  ", s)
 
-    if not written:
-        print("::error::no headers generated - script layout probably changed")
-        return 1
     return 0
 
 

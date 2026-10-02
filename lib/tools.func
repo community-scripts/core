@@ -16,19 +16,20 @@
 #   - Debug mode for troubleshooting (TOOLS_DEBUG=true)
 #
 # Usage in install scripts:
-#   source /dev/stdin <<< "$FUNCTIONS"  # Load from build.func
+#   source /dev/stdin <<<"$FUNCTIONS_FILE_PATH"  # lxc/install.func
+#   update_os                                    # sources this file (alpine.func on Alpine)
 #   prepare_repository_setup "mysql"
 #   install_packages_with_retry "mysql-server" "mysql-client"
 #
 # Quick Reference (Core Helpers):
 #   cleanup_tool_keyrings()          - Remove keyrings from all 3 locations
-#   stop_all_services()              - Stop services by pattern (e.g. "php*-fpm")
-#   verify_tool_version()            - Validate installed version matches expected
+#   stop_all_services()              - Stop services by regex (e.g. "php.*-fpm")
+#   verify_tool_version()            - Validate installed MAJOR version matches expected
 #   version_matches_spec()           - Compare installed semver against spec (8.0 matches 8.0.40)
 #   cleanup_legacy_install()         - Remove nvm, rbenv, rustup, etc.
 #   prepare_repository_setup()       - Cleanup repos + keyrings + validate APT
 #   install_packages_with_retry()    - Install with 3 retries and APT refresh
-#   upgrade_packages_with_retry()    - Upgrade with 3 retries and APT refresh
+#   upgrade_packages_with_retry()    - Upgrade with 2 retries and APT refresh
 #   curl_with_retry()                - Curl with retry logic and timeouts
 #
 # Debug Mode:
@@ -52,10 +53,8 @@ _TOOLS_FUNC_LOADED=1
 #   hwaccel.func  GPU detection and hardware acceleration
 # ==============================================================================
 
-# Retry options for engine fetches. Repeated in each file that bootstraps
-# itself over the network rather than shared, because there is nowhere to put
-# a shared copy that does not itself need downloading first. core/build.func
-# carries the full reasoning.
+# Repeated per file rather than shared: there is nowhere to put a shared copy
+# that does not itself need downloading first. See core/build.func.
 _CS_CURL_RETRY=(--retry 3 --retry-delay 1 --retry-connrefused --connect-timeout 10)
 
 _tools_source_part() {

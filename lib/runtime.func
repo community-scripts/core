@@ -857,6 +857,27 @@ setup_go() {
     GO_VERSION="$go_version_tmp"
   fi
 
+  # A bare major.minor version (e.g. "1.22", as commonly found in go.mod's `go`
+  # directive) has no matching tarball -- go.dev only publishes patch releases
+  # (go1.22.12, not go1.22) -- so resolve it to the latest matching patch first.
+  if [[ "$GO_VERSION" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+    local go_major="${BASH_REMATCH[1]}" go_minor="${BASH_REMATCH[2]}"
+    ensure_dependencies jq || return 100
+    local go_releases go_patch
+    go_releases=$(curl_with_retry "https://go.dev/dl/?mode=json&include=all" "-" 2>/dev/null) || true
+    go_patch=$(printf '%s' "$go_releases" | jq -r --arg maj "$go_major" --arg min "$go_minor" '
+      [.[] | select(.stable == true) | .version
+       | capture("^go(?<maj>[0-9]+)\\.(?<min>[0-9]+)\\.(?<patch>[0-9]+)$")
+       | select(.maj == $maj and .min == $min)
+       | (.patch | tonumber)]
+      | max // empty' 2>/dev/null)
+    if [[ -z "$go_patch" ]]; then
+      msg_error "Could not resolve latest patch release for Go ${GO_VERSION}.x"
+      return 250
+    fi
+    GO_VERSION="${go_major}.${go_minor}.${go_patch}"
+  fi
+
   local GO_BIN="/usr/local/bin/go"
   local GO_INSTALL_DIR="/usr/local/go"
 
@@ -875,7 +896,10 @@ setup_go() {
   # Scenario 2: Different version or not installed
   if [[ -n "$CURRENT_VERSION" && "$CURRENT_VERSION" != "$GO_VERSION" ]]; then
     msg_info "Upgrade Go from $CURRENT_VERSION to $GO_VERSION"
-    remove_old_tool_version "go"
+    remove_old_tool_version "go" || {
+      msg_error "Aborting Go upgrade: another package depends on it"
+      return 1
+    }
   else
     msg_info "Setup Go $GO_VERSION"
   fi
@@ -1208,6 +1232,33 @@ _cs_drop_pm_shim() {
   esac
 }
 
+# Node ships whatever npm was current when that release was cut, and nothing
+# upgraded it afterwards -- which is why installs run months-old npm and npm
+# advertises its own update on every run. Both paths bring it to the newest
+# release; a no-op when it is already there, so the update path needs no
+# separate check. NPM_VERSION pins it if a new major breaks a build.
+#
+# Reports through NPM_SETUP_VERSION rather than its own msg_ok: both callers run
+# this inside an open msg_info, and a msg_ok there stops that spinner and prints
+# ahead of the step it belongs to -- "npm 11.19.0 -> 12.0.2" landed above "Setup
+# Node.js 24" and read as if npm had been handled first. The callers fold the
+# version into their own closing line instead.
+_setup_npm() {
+  local target="${NPM_VERSION:-latest}" before after
+  NPM_SETUP_VERSION=""
+  command -v npm >/dev/null 2>&1 || return 0
+  before="$(npm -v 2>/dev/null || echo unknown)"
+
+  if ! $STD npm install -g "npm@${target}" 2>/dev/null; then
+    msg_warn "npm stayed at ${before}"
+    return 0
+  fi
+
+  after="$(npm -v 2>/dev/null || echo "$before")"
+  NPM_SETUP_VERSION="$after"
+  return 0
+}
+
 setup_nodejs() {
   local NODE_VERSION="${NODE_VERSION:-24}"
   local NODE_MODULE="${NODE_MODULE:-}"
@@ -1215,12 +1266,11 @@ setup_nodejs() {
   local node_major="${NODE_VERSION%%.*}"
   local wants_corepack=0
   local node_setup_ok_msg=""
+  local NPM_SETUP_VERSION=""
 
-  # Corepack must run fully non-interactive. Without this it prints
-  # "Corepack is about to download X. Do you want to continue? [Y/n]" and blocks
-  # the whole install waiting for keyboard input - both here and in the calling
-  # script's later `corepack prepare` / `corepack <pm>` calls, which run in this
-  # same shell and inherit the export.
+  # Corepack must run fully non-interactive, or it blocks on "about to download
+  # X. Continue? [Y/n]" -- here and in the calling script's later corepack calls,
+  # which inherit the export.
   export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
   # ALWAYS clean up legacy installations first (nvm, etc.) to prevent conflicts
@@ -1232,7 +1282,7 @@ setup_nodejs() {
 
   # Ensure jq is available for JSON parsing
   if ! command -v jq &>/dev/null; then
-    $STD apt update
+    apt_update_safe
     $STD apt install -y jq || {
       msg_error "Failed to install jq"
       return 100
@@ -1248,14 +1298,21 @@ setup_nodejs() {
     # Upgrade to the latest minor/patch release from NodeSource
     $STD apt-get install -y --only-upgrade nodejs 2>/dev/null || true
 
+    export NPM_CONFIG_UPDATE_NOTIFIER=false
+    $STD npm config set update-notifier false --global 2>/dev/null || true
+    _setup_npm
+
     cache_installed_version "nodejs" "$NODE_VERSION"
-    msg_ok "Update Node.js $NODE_VERSION"
+    msg_ok "Update Node.js $NODE_VERSION${NPM_SETUP_VERSION:+ (npm ${NPM_SETUP_VERSION})}"
   else
     # Scenario 2: Different version installed - clean upgrade
     if [[ -n "$CURRENT_NODE_VERSION" && "$CURRENT_NODE_VERSION" != "$NODE_VERSION" ]]; then
       msg_info "Upgrade Node.js from $CURRENT_NODE_VERSION to $NODE_VERSION"
       node_setup_ok_msg="Upgrade Node.js to $NODE_VERSION"
-      remove_old_tool_version "nodejs"
+      remove_old_tool_version "nodejs" || {
+        msg_error "Aborting Node.js upgrade: another package depends on it"
+        return 1
+      }
     else
       msg_info "Setup Node.js $NODE_VERSION"
       node_setup_ok_msg="Setup Node.js $NODE_VERSION"
@@ -1313,19 +1370,39 @@ setup_nodejs() {
       return 127
     fi
 
+    # npm prints its "New major version available" banner at the end of every
+    # run, so it lands in the tail of the log -- which is the excerpt shown when
+    # an install fails. People then read the version notice as the cause and
+    # never see the lines above it that actually explain the failure.
+    export NPM_CONFIG_UPDATE_NOTIFIER=false
+    $STD npm config set update-notifier false --global 2>/dev/null || true
+    _setup_npm
+
     cache_installed_version "nodejs" "$NODE_VERSION"
-    msg_ok "$node_setup_ok_msg"
+    msg_ok "${node_setup_ok_msg}${NPM_SETUP_VERSION:+ (npm ${NPM_SETUP_VERSION})}"
   fi
 
-  # Node 22.22.2 bundles npm 10.9.7 which cannot self-upgrade (nodejs/node#62425)
+  # Only Node 22.22.2 shipped npm 10.9.7, whose arborist is missing
+  # promise-retry, so npm cannot upgrade itself (nodejs/node#62425). Fixed
+  # upstream in 22.22.3 on 2026-05-13, so a fresh install never lands here --
+  # this repairs containers built in the seven weeks it was current. Delete it
+  # once none are left.
   if [[ "$NODE_VERSION" == "22" && "$(npm -v 2>/dev/null)" == "10.9.7" ]]; then
-    msg_info "Updating npm (Node 22 regression fix)"
-    $STD npm install -g npm@10.9.8 2>/dev/null || true
+    msg_info "Repairing npm 10.9.7 (Node 22.22.2)"
+    # Supplying the missing module is the whole repair -- once arborist can load
+    # promise-retry, npm upgrades itself normally. No version pin needed.
+    $STD npm install -g promise-retry 2>/dev/null || true
     if $STD npm install -g npm@latest 2>/dev/null; then
-      msg_ok "Updated npm ($(npm -v))"
+      msg_ok "Repaired npm ($(npm -v))"
     else
-      msg_warn "npm update failed on Node 22.22.2"
+      msg_warn "npm could not be repaired - upgrade Node to 22.22.3 or later"
     fi
+  fi
+
+  # npm 11+ skips install hooks not covered by allowScripts and still exits 0,
+  # so apps with native addons install with nothing built.
+  if [[ "$(npm -v 2>/dev/null | cut -d. -f1)" -ge 11 ]]; then
+    $STD npm config set dangerously-allow-all-scripts true --location=global 2>/dev/null || true
   fi
 
   # Set a safe default heap limit for Node.js builds if not explicitly provided.
@@ -1525,15 +1602,22 @@ setup_nodejs() {
     fi
   fi
 
-  # pnpm v10+ blocks dependency build scripts by default. Do NOT force
-  # `dangerouslyAllowAllBuilds` globally: pnpm implements that flag as an empty
-  # `neverBuiltDependencies`, which then clashes with any project that ships its
-  # own `onlyBuiltDependencies` (every create-t3-app based app, e.g. Split Pro)
-  # and aborts with ERR_PNPM_CONFIG_CONFLICT_BUILT_DEPENDENCIES. Instead relax the
-  # strict check so an unapproved build is a warning, not a fatal error; scripts
-  # that truly need every build script executed enable that themselves.
+  # pnpm v10+ blocks dependency build scripts. Not dangerouslyAllowAllBuilds:
+  # pnpm implements it as an empty neverBuiltDependencies, which clashes with any
+  # project shipping its own onlyBuiltDependencies. Relax the strict check
+  # instead, so an unapproved build warns rather than aborts.
   if command -v pnpm >/dev/null 2>&1; then
     pnpm config set --global strictDepBuilds false >/dev/null 2>&1 || true
+    pnpm config set --global fetch-timeout 600000 >/dev/null 2>&1 || true
+    pnpm config set --global network-concurrency 8 >/dev/null 2>&1 || true
+  fi
+
+  if command -v yarn >/dev/null 2>&1; then
+    if [[ "$(yarn --version 2>/dev/null | cut -d. -f1)" == "1" ]]; then
+      $STD yarn config set network-timeout 600000 2>/dev/null || true
+    else
+      $STD yarn config set --home httpTimeout 600000 2>/dev/null || true
+    fi
   fi
 }
 
@@ -1870,7 +1954,8 @@ get_php_fpm_socket() {
     echo "/run/php/php${PHP_VERSION}-fpm.sock"
     return 0
   fi
-  sock=$(find /run/php -maxdepth 1 -name "php*-fpm.sock" -type s 2>/dev/null | sort -V | tail -1)
+  # Unguarded, a missing /run/php aborts the caller before the message below.
+  sock=$({ find /run/php -maxdepth 1 -name "php*-fpm.sock" -type s 2>/dev/null || true; } | sort -V | tail -1)
   if [[ -z "$sock" ]]; then
     msg_error "No active PHP-FPM socket found under /run/php"
     return 1
@@ -2176,6 +2261,33 @@ EOF
 #   RUST_CRATES     - Comma-separated list of crates (e.g. "cargo-edit,wasm-pack@0.12.1")
 # ------------------------------------------------------------------------------
 
+# $HOME/.cargo/bin on PATH for every shell, not just login ones.
+_cs_write_cargo_profile() {
+  local cargo_bin="${HOME:-/root}/.cargo/bin"
+  cat >/etc/profile.d/99-cargo.sh <<EOF
+case ":\$PATH:" in
+*:${cargo_bin}:*) ;;
+*) [ -d "${cargo_bin}" ] && export PATH="${cargo_bin}:\$PATH" ;;
+esac
+EOF
+  chmod +x /etc/profile.d/99-cargo.sh
+}
+
+# A source tree with rust-toolchain.toml makes rustup install that exact
+# version on build and never remove it. Keep the default, drop the rest.
+rust_prune_toolchains() {
+  command -v rustup >/dev/null 2>&1 || return 0
+
+  local keep t
+  keep=$(rustup toolchain list 2>/dev/null | awk '/\(default\)/{print $1; exit}')
+  [[ -z "$keep" ]] && return 0
+
+  while read -r t; do
+    [[ -z "$t" || "$t" == "$keep" ]] && continue
+    $STD rustup toolchain uninstall "$t" 2>/dev/null || true
+  done < <(rustup toolchain list 2>/dev/null | awk '{print $1}')
+}
+
 setup_rust() {
   local RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-stable}"
   local RUST_PROFILE="${RUST_PROFILE:-default}"
@@ -2198,12 +2310,14 @@ setup_rust() {
     }
     export PATH="$CARGO_BIN:$PATH"
     # Guarded: this ran on every setup_rust call and appended the same line
-    # again each time. Note it only reaches login shells -- what makes cargo and
-    # its crates visible to a service is the /usr/local/bin symlinks further
-    # down, not this.
+    # again each time.
     if ! grep -q '\.cargo/bin' "$HOME/.profile" 2>/dev/null; then
       echo 'export PATH="$HOME/.cargo/bin:$PATH"' >>"$HOME/.profile"
     fi
+
+    # ensure_profile_loaded reads /etc/profile.d before an update; .profile
+    # alone reaches login shells only.
+    _cs_write_cargo_profile
 
     # Verify installation
     if ! command -v rustc >/dev/null 2>&1; then
@@ -2358,6 +2472,8 @@ setup_rust() {
 
     msg_ok "Processed Rust crates"
   fi
+
+  rust_prune_toolchains
 }
 
 # ------------------------------------------------------------------------------
@@ -2368,7 +2484,27 @@ setup_rust() {
 #   - Optionally installs a specific Python version via uv
 # ------------------------------------------------------------------------------
 
+# uv refuses to run when a project pins a required-version it does not match,
+# in either direction. Only the exact form is read; a range falls through to
+# whatever the caller would have installed anyway.
+_uv_required_version() {
+  local dir="${1:?dir}" f v
+  for f in "$dir/pyproject.toml" "$dir/uv.toml"; do
+    [[ -f "$f" ]] || continue
+    v="$(grep -m1 -E '^[[:space:]]*required-version[[:space:]]*=' "$f" 2>/dev/null |
+      sed -E 's/.*=[[:space:]]*"[[:space:]]*==[[:space:]]*([0-9][0-9A-Za-z.+-]*)"[[:space:]]*$/\1/')"
+    if [[ "$v" =~ ^[0-9] ]]; then
+      echo "$v"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# UV_PROJECT_DIR - optional project directory; its uv pin wins over the latest
+# release. Set as a prefix, like PYTHON_VERSION and UV_VERSION.
 setup_uv() {
+  local PROJECT_DIR="${UV_PROJECT_DIR:-}"
   local UV_BIN="/usr/local/bin/uv"
   local UVX_BIN="/usr/local/bin/uvx"
   local TMP_DIR=$(mktemp -d)
@@ -2405,8 +2541,11 @@ setup_uv() {
 
   ensure_dependencies jq
 
-  # Fetch target version (pinned via UV_VERSION or latest release)
+  # Fetch target version (UV_VERSION, then the project's own pin, then latest)
   local TARGET_VERSION="${UV_VERSION:-}"
+  if [[ -z "$TARGET_VERSION" && -n "$PROJECT_DIR" ]]; then
+    TARGET_VERSION="$(_uv_required_version "$PROJECT_DIR")" || TARGET_VERSION=""
+  fi
   if [[ -z "$TARGET_VERSION" ]]; then
     TARGET_VERSION=$(get_latest_github_release "astral-sh/uv") || {
       msg_error "Could not fetch latest uv version from GitHub API"

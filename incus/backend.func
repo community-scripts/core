@@ -32,12 +32,44 @@ _incus_soft() {
 }
 
 _incus_nic_supports_ip() {
-  # Docs: ipv4/ipv6.address on nic — supported for bridge, ovn, macvlan.
-  # physical / sriov: skip (host NIC ownership; keys often rejected).
-  case "${1:-}" in
+  # Takes the network name, not the type: managed-ness matters as much as the
+  # type does. ipv4.address on a NIC is a reservation in the DHCP server Incus
+  # itself runs, and that server only exists for managed networks. On a bridge
+  # the operator built by hand there is nothing to reserve in, so the address
+  # is quietly ignored and the container comes up on the LAN's own DHCP while
+  # the summary claims a static address. Better to say so than to pretend.
+  #
+  # physical / sriov: skip either way (host NIC ownership; keys often rejected).
+  local net="${1:-}" cfg type
+  [[ -z "$net" ]] && return 1
+  cfg=$(LC_ALL=C incus network show "$net" 2>/dev/null) || return 1
+  grep -qE '^managed:[[:space:]]*true$' <<<"$cfg" || return 1
+  type=$(awk '/^type:/ {print $2; exit}' <<<"$cfg")
+  case "$type" in
   bridge | ovn | macvlan) return 0 ;;
   *) return 1 ;;
   esac
+}
+
+# Restart the container, tolerating optional boot-time configs (e.g.
+# linux.sysctl.kernel.keys.maxkeys) that some hosts/kernels reject for the
+# container's privilege level. Such configs pass 'config set' but abort the
+# container at *start* time, so a plain restart would leave it stopped. On
+# failure, roll those configs back and retry so the container is never left
+# dead. Returns non-zero only if it still cannot start.
+_incus_restart_ct() {
+  local logf="${LOGFILE:-$INCUS_BUILD_LOG}"
+  if incus restart "${CT_NAME}" >>"$logf" 2>&1; then
+    return 0
+  fi
+  msg_warn "Container failed to start with current config — rolling back optional sysctls"
+  _incus_soft incus config unset "${CT_NAME}" linux.sysctl.kernel.keys.maxkeys >>"$logf" 2>&1
+  _incus_soft incus stop -f "${CT_NAME}" >>"$logf" 2>&1
+  _incus_soft incus start "${CT_NAME}" >>"$logf" 2>&1
+  # A failed restart leaves incus disagreeing with itself - the same recovery
+  # logged "already stopped" from stop and "already running" from start - so
+  # the exit code proves nothing here. Ask what the state actually is.
+  [[ "$(incus_instance_field "${CT_NAME}" s)" == "RUNNING" ]]
 }
 
 _incus_resolve_launch_image() {
@@ -58,23 +90,25 @@ _incus_resolve_launch_image() {
     candidates+=("images:ubuntu/${ver}.04" "images:ubuntu/${ver}.04/cloud")
   fi
 
-  local cand local_match
+  local cand local_aliases
+
+  # Local first: no round-trip, and works without internet.
+  local_aliases=$(incus image list -f csv,noheader -c l 2>/dev/null || true)
+  for cand in "${candidates[@]}"; do
+    if [[ -n "$local_aliases" ]] &&
+      grep -qxF "${cand#images:}" <<<"$local_aliases" &&
+      incus image info "${cand#images:}" &>/dev/null; then
+      INCUS_LAUNCH_IMAGE="${cand#images:}"
+      return 0
+    fi
+  done
+
   for cand in "${candidates[@]}"; do
     if incus image info "$cand" &>/dev/null; then
       INCUS_LAUNCH_IMAGE="$cand"
       return 0
     fi
   done
-
-  # Local image fingerprint/alias match (already copied)
-  local_match=$(incus image list -f csv,noheader 2>/dev/null |
-    awk -F, -v os="$os" -v ver="$ver" '
-      tolower($0) ~ os && $0 ~ ver { print $1; exit }
-    ' || true)
-  if [[ -n "$local_match" ]] && incus image info "$local_match" &>/dev/null; then
-    INCUS_LAUNCH_IMAGE="$local_match"
-    return 0
-  fi
 
   # Last resort: try remote launch of primary (incus may pull on demand)
   INCUS_LAUNCH_IMAGE="images:${os}/${ver}"
@@ -108,7 +142,10 @@ incus_storage_pool_free_gb() {
   local info free_bytes total_bytes used_bytes free_raw total_raw used_raw
 
   # Prefer machine-readable bytes when available (Incus --bytes).
-  info=$(incus storage info --bytes "$pool" 2>/dev/null || true)
+  # LC_ALL=C: incus translates this output. A German host reports "Gesamter
+  # Speicherplatz" and "Speicherplatz in Benutzung", so the awk below matched
+  # nothing and a 357GB pool looked unmeasurable.
+  info=$(LC_ALL=C incus storage info --bytes "$pool" 2>/dev/null || true)
   free_raw=$(echo "$info" | awk -F': *' '/space free:/ {print $2; exit}')
   if [[ -n "$free_raw" ]]; then
     free_bytes="$(_incus_parse_size_to_bytes "$free_raw" 2>/dev/null || true)"
@@ -116,7 +153,7 @@ incus_storage_pool_free_gb() {
 
   # Older/human output often has only "space used" + "total space" (no free line).
   if [[ -z "${free_bytes:-}" ]]; then
-    info=$(incus storage info "$pool" 2>/dev/null || true)
+    info=$(LC_ALL=C incus storage info "$pool" 2>/dev/null || true)
     free_raw=$(echo "$info" | awk -F': *' '/space free:/ {print $2; exit}')
     total_raw=$(echo "$info" | awk -F': *' '/total space:/ {print $2; exit}')
     used_raw=$(echo "$info" | awk -F': *' '/space used:/ {print $2; exit}')
@@ -128,6 +165,16 @@ incus_storage_pool_free_gb() {
       if [[ -n "${total_bytes:-}" && -n "${used_bytes:-}" && "$total_bytes" -ge "$used_bytes" ]]; then
         free_bytes=$((total_bytes - used_bytes))
       fi
+    fi
+  fi
+
+  # A dir pool is just a path, so ask the filesystem when incus says nothing.
+  # Does not help lvm or zfs, where source is not a path.
+  if [[ -z "${free_bytes:-}" ]]; then
+    local src
+    src="$(LC_ALL=C incus storage get "$pool" source 2>/dev/null || true)"
+    if [[ -n "$src" && -d "$src" ]]; then
+      free_bytes="$(df -PB1 "$src" 2>/dev/null | awk 'NR==2 {print $4}')"
     fi
   fi
 
@@ -161,8 +208,13 @@ resolve_storage_preselect() {
   incus storage info "$preselect" &>/dev/null || return 1
   STORAGE_RESULT="$preselect"
   local free_gb
-  free_gb=$(incus_storage_pool_free_gb "$preselect" 2>/dev/null || echo "?")
-  STORAGE_INFO="Free: ~${free_gb}GB"
+  free_gb=$(incus_storage_pool_free_gb "$preselect" 2>/dev/null || true)
+  # "Free: ~?GB" reads like a broken template. Say what is actually known.
+  if [[ -n "$free_gb" ]]; then
+    STORAGE_INFO="Free: ~${free_gb}GB"
+  else
+    STORAGE_INFO="Free: unknown"
+  fi
   return 0
 }
 
@@ -365,9 +417,23 @@ incus_create_lxc_container() {
   INCUS_BUILD_OK=0
   export INCUS_CT_CREATED INCUS_ORPHAN_HANDLED INCUS_BUILD_OK CT_NAME CTID
 
-  # Optional configs that some Incus versions reject at launch time.
-  if [[ "${CT_TYPE:-1}" == "1" ]]; then
-    _incus_soft incus config set "${CT_NAME}" linux.sysctl.kernel.keys.maxkeys=2000 >>"$LOGFILE" 2>&1
+  # Optional boot-time configs that some hosts/kernels reject for this
+  # container type. They fail when the container *starts*, not at 'config set'
+  # (e.g. kernel.keys.maxkeys is not writable from an unprivileged user
+  # namespace), so a plain set can silently persist a config that aborts the
+  # next boot. Apply best-effort and verify with a self-healing restart below.
+  # kernel.keys.maxkeys cannot be written from an unprivileged user namespace -
+  # lxc aborts the start with "Permission denied - Failed to setup sysctl
+  # parameters kernel.keys.maxkeys to 2000". This was set for CT_TYPE=1, which
+  # IS the unprivileged case, so every unprivileged create paid a failed start
+  # plus a rollback to reach the state it would have had anyway. Privileged
+  # only, and only when the host default is actually below what we want.
+  local optional_sysctl_pending=0
+  if [[ "${CT_TYPE:-1}" == "0" ]] &&
+    (($(cat /proc/sys/kernel/keys/maxkeys 2>/dev/null || echo 2000) < 2000)); then
+    if incus config set "${CT_NAME}" linux.sysctl.kernel.keys.maxkeys=2000 >>"$LOGFILE" 2>&1; then
+      optional_sysctl_pending=1
+    fi
   fi
 
   msg_ok "LXC Container ${CT_NAME} was successfully created."
@@ -386,7 +452,7 @@ incus_create_lxc_container() {
   local net_type="" net_reconfigure=0
   net_type=$(incus network show "${BRG}" 2>/dev/null | awk '/^type:/ {print $2; exit}')
   local nic_supports_ip=0
-  _incus_nic_supports_ip "$net_type" && nic_supports_ip=1
+  _incus_nic_supports_ip "$BRG" && nic_supports_ip=1
 
   if [[ -n "${MAC:-}" ]]; then
     _incus_device_set hwaddr "${MAC}" "Could not apply MAC (${MAC})" && net_reconfigure=1 || true
@@ -416,12 +482,23 @@ incus_create_lxc_container() {
       [[ -n "${IPV6_GATE:-}" ]] && { _incus_device_set ipv6.gateway "${IPV6_GATE}" "Could not apply IPv6 gateway" && net_reconfigure=1 || true; }
       ;;
     none | disable)
-      _incus_device_set ipv6.address none "Could not disable IPv6 on nic" || true
-      net_reconfigure=1
+      # Incus only accepts ipv6.address=none on a NIC when the bridge has
+      # security.ipv6_filtering, so on a default incusbr0 this always failed
+      # and warned about something it does not actually control. verb_ip6() in
+      # tools.func does the real disabling from inside the container, so leave
+      # the device alone and save the restart.
       ;;
     esac
   else
-    msg_info "Network '${BRG}' type=${net_type:-unknown} — skipping IP device options (use host DHCP/static on physical/sriov)"
+    # An unmanaged bridge is the ordinary case here and not an error: the
+    # container simply takes an address from the LAN's own DHCP. Worth saying
+    # out loud though, because a static address typed into the wizard will not
+    # be applied and the summary would otherwise imply that it was.
+    if [[ -n "${NET:-}" && "${NET}" != "dhcp" ]]; then
+      msg_warn "Network '${BRG}' is not managed by Incus - ${NET} cannot be reserved there. The container will use DHCP from your LAN; set the address inside the container or reserve it on your router."
+    else
+      msg_info "Network '${BRG}' is not managed by Incus (type=${net_type:-unknown}) - addressing is left to your LAN"
+    fi
     if [[ -n "${NET:-}" && "${NET}" != "dhcp" ]]; then
       msg_custom "ℹ️" "${YW}" "Static IPv4 ${NET} was requested but cannot be set as device key on ${net_type:-this} network"
     fi
@@ -431,12 +508,29 @@ incus_create_lxc_container() {
     _incus_soft incus config set "${CT_NAME}" "user.tags=${TAGS}" >>"$LOGFILE" 2>&1
   fi
 
-  if [[ "$net_reconfigure" -eq 1 ]]; then
-    msg_info "Reconfiguring network settings"
-    if ! incus restart "${CT_NAME}" >>"$LOGFILE" 2>&1; then
-      msg_warn "Restart after network reconfiguration failed"
+  # Restart when network devices changed, or to verify an optional boot-time
+  # sysctl we set above (so a rejected one is rolled back now rather than
+  # bricking a later reboot with boot.autostart=true).
+  if [[ "$net_reconfigure" -eq 1 || "$optional_sysctl_pending" -eq 1 ]]; then
+    if [[ "$net_reconfigure" -eq 1 ]]; then
+      msg_info "Reconfiguring network settings"
+    else
+      msg_info "Verifying container configuration"
     fi
-    msg_ok "Network settings applied"
+    if _incus_restart_ct; then
+      if [[ "$net_reconfigure" -eq 1 ]]; then
+        msg_ok "Network settings applied"
+      else
+        msg_ok "Container configuration verified"
+      fi
+    else
+      # Everything past this point needs incus exec. Warning and carrying on
+      # over a stopped container is what turned one failed restart into three
+      # unrelated-looking errors further down.
+      msg_error "Container ${CT_NAME} is not running after configuration changes"
+      msg_custom "ℹ️" "${YW}" "See: incus info --show-log ${CT_NAME}"
+      return 1
+    fi
   fi
 }
 
@@ -581,80 +675,117 @@ incus_configure_device_passthrough() {
     fi
 
     if [[ "$gpu_count" -gt 0 ]]; then
-      selected_gpu="${available_gpus[0]}"
+      # Several types can be attached together, and picking exactly one used to
+      # default to the first -- always INTEL, by collection order. On a host with
+      # an iGPU beside a discrete card that silently attached the iGPU only.
+      local -a selected_types=("${available_gpus[@]}")
       if [[ "$gpu_count" -gt 1 ]]; then
-        if declare -f prompt_select >/dev/null 2>&1; then
-          selected_gpu=$(prompt_select "Which GPU type to passthrough?" 1 60 "${available_gpus[@]}")
+        echo -e "\n${INFO} Multiple GPU types detected:"
+        local gi
+        for gi in "${!available_gpus[@]}"; do
+          echo "  $((gi + 1))) ${available_gpus[$gi]}"
+        done
+        echo "  A) Pass through ALL of them"
+
+        local type_selection=""
+        read -r -t 60 -p "Select GPU type(s) (1-${gpu_count}, comma-separated, A=all) [timeout 60s, default=all]: " type_selection </dev/tty || type_selection=""
+        type_selection="${type_selection^^}"
+
+        if [[ -n "$type_selection" && "$type_selection" != "A" ]]; then
+          local -a gnums=()
+          local gnum
+          IFS=',' read -ra gnums <<<"$type_selection"
+          selected_types=()
+          for gnum in "${gnums[@]}"; do
+            gnum="${gnum// /}"
+            if [[ "$gnum" =~ ^[0-9]+$ ]] && ((gnum >= 1 && gnum <= gpu_count)); then
+              selected_types+=("${available_gpus[$((gnum - 1))]}")
+            fi
+          done
+          # A spare device is harmless; a missing one is the bug being fixed.
+          if [[ ${#selected_types[@]} -eq 0 ]]; then
+            msg_warn "No valid selection - passing through all detected GPUs"
+            selected_types=("${available_gpus[@]}")
+          fi
         fi
       fi
-      selected_gpu="${selected_gpu^^}"
 
-      local sel added=0 failed=0 idx=0
-      case "$selected_gpu" in
-      INTEL)
-        for sel in "${INTEL_GPUS[@]}"; do
-          if _incus_add_gpu_physical "gpu${idx}" "$sel"; then
-            added=$((added + 1))
-          else
-            failed=$((failed + 1))
-            msg_warn "Could not add Intel GPU (${sel})"
+      # idx is shared across types so the device names stay unique.
+      local sel added failed idx=0
+      local -a configured_types=()
+      for selected_gpu in "${selected_types[@]}"; do
+        added=0
+        failed=0
+        case "$selected_gpu" in
+        INTEL)
+          for sel in "${INTEL_GPUS[@]}"; do
+            if _incus_add_gpu_physical "gpu${idx}" "$sel"; then
+              added=$((added + 1))
+            else
+              failed=$((failed + 1))
+              msg_warn "Could not add Intel GPU (${sel})"
+            fi
+            idx=$((idx + 1))
+          done
+          # Vendor fallback if PCI/id adds failed entirely
+          if [[ "$added" -eq 0 ]]; then
+            _incus_add_gpu_physical "gpu0" "vendorid=8086" && added=1 || true
           fi
-          idx=$((idx + 1))
-        done
-        # Vendor fallback if PCI/id adds failed entirely
-        if [[ "$added" -eq 0 ]]; then
-          _incus_add_gpu_physical "gpu0" "vendorid=8086" && added=1 || true
-        fi
-        if [[ "$added" -gt 0 ]]; then
-          export GPU_TYPE="INTEL"
-          msg_ok "Intel GPU passthrough configured (${added})"
-        fi
-        ;;
-      AMD)
-        for sel in "${AMD_GPUS[@]}"; do
-          if _incus_add_gpu_physical "gpu${idx}" "$sel"; then
-            added=$((added + 1))
-          else
-            failed=$((failed + 1))
-            msg_warn "Could not add AMD GPU (${sel})"
+          if [[ "$added" -gt 0 ]]; then
+            configured_types+=("INTEL")
+            msg_ok "Intel GPU passthrough configured (${added})"
           fi
-          idx=$((idx + 1))
-        done
-        if [[ "$added" -eq 0 ]]; then
-          _incus_add_gpu_physical "gpu0" "vendorid=1002" && added=1 || true
-        fi
-        if [[ "$added" -gt 0 ]]; then
-          export GPU_TYPE="AMD"
-          msg_ok "AMD GPU passthrough configured (${added})"
-        fi
-        ;;
-      NVIDIA)
-        for sel in "${NVIDIA_GPUS[@]}"; do
-          if _incus_add_gpu_physical "gpu${idx}" "$sel"; then
-            added=$((added + 1))
-          else
-            failed=$((failed + 1))
-            msg_warn "Could not add NVIDIA GPU (${sel})"
+          ;;
+        AMD)
+          for sel in "${AMD_GPUS[@]}"; do
+            if _incus_add_gpu_physical "gpu${idx}" "$sel"; then
+              added=$((added + 1))
+            else
+              failed=$((failed + 1))
+              msg_warn "Could not add AMD GPU (${sel})"
+            fi
+            idx=$((idx + 1))
+          done
+          if [[ "$added" -eq 0 ]]; then
+            _incus_add_gpu_physical "gpu0" "vendorid=1002" && added=1 || true
           fi
-          idx=$((idx + 1))
-        done
-        if [[ "$added" -eq 0 ]]; then
-          _incus_add_gpu_physical "gpu0" "vendorid=10de" && added=1 || true
-        fi
-        # Optional NVIDIA char nodes (driver interface)
-        local ndev nidx=0
-        for ndev in "${NVIDIA_CHAR_DEVS[@]}"; do
-          local nname
-          nname=$(basename "$ndev" | tr -c 'A-Za-z0-9' '_')
-          incus config device add "${CT_NAME}" "nvidia_${nname}_${nidx}" unix-char "source=${ndev}" "path=${ndev}" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || true
-          nidx=$((nidx + 1))
-        done
-        if [[ "$added" -gt 0 || "$nidx" -gt 0 ]]; then
-          export GPU_TYPE="NVIDIA"
-          msg_ok "NVIDIA GPU passthrough configured (gpu=${added}, char=${nidx})"
-        fi
-        ;;
-      esac
+          if [[ "$added" -gt 0 ]]; then
+            configured_types+=("AMD")
+            msg_ok "AMD GPU passthrough configured (${added})"
+          fi
+          ;;
+        NVIDIA)
+          for sel in "${NVIDIA_GPUS[@]}"; do
+            if _incus_add_gpu_physical "gpu${idx}" "$sel"; then
+              added=$((added + 1))
+            else
+              failed=$((failed + 1))
+              msg_warn "Could not add NVIDIA GPU (${sel})"
+            fi
+            idx=$((idx + 1))
+          done
+          if [[ "$added" -eq 0 ]]; then
+            _incus_add_gpu_physical "gpu0" "vendorid=10de" && added=1 || true
+          fi
+          # Optional NVIDIA char nodes (driver interface)
+          local ndev nidx=0
+          for ndev in "${NVIDIA_CHAR_DEVS[@]}"; do
+            local nname
+            nname=$(basename "$ndev" | tr -c 'A-Za-z0-9' '_')
+            incus config device add "${CT_NAME}" "nvidia_${nname}_${nidx}" unix-char "source=${ndev}" "path=${ndev}" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || true
+            nidx=$((nidx + 1))
+          done
+          if [[ "$added" -gt 0 || "$nidx" -gt 0 ]]; then
+            configured_types+=("NVIDIA")
+            msg_ok "NVIDIA GPU passthrough configured (gpu=${added}, char=${nidx})"
+          fi
+          ;;
+        esac
+      done
+
+      # Space separated, so a reader can test for one type without caring how
+      # many others came with it.
+      export GPU_TYPE="${configured_types[*]}"
 
       if [[ -z "${GPU_TYPE:-}" ]]; then
         msg_warn "GPU passthrough requested but no device could be attached (check permissions / incus info --resources)"
@@ -729,7 +860,7 @@ incus_wait_for_network() {
   for ((i = 1; i <= max_wait; i++)); do
     ip_in_lxc=$(incus_ct_exec ip -4 addr show dev eth0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1)
     [[ -z "$ip_in_lxc" ]] && ip_in_lxc=$(incus_ct_exec ip -6 addr show dev eth0 scope global 2>/dev/null | awk '/inet6 / {print $2}' | cut -d/ -f1 | head -n1)
-    [[ -z "$ip_in_lxc" ]] && ip_in_lxc=$(incus list "${CT_NAME}" -c4 -f csv 2>/dev/null | head -1 | awk '{print $1}' | cut -d/ -f1)
+    [[ -z "$ip_in_lxc" ]] && ip_in_lxc=$(incus_instance_field "${CT_NAME}" 4 | tr -d '"' | awk '{print $1}' | cut -d/ -f1)
     [[ -n "$ip_in_lxc" && "$ip_in_lxc" != "-" ]] && break
     sleep 1
   done
@@ -913,16 +1044,30 @@ INNEREOF" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || { msg_error "Failed to push f
     msg_ok "DNS override applied"
   fi
 
-  msg_info "Starting application installation"
+  # Not msg_info: that starts a spinner, and nothing here ever stopped it. The
+  # install script below runs for minutes and prints its own output, including
+  # prompts - the spinner kept redrawing over them, which is why Immich's
+  # machine-learning menu could not be read and the keystroke landed in the
+  # spinner line. A static line, and the script owns the terminal from here.
+  msg_custom "🚀" "${GN}" "Starting application installation"
   local _install_script _run_env lxc_exit=0 install_exit_code=0
   _install_script="$(_cs_fetch_text "install/${var_install}.sh")"
   _run_env="$(_incus_build_install_env)"
   _run_env+=$'\nsource /dev/stdin <<<"$(cat /tmp/incus-functions)"'
+  _run_env+=$'\n'"$(_incus_prompt_shim)"
 
+  # No pty on purpose: under `incus exec -t` apt's tcsetattr fails with EIO and kills the shell.
   set +Eeuo pipefail
   trap - ERR
-  incus_ct_exec bash -c "${_run_env}
-${_install_script}" 2>&1 | tee -a "${LOGFILE:-$INCUS_BUILD_LOG}" || lxc_exit=$?
+  # The trailing touch is a completion sentinel: no install script exits early.
+  incus exec "${CT_NAME}" -- bash -c "${_run_env}
+${_install_script}
+touch /root/.install-${SESSION_ID}.done" 2>&1 |
+    tee >(sed -u 's/.*\r//' >>"${LOGFILE:-$INCUS_BUILD_LOG}")
+  # PIPESTATUS, not $?: the line above turns pipefail off, so $? is tee's
+  # status - always 0. Every non-zero exit from the container was discarded
+  # here, which is why a half-finished install reported success.
+  lxc_exit=${PIPESTATUS[0]}
   set -Eeuo pipefail
   declare -f error_handler &>/dev/null && trap 'error_handler' ERR || true
 
@@ -934,6 +1079,20 @@ ${_install_script}" 2>&1 | tee -a "${LOGFILE:-$INCUS_BUILD_LOG}" || lxc_exit=$?
     fi
   fi
   [[ "$install_exit_code" -eq 0 && "$lxc_exit" -ne 0 ]] && install_exit_code=$lxc_exit
+
+  # A shell killed mid-run - by the kernel, or by the terminal fault the pty
+  # experiment caused - never reaches its ERR trap, so no .failed flag is
+  # written and `incus exec` still reports 0. Without the sentinel that counted
+  # as success, and the operator got a URL pointing at an empty container.
+  if [[ "$install_exit_code" -eq 0 && -n "${SESSION_ID:-}" ]]; then
+    if incus_ct_exec test -f "/root/.install-${SESSION_ID}.done" 2>/dev/null; then
+      incus_ct_exec rm -f "/root/.install-${SESSION_ID}.done" 2>/dev/null || true
+    else
+      msg_error "Install script stopped before it finished - nothing reported it"
+      msg_custom "ℹ️" "${YW}" "Output: incus exec ${CT_NAME} -- tail -50 /root/.install-${SESSION_ID}.log"
+      install_exit_code=1
+    fi
+  fi
   INCUS_LAST_INSTALL_EXIT=$install_exit_code
 }
 
@@ -1235,7 +1394,43 @@ export INSTALL_LOG='/root/.install-${SESSION_ID}.log'
 export REPO_SOURCE='${REPO_SOURCE:-}'
 export REPO_SLUG='${REPO_SLUG:-}'
 export TELEMETRY_PLATFORM='incus'
+export CS_ANIMATION_OK='$([ -t 1 ] && echo 1 || echo 0)'
+export CS_STDIN_OK='$([ -t 0 ] && echo 1 || echo 0)'
 EOF
+}
+
+# bash shows a `read -p` prompt only on a terminal, so without a pty the question was invisible.
+_incus_prompt_shim() {
+  cat <<'SHIMEOF'
+read() {
+  local -a _args=()
+  local _prompt="" _flags
+  while (($#)); do
+    if [[ "$1" == -*p && "$1" != --* && $# -ge 2 ]]; then
+      _flags="${1%p}"
+      [[ "$_flags" != "-" ]] && _args+=("$_flags")
+      _prompt="$2"
+      shift 2
+      continue
+    fi
+    _args+=("$1")
+    shift
+  done
+  [[ -n "$_prompt" ]] || {
+    builtin read "${_args[@]}"
+    return
+  }
+  printf '%s' "$_prompt" >&2
+  if [[ "${CS_STDIN_OK:-0}" != "1" ]]; then
+    printf '%s\n' "(no input available - using the default)" >&2
+    return 0
+  fi
+  builtin read "${_args[@]}" || {
+    printf '\n' >&2
+    return 0
+  }
+}
+SHIMEOF
 }
 
 incus_build_container() {

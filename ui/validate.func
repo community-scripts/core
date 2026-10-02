@@ -61,19 +61,15 @@ get_current_ip() {
 update_motd_ip() {
   MOTD_FILE="/etc/motd"
 
-  # install.func declares this path as a `local`, so nothing carries it out of
-  # the install run -- and an update never goes through install.func at all. It
-  # was read below as if it were a global, which under set -u ended the update
-  # with "PROFILE_FILE: unbound variable". The path is a constant, so name it
-  # here the way MOTD_FILE is, while still honouring an inherited value.
+  # install.func declares this as a `local`, and an update never goes through
+  # install.func at all -- read here as a global it ended the update with
+  # "PROFILE_FILE: unbound variable". A constant, so name it like MOTD_FILE.
   local profile_file="${PROFILE_FILE:-/etc/profile.d/00_lxc-details.sh}"
 
   # Only touch /etc/motd when it is the one motd_ssh wrote. A container created
-  # before that ran still carries the distribution's own file -- on Debian the
-  # paragraph about the programs being free software -- and appending to it left
-  # a stray coloured IP line under that boilerplate after every update, with the
-  # real details following underneath from profile.d. The profile branch below
-  # has always checked whose file it is; this one never did.
+  # before that still carries the distribution's own file, and appending to it
+  # left a stray IP line under that boilerplate. The profile branch below has
+  # always checked whose file it is; this one never did.
   if [ -f "$MOTD_FILE" ] && grep -q "LXC Container" "$MOTD_FILE" 2>/dev/null; then
     # Remove existing IP Address lines to prevent duplication
     sed -i '/IP Address:/d' "$MOTD_FILE"
@@ -86,6 +82,26 @@ update_motd_ip() {
   # Update dynamic LXC details profile if values changed (e.g., after OS upgrade)
   # Only update if file exists and is from community-scripts
   if [ -f "$profile_file" ] && grep -q "community-scripts" "$profile_file" 2>/dev/null; then
+    # Legacy header: re-derives the app name by grepping /usr/bin/update's own
+    # text, which breaks once migrate_update_entrypoint parameterizes that URL.
+    # Collapse it to a static line using the name already resolved there.
+    if grep -q 'APPL_NAME' "$profile_file" 2>/dev/null && grep -q 'LXC Container' "$profile_file" 2>/dev/null; then
+      local legacy_name
+      legacy_name="$(grep -m1 '^export UPDATE_SCRIPT_NAME=' /usr/bin/update 2>/dev/null | cut -d'"' -f2)"
+      if [[ "$legacy_name" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        local display_name="${legacy_name^}"
+        # Raw bytes, not $YW/$CL: unset in a login shell on affected containers.
+        local tmp_header
+        tmp_header="$(mktemp)"
+        printf 'echo -e ""\necho -e "\033[1m%s LXC Container\033[m"\n' "$display_name" >"$tmp_header"
+        sed -i "/APPL_NAME/,/LXC Container/{
+          /LXC Container/r $tmp_header
+          d
+        }" "$profile_file"
+        rm -f "$tmp_header"
+      fi
+    fi
+
     # Get current values
     local current_os="$(grep ^NAME /etc/os-release | cut -d= -f2 | tr -d '"') - Version: $(grep ^VERSION_ID /etc/os-release | cut -d= -f2 | tr -d '"')"
     local current_hostname="$(hostname)"
@@ -94,12 +110,21 @@ update_motd_ip() {
     # a few lines above already handles that and is used for the MOTD line.
     local current_ip="$(get_current_ip)"
 
-    # Update only if values actually changed
-    if ! grep -q "OS:.*$current_os" "$profile_file" 2>/dev/null; then
-      sed -i "s|OS:.*|OS: \${GN}$current_os\${CL}\\\"|" "$profile_file"
+    # $GN/$CL are unset in a login shell, so a line using them never colors.
+    # The staleness checks below only compare the value text, so a line with a
+    # current value but a dead placeholder is never revisited; force it here.
+    local esc dead_color_os dead_color_hostname dead_color_ip
+    esc=$'\033'
+    grep -qE 'OS:.*\$\{GN\}' "$profile_file" 2>/dev/null && dead_color_os=1
+    grep -qE 'Hostname:.*\$\{GN\}' "$profile_file" 2>/dev/null && dead_color_hostname=1
+    grep -qE 'IP Address:.*\$\{GN\}' "$profile_file" 2>/dev/null && dead_color_ip=1
+
+    # Update only if values actually changed (or the color placeholder is dead)
+    if [[ -n "${dead_color_os:-}" ]] || ! grep -q "OS:.*$current_os" "$profile_file" 2>/dev/null; then
+      sed -i "s|OS:.*|OS: ${esc}[1;92m$current_os${esc}[m\\\"|" "$profile_file"
     fi
-    if ! grep -q "Hostname:.*$current_hostname" "$profile_file" 2>/dev/null; then
-      sed -i "s|Hostname:.*|Hostname: \${GN}$current_hostname\${CL}\\\"|" "$profile_file"
+    if [[ -n "${dead_color_hostname:-}" ]] || ! grep -q "Hostname:.*$current_hostname" "$profile_file" 2>/dev/null; then
+      sed -i "s|Hostname:.*|Hostname: ${esc}[1;92m$current_hostname${esc}[m\\\"|" "$profile_file"
     fi
     # motd_ssh writes the IP line as a command substitution so it follows the
     # container. Rewriting it here replaced that with whatever the address was
@@ -108,8 +133,8 @@ update_motd_ip() {
     # fired on every run. Leave a line that computes its own value alone.
     if grep -q 'IP Address:.*\$(' "$profile_file" 2>/dev/null; then
       :
-    elif ! grep -q "IP Address:.*$current_ip" "$profile_file" 2>/dev/null; then
-      sed -i "s|IP Address:.*|IP Address: \${GN}$current_ip\${CL}\\\"|" "$profile_file"
+    elif [[ -n "${dead_color_ip:-}" ]] || ! grep -q "IP Address:.*$current_ip" "$profile_file" 2>/dev/null; then
+      sed -i "s|IP Address:.*|IP Address: ${esc}[1;92m$current_ip${esc}[m\\\"|" "$profile_file"
     fi
   fi
 }
@@ -172,13 +197,10 @@ validate_container_id() {
     return 1
   fi
 
-  # Ask the cluster first.
-  #
-  # /etc/pve/qemu-server and /etc/pve/lxc are symlinks into this node's own
-  # directory under /etc/pve/nodes/, so checking them alone only ever sees
-  # local guests. On a cluster the wizard would then hand out an ID already in
-  # use on another node, and pct create fails long after the choice was made.
-  # Harmless on a single node, which still has the cluster structure.
+  # Ask the cluster first: /etc/pve/qemu-server and /etc/pve/lxc are symlinks
+  # into this node's own directory, so checking them alone only sees local
+  # guests. On a cluster the wizard then hands out an ID already in use
+  # elsewhere and pct create fails long after the choice was made.
   if command -v pvesh &>/dev/null; then
     local cluster_ids
     cluster_ids=$(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null |
@@ -379,6 +401,9 @@ validate_gateway_in_subnet() {
   # Extract IP and CIDR
   local ip="${static_ip%%/*}"
   local cidr="${static_ip##*/}"
+
+  # /31 and /32 have no usable subnet, so an off-subnet gateway is normal there.
+  ((cidr >= 31)) && return 0
 
   # Convert CIDR to netmask bits
   local mask=$((0xFFFFFFFF << (32 - cidr) & 0xFFFFFFFF))

@@ -155,6 +155,7 @@ if ! declare -f explain_exit_code &>/dev/null; then
     191) echo "MongoDB: Authentication failed (bad user/password)" ;;
     192) echo "MongoDB: Database not found" ;;
     193) echo "MongoDB: Fatal query error" ;;
+    199) echo "Engine: exit code not reported" ;;
     200) echo "Proxmox: Failed to create lock file" ;;
     203) echo "Proxmox: Missing CTID variable" ;;
     204) echo "Proxmox: Missing PCT_OSTYPE variable" ;;
@@ -306,9 +307,12 @@ _eh_warn() {
   fi
 }
 
+# msg_custom, not msg_info: msg_info starts a spinner and leaves the line open,
+# and this runs from a trap on its way out. The 127 hint ran into the next line
+# and the spinner outlived the shell, which bash reported as pop_var_context.
 _eh_info() {
-  if declare -f msg_info >/dev/null 2>&1; then
-    msg_info "$1"
+  if declare -f msg_custom >/dev/null 2>&1; then
+    msg_custom "${INFO:-i}" "${YW:-}" "$1"
   else
     echo -e "${YW:-}$1${CL:-}"
   fi
@@ -408,12 +412,10 @@ _eh_print_log_tail() {
 # ------------------------------------------------------------------------------
 # _eh_hint_missing_command() - name what could not be run, and where it comes from
 #
-# Deliberately installs nothing. This runs from a trap, after the fact, with no
-# idea what the script was in the middle of -- and a handler that quietly put
-# the missing tool back would have masked the setup_nodejs defect that deleted
-# pnpm, leaving every other container just as broken with nobody the wiser.
-# Provisioning belongs where the tool is provisioned. What the handler can do is
-# save the user working out which of the words on the line was the missing one.
+# Installs nothing. This runs from a trap, after the fact, and a handler that
+# quietly put the tool back would have masked the setup_nodejs defect that
+# deleted pnpm. Provisioning belongs where the tool is provisioned; naming the
+# missing word is what the handler can usefully do.
 #
 # Arguments: exit_code, command
 # ------------------------------------------------------------------------------
@@ -709,6 +711,9 @@ on_exit() {
 
   # Before anything else: the timings are only useful if they survive a failure.
   declare -f dev_mode_timing_summary >/dev/null 2>&1 && dev_mode_timing_summary
+
+  # Here, because most ct scripts exit inside update_script.
+  declare -f apt_conffile_report >/dev/null 2>&1 && apt_conffile_report
 
   if _is_container_context; then
     if [[ $exit_code -ne 0 ]]; then

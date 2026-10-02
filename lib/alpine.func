@@ -163,10 +163,15 @@ github_api_call() {
     # http_code came out as "404000" -- making the 403 and 404 arms below
     # unreachable. Every failure fell through to the catch-all, and a 404 was
     # retried three times for a URL that was never going to exist.
-    http_code=$(curl -sSL -w "%{http_code}" -o "$output_file" \
+    # Repeated, not shared: forge.func is not loaded on Alpine.
+    local curl_rc
+    http_code=$(curl -sSL --connect-timeout 10 --max-time 60 \
+      -w "%{http_code}" -o "$output_file" \
       -H "Accept: application/vnd.github+json" \
       -H "X-GitHub-Api-Version: 2022-11-28" \
-      "${header_args[@]}" "$url" 2>/dev/null) || true
+      "${header_args[@]}" "$url" 2>/dev/null)
+    curl_rc=$?
+    [ $curl_rc -ne 0 ] && http_code=000
     [ -z "$http_code" ] && http_code=000
 
     case "$http_code" in
@@ -728,6 +733,28 @@ setup_go() {
     return 1
     ;;
   esac
+
+  # A bare major.minor version (e.g. "1.22", as commonly found in go.mod's `go`
+  # directive) has no matching tarball -- go.dev only publishes patch releases
+  # (go1.22.12, not go1.22) -- so resolve it to the latest matching patch first.
+  if [[ "$GO_VERSION" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+    local go_major="${BASH_REMATCH[1]}" go_minor="${BASH_REMATCH[2]}"
+    need_tool jq || return 1
+    local go_releases go_patch
+    go_releases=$(curl -fsSL "https://go.dev/dl/?mode=json&include=all" 2>/dev/null) || true
+    go_patch=$(printf '%s' "$go_releases" | jq -r --arg maj "$go_major" --arg min "$go_minor" '
+      [.[] | select(.stable == true) | .version
+       | capture("^go(?<maj>[0-9]+)\\.(?<min>[0-9]+)\\.(?<patch>[0-9]+)$")
+       | select(.maj == $maj and .min == $min)
+       | (.patch | tonumber)]
+      | max // empty' 2>/dev/null)
+    if [[ -z "$go_patch" ]]; then
+      msg_error "Could not resolve latest patch release for Go ${GO_VERSION}.x"
+      return 1
+    fi
+    GO_VERSION="${go_major}.${go_minor}.${go_patch}"
+  fi
+
   TARBALL="go${GO_VERSION}.linux-${ARCH}.tar.gz"
   URL="https://go.dev/dl/${TARBALL}"
   msg_info "Setup Go $GO_VERSION (tarball)"

@@ -13,7 +13,7 @@
 [[ -n "${_INCUS_BUILD_FUNC_LOADED:-}" ]] && return
 _INCUS_BUILD_FUNC_LOADED=1
 
-INCUS_COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+INCUS_COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}"
 
 # Mark update-mode when we are inside an Incus container (not the host daemon).
 if declare -f is_incus_container >/dev/null 2>&1 && is_incus_container; then
@@ -22,10 +22,8 @@ elif [[ -S /dev/incus/sock ]] || [[ -f /etc/profile.d/incus-motd.sh ]] || [[ -f 
   _INCUS_INSIDE_CONTAINER=1
 fi
 
-# Retry options for engine fetches. Repeated in each file that bootstraps
-# itself over the network rather than shared, because there is nowhere to put
-# a shared copy that does not itself need downloading first. core/build.func
-# carries the full reasoning.
+# Repeated per file rather than shared: there is nowhere to put a shared copy
+# that does not itself need downloading first. See core/build.func.
 _CS_CURL_RETRY=(--retry 3 --retry-delay 1 --retry-connrefused --connect-timeout 10)
 
 # Prefer the dispatcher's resolver; the fallback must use the ENGINE base,
@@ -105,37 +103,10 @@ incus_variables() {
 # ==============================================================================
 # SECTION 2: NETWORK HELPERS
 # ==============================================================================
-
-incus_pick_default_network() {
-  local nets
-  nets=$(incus network list -f csv,noheader 2>/dev/null | cut -d, -f1 | sed '/^\s*$/d' | grep -v '^lo$' || true)
-  [[ -z "$nets" ]] && { echo "incusbr0"; return; }
-
-  local n cfg
-  while IFS= read -r n; do
-    [[ -z "$n" || "$n" == "incusbr0" ]] && continue
-    cfg=$(incus network show "$n" 2>/dev/null || true)
-    if echo "$cfg" | grep -qE '^type:\s*(physical|macvlan|sriov)$'; then
-      echo "$n"
-      return
-    fi
-  done <<<"$nets"
-
-  while IFS= read -r n; do
-    [[ -z "$n" || "$n" == "incusbr0" ]] && continue
-    cfg=$(incus network show "$n" 2>/dev/null || true)
-    if echo "$cfg" | grep -q '^type:\s*bridge$' &&
-      ! echo "$cfg" | grep -qE 'ipv4\.nat:\s*"true"|ipv6\.nat:\s*"true"'; then
-      echo "$n"
-      return
-    fi
-  done <<<"$nets"
-
-  while IFS= read -r n; do
-    [[ -n "$n" && "$n" != "incusbr0" ]] && { echo "$n"; return; }
-  done <<<"$nets"
-  echo "incusbr0"
-}
+#
+# incus_pick_default_network / incus_network_candidates now live in
+# incus/core.func, which the VM path loads too - the VM scripts had the same
+# NAT-bridge default this heuristic exists to correct.
 
 incus_delete_container() {
   local name="${1:-$CT_NAME}"
@@ -213,15 +184,41 @@ get_next_container_identifier() {
 populate_advanced_bridge_menu() {
   BRIDGES=""
   BRIDGE_MENU_OPTIONS=()
-  local nets n
+  local nets n cfg type up label
   nets=$(incus network list -f csv,noheader 2>/dev/null | cut -d, -f1 | sed '/^\s*$/d' | grep -v '^lo$' || true)
   while IFS= read -r n; do
     [[ -z "$n" ]] && continue
+    cfg=$(LC_ALL=C incus network show "$n" 2>/dev/null || true)
+    type=$(awk '/^type:/ {print $2; exit}' <<<"$cfg")
+
+    # The default picker has refused physical interfaces for a while, but this
+    # menu offered them anyway, all labelled alike. Attaching one hands the
+    # host's NIC to the container and takes the host off the network, so it is
+    # not a choice worth presenting.
+    case "$type" in
+    bridge | ovn | macvlan) ;;
+    *) continue ;;
+    esac
+
+    # Every entry used to read "Incus network", which told nobody that
+    # incusbr0 is NAT and unreachable from their LAN. Say which is which.
+    if grep -qE '^managed:[[:space:]]*true$' <<<"$cfg"; then
+      if grep -qE '^[[:space:]]+ipv[46]\.nat:[[:space:]]*"?true"?' <<<"$cfg"; then
+        label="NAT - not reachable from your LAN"
+      else
+        label="Incus network"
+      fi
+    elif up=$(_incus_bridge_uplink "$n"); then
+      label="LAN bridge (uplink: ${up})"
+    else
+      label="private bridge (no uplink)"
+    fi
+
     BRIDGES="${n}"$'\n'"${BRIDGES}"
-    BRIDGE_MENU_OPTIONS+=("$n" "Incus network")
+    BRIDGE_MENU_OPTIONS+=("$n" "$label")
   done <<<"$nets"
   BRIDGES=$(echo "$BRIDGES" | grep -v '^\s*$' | sort -u)
-  [[ -z "$BRIDGES" ]] && BRIDGES="incusbr0"$'\n' && BRIDGE_MENU_OPTIONS=("incusbr0" "Incus network")
+  [[ -z "$BRIDGES" ]] && BRIDGES="incusbr0"$'\n' && BRIDGE_MENU_OPTIONS=("incusbr0" "NAT - not reachable from your LAN")
 }
 
 _incus_sync_from_pve_settings() {
@@ -274,7 +271,11 @@ _incus_sync_from_pve_settings() {
   case "${IPV6_METHOD:-auto}" in
   auto | dhcp) IPV6_ADDR="auto" ;;
   static) IPV6_ADDR="${IPV6_ADDR:-}" ;;
-  none | disable) IPV6_ADDR="none"; IPV6_METHOD="none" ;;
+  # Keep the method: "none" means do not assign one, "disable" means actively
+  # turn IPv6 off in the container. Collapsing both to "none" meant verb_ip6()
+  # in tools.func, which only fires on "disable", never ran on Incus - so
+  # "disable" left the container with a working IPv6 address.
+  none | disable) IPV6_ADDR="none" ;;
   esac
 }
 
@@ -591,7 +592,7 @@ build_container() {
 description() {
   CTID="${CT_NAME:-$CTID}"
   IP=$(incus exec "${CT_NAME}" -- hostname -I 2>/dev/null | awk '{print $1}')
-  [[ -z "$IP" ]] && IP=$(incus list "${CT_NAME}" -c4 -f csv 2>/dev/null | head -1 | cut -d' ' -f1)
+  [[ -z "$IP" ]] && IP=$(incus_instance_field "${CT_NAME}" 4 | tr -d '"' | cut -d' ' -f1)
   export IP
   incus config set "${CT_NAME}" user.description "${APP} LXC (community-scripts)" 2>/dev/null || true
   incus config set "${CT_NAME}" user.community-scripts "1" 2>/dev/null || true

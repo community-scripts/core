@@ -30,4 +30,18 @@ thinner copy of the same eight functions, so every fix had to be made twice and
 `detect_lxc_platform` and the predicates around it (`is_incus_host`,
 `is_incus_container`, `is_incus_lxc_backend`). This is what
 [`core/build.func`](../core/build.func) uses to decide which backend to load:
-a Proxmox VE host, an Incus host, or already inside a container.
+a Proxmox VE host, an Incus host, or already inside a container. It answers
+`pve`, `incus`, `incus-container` or `container`; [loading.md](loading.md#platform-detection)
+covers the order the tests run in and why.
+
+Two supporting pieces live here as well:
+
+- `_lxc_incus_bin` and `ensure_incus_on_path` — the `incus` client is not always
+  on `PATH`, and detection finding it is not enough, because every later `incus`
+  call in the engine has to resolve too.
+- `community_scripts_dir` — the writable state directory for defaults,
+  diagnostics, logs and the header cache. `/usr/local/community-scripts` for
+  root, or wherever that path is writable; `~/.config/community-scripts`
+  otherwise; `COMMUNITY_SCRIPTS_STATE_DIR` overrides both. It sits here rather
+  than in `core/` because the non-root case is an Incus one — a Proxmox VE host
+  is always root, an Incus host frequently is not.

@@ -49,6 +49,8 @@ trusted.
 - **New files go in the folder that matches what they are.** Nothing resolves by
   basename, so `incus/tools.func` and `lib/tools.func` are both fine.
 - **Run `shellcheck` and `shfmt`** on the files you touched.
+  `.github/workflows/shellcheck.yml` blocks only on ShellCheck errors;
+  warnings are report-only and formatting is not checked.
 
 ## Line endings
 

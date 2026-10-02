@@ -11,13 +11,18 @@
 # execution helpers used throughout the Community-Scripts ecosystem.
 #
 # Usage:
-#   source <(curl -fsSL https://git.community-scripts.org/.../core.func)
+#   source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/core/main/core/core.func)
 #   load_functions
 #
 # ==============================================================================
 
 [[ -n "${_CORE_FUNC_LOADED:-}" ]] && return
 _CORE_FUNC_LOADED=1
+
+if [[ -z "${HOME:-}" ]]; then
+  HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
+  export HOME="${HOME:-/root}"
+fi
 
 # ==============================================================================
 # SECTION 1: INITIALIZATION & SETUP
@@ -110,6 +115,7 @@ icons() {
   DNSOK="✔️ "
   DNSFAIL="${TAB}✖️${TAB}"
   INFO="${TAB}💡${TAB}${CL}"
+  OVERRIDE="${TAB}🔀${TAB}${CL}"
   OS="${TAB}🖥️${TAB}${CL}"
   OSVERSION="${TAB}🌟${TAB}${CL}"
   CONTAINERTYPE="${TAB}📦${TAB}${CL}"
@@ -136,6 +142,39 @@ icons() {
   HOURGLASS="${TAB}⏳${TAB}"
 }
 
+# Re-provision a toolchain the container was built with but no longer has.
+#
+# Every setup_* records what it installed under /var/cache/app-versions. When the
+# binary that record promises is gone, a script that compiles on update dies at
+# exit 127 with its service already stopped. 144 ct scripts call a toolchain in
+# their update path without ensuring it first, so this belongs here.
+ensure_recorded_toolchains() {
+  local cache=/var/cache/app-versions
+  [[ -d "$cache" ]] || return 0
+
+  local rec tool bin fn
+  for rec in "$cache"/*_version.txt; do
+    [[ -r "$rec" ]] || continue
+    tool="$(basename "$rec")"
+    tool="${tool%_version.txt}"
+    case "$tool" in
+    rust) bin=cargo fn=setup_rust ;;
+    go) bin=go fn=setup_go ;;
+    nodejs) bin=node fn=setup_nodejs ;;
+    uv) bin=uv fn=setup_uv ;;
+    composer) bin=composer fn=setup_composer ;;
+    yq) bin=yq fn=setup_yq ;;
+    ruby) bin=ruby fn=setup_ruby ;;
+    *) continue ;;
+    esac
+    command -v "$bin" >/dev/null 2>&1 && continue
+    declare -f "$fn" >/dev/null 2>&1 || continue
+    msg_warn "${bin} is recorded for this container but missing - reinstalling"
+    "$fn" || msg_error "Could not restore ${bin}"
+  done
+  return 0
+}
+
 # ------------------------------------------------------------------------------
 # ensure_profile_loaded()
 #
@@ -149,25 +188,24 @@ ensure_profile_loaded() {
   [[ -n "${_PROFILE_LOADED:-}" ]] && return
   command -v pveversion &>/dev/null && return
 
-  # Source all profile.d scripts to ensure PATH is complete.
-  #
-  # Output is discarded because these are sourced for their PATH side effects,
-  # not to be seen. 00_lxc-details.sh in particular starts with a clear-screen
-  # escape and then echoes the whole login banner, so sourcing it mid-update
-  # painted the MOTD over the screen a moment before header_info wiped it again.
-  # Redirecting also makes its own `[ -t 1 ]` guard false, so the escape is
-  # skipped rather than merely swallowed.
-  # A profile script that ends on a false conditional -- Arch ships several,
-  # debuginfod.sh and perlbin.sh among them -- makes `source` return that
-  # status. As the final command of an && list it is not exempt from errexit, so
-  # it took the whole update with it. Nothing went wrong: these are sourced for
-  # their PATH side effects, and what their last line evaluated to is not our
-  # business.
+  # Sourced for their PATH side effects, output discarded: 00_lxc-details.sh
+  # starts with a clear-screen escape and echoes the whole login banner, and the
+  # redirect also makes its own `[ -t 1 ]` guard false. A script ending on a
+  # false conditional makes `source` return that status, which as the final
+  # command of an && list is not exempt from errexit -- that took whole updates
+  # with it.
   if [[ -d /etc/profile.d ]]; then
     for script in /etc/profile.d/*.sh; do
       [[ -r "$script" ]] || continue
       source "$script" >/dev/null 2>&1 || true
     done
+  fi
+
+  # rustup records $HOME/.cargo/bin here and nowhere else, and /usr/bin/update
+  # runs a non-login shell -- so an update that compiles died on "cargo: command
+  # not found" with cargo installed and fine.
+  if [[ -r "${HOME:-/root}/.profile" ]]; then
+    source "${HOME:-/root}/.profile" >/dev/null 2>&1 || true
   fi
 
   # Also ensure /usr/local/bin is in PATH (common install location)
@@ -176,6 +214,136 @@ ensure_profile_loaded() {
   fi
 
   export _PROFILE_LOADED=1
+}
+
+# The retired Gitea mirror; GitHub serves the same repos. Mirrored in
+# misc/update.sh, which cannot source this file.
+# ------------------------------------------------------------------------------
+_cs_live_base() {
+  local u="${1%/}"
+  case "$u" in
+  *//git.community-scripts.org/*)
+    u="${u#*//git.community-scripts.org/}"
+    u="${u/\/raw\/branch\//\/}"
+    u="${u/\/raw\/tag\//\/}"
+    u="${u/\/raw\/commit\//\/}"
+    printf 'https://raw.githubusercontent.com/%s' "$u"
+    ;;
+  *) printf '%s' "$u" ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------
+# write_update_entrypoint()
+#
+# Generates /usr/bin/update as a small self-hosting bootstrap. Instead of pulling
+# the app script directly (which fails with a raw 404 once a script is removed
+# upstream), the bootstrap pulls the shared update helper (misc/update.sh). The
+# helper asks the website whether this app can still be updated before touching
+# anything, and explains a removal instead of erroring out.
+#
+# Called at install time and refreshed on every update (see
+# migrate_update_entrypoint), so containers move onto the new mechanism the next
+# time they update — no per-container migration step needed.
+#
+#   $1 = script slug (for the website status lookup, e.g. "plex")
+#   $2 = update script name (the ct/<name>.sh to pull, e.g. "plex" or an OS name)
+#   $3 = (optional) script base URL; defaults to COMMUNITY_SCRIPTS_URL. Passing it
+#        explicitly lets migration preserve the source a container was built from.
+# ------------------------------------------------------------------------------
+write_update_entrypoint() {
+  local slug="${1:-}" name="${2:-}" base_override="${3:-}"
+  # Without a script name there is nothing to pull; leave any existing entry as-is.
+  [[ -z "$name" ]] && return 0
+
+  local base core_url website
+  base="$(_cs_live_base "${base_override:-${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}}")"
+  core_url="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
+  website="${COMMUNITY_SCRIPTS_WEBSITE_URL:-https://community-scripts.org}"
+
+  # Temp file in the same directory, then an atomic mv. /usr/bin/update is
+  # usually the script currently running, and it grows from a one-liner to this.
+  # Overwriting in place makes the running shell resume at its old byte offset,
+  # now inside longer content, and execute garbage. mv gives the new content a
+  # fresh inode and the running shell reads the old one to a clean EOF.
+  local tmp
+  tmp="$(mktemp /usr/bin/.update.XXXXXX 2>/dev/null)" || tmp="/usr/bin/.update.tmp.$$"
+
+  # First heredoc is unquoted: the resolved values are baked in as the exports the
+  # bootstrap then reads. Second heredoc is quoted so its ${...} stay literal.
+  cat >"$tmp" <<EOF
+#!/usr/bin/env bash
+# Community-Scripts update entrypoint (generated - do not edit by hand).
+# Regenerated on install and on every successful update.
+export SCRIPT_SLUG="${slug}"
+export UPDATE_SCRIPT_NAME="${name}"
+export COMMUNITY_SCRIPTS_URL="${base}"
+export COMMUNITY_SCRIPTS_CORE_URL="${core_url}"
+export COMMUNITY_SCRIPTS_WEBSITE_URL="${website}"
+EOF
+  cat >>"$tmp" <<'EOF'
+# Pull the shared helper; it decides whether this app can still be updated. If it
+# cannot be fetched, fall back to the legacy direct pull so `update` still works.
+_cs_helper="$(curl -fsSL --connect-timeout 10 "${COMMUNITY_SCRIPTS_CORE_URL}/misc/update.sh" 2>/dev/null)"
+if [[ -n "$_cs_helper" ]]; then
+  bash -c "$_cs_helper"
+else
+  echo "Update helper unavailable - falling back to direct update."
+  bash -c "$(curl -fsSL "${COMMUNITY_SCRIPTS_URL}/ct/${UPDATE_SCRIPT_NAME}.sh")"
+fi
+EOF
+  chmod +x "$tmp"
+  mv -f "$tmp" /usr/bin/update
+}
+
+# ------------------------------------------------------------------------------
+# migrate_update_entrypoint()
+#
+# Moves containers still carrying the old direct-pull /usr/bin/update onto the new
+# bootstrap. Safe to call on every update. It is conservative: if the entrypoint
+# already uses the helper it does nothing, and it preserves the exact script base
+# URL the container was built from by reading it out of the legacy entrypoint,
+# rather than guessing from the current environment.
+# ------------------------------------------------------------------------------
+migrate_update_entrypoint() {
+  # Nothing to do only if it is on the helper, points somewhere that still
+  # serves scripts, and records a usable name.
+  if [[ -f /usr/bin/update ]] &&
+    grep -q "misc/update.sh" /usr/bin/update 2>/dev/null &&
+    ! grep -q "git.community-scripts.org" /usr/bin/update 2>/dev/null &&
+    grep -qE '^export UPDATE_SCRIPT_NAME="[a-zA-Z0-9._-]+"$' /usr/bin/update 2>/dev/null; then
+    return 0
+  fi
+
+  local slug name base=""
+  slug="${SCRIPT_SLUG:-${NSAPP:-${app:-}}}"
+  slug="$(echo "$slug" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+
+  # Prefer the base + script name recorded in the legacy entrypoint, so the
+  # migrated container keeps pulling from the same repo it always did.
+  if [[ -f /usr/bin/update ]]; then
+    local legacy
+    # No match is normal; grep exiting 1 must not trip the ERR trap.
+    legacy="$(grep -oE 'https?://[^"]+/ct/[^"]+\.sh' /usr/bin/update 2>/dev/null | head -1 || true)"
+    if [[ -n "$legacy" ]]; then
+      base="${legacy%/ct/*}"
+      name="$(basename "${legacy%.sh}")"
+    else
+      # Helper format has no literal url, only the export.
+      name="$(grep -m1 '^export UPDATE_SCRIPT_NAME=' /usr/bin/update 2>/dev/null | cut -d'"' -f2 || true)"
+    fi
+  fi
+
+  base="$(_cs_live_base "$base")"
+
+  # Anything that is not a slug is a damaged entrypoint, not a name.
+  [[ "${name:-}" =~ ^[a-zA-Z0-9._-]+$ ]] || name=""
+
+  # Fall back to the update environment when the legacy line could not be parsed.
+  [[ -z "${name:-}" ]] && name="${NSAPP:-${app:-${var_os:-}}}"
+  [[ -z "$name" ]] && return 0
+
+  write_update_entrypoint "$slug" "$name" "$base" 2>/dev/null || true
 }
 
 # ------------------------------------------------------------------------------
@@ -376,6 +544,82 @@ _pve_version() {
   cat "$cache" 2>/dev/null
 }
 
+# PVEVERSION carries the product name on Incus ("Incus 7.3") because telemetry
+# reports it verbatim as pve_version. A fixed "PVE Version" prefix therefore
+# printed "PVE Version Incus 7.3" on Incus hosts.
+_cs_host_version_line() {
+  local v="${PVEVERSION:-unknown}"
+  if [[ "$v" == Incus* ]]; then
+    v="${v#Incus}"
+    v="${v# }"
+    printf 'Incus Version %s' "${v:-unknown}"
+  else
+    printf 'PVE Version %s' "$v"
+  fi
+}
+
+# "<what> <kind>: owner/repo@ref" for a raw base url. The kind is the part worth
+# reading: branch for the official repo on another ref, fork for somebody else's
+# copy, source when the host is not one we can take apart.
+_cs_ref_line() {
+  local what="$1" url="${2%/}" official="$3" rest owner repo ref kind
+  rest="${url#*://}"
+  case "$rest" in
+  raw.githubusercontent.com/*) rest="${rest#raw.githubusercontent.com/}" ;;
+  git.community-scripts.org/*) rest="${rest#git.community-scripts.org/}" ;;
+  *)
+    printf '%s source: %s' "$what" "$url"
+    return 0
+    ;;
+  esac
+
+  # read gives the remainder to the last name, so a ref with slashes survives:
+  # copilot/revert-aurral-to-node22 is one ref, not two path segments.
+  IFS=/ read -r owner repo ref <<<"$rest"
+  if [[ -z "$owner" || -z "$repo" || -z "$ref" ]]; then
+    printf '%s source: %s' "$what" "$url"
+    return 0
+  fi
+
+  kind=fork
+  case " $official " in
+  *" $owner/$repo "*) kind=branch ;;
+  esac
+  printf '%s %s: %s/%s@%s' "$what" "$kind" "$owner" "$repo" "$ref"
+}
+
+# Which engine this run is using, when it is not the default one. Prints nothing
+# otherwise, so the header only grows a line when there is something to say.
+_cs_engine_ref_line() {
+  local url="${COMMUNITY_SCRIPTS_CORE_URL:-}"
+  # The literal fallback matters: build.func exports COMMUNITY_SCRIPTS_CORE_URL
+  # but not _CS_CORE_DEFAULT_URL, so a child process sees the url with nothing
+  # to compare it against and every ordinary run looks like an override.
+  local default="${_CS_CORE_DEFAULT_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
+  url="${url%/}"
+  [[ -n "$url" && "$url" != "${default%/}" ]] || return 0
+  _cs_ref_line Engine "$url" "community-scripts/core"
+}
+
+# The same for the scripts, which is the other half of "what am I running" and
+# the one people override more often.
+_cs_scripts_ref_line() {
+  local url="${COMMUNITY_SCRIPTS_URL:-}" d
+  url="${url%/}"
+  [[ -n "$url" ]] || return 0
+
+  # Both official mains count as default, not just one literal: _CS_DEFAULT_URL
+  # is not exported either, and ProxmoxVED scripts pin their own.
+  for d in "${_CS_DEFAULT_URL:-}" \
+    https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main \
+    https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main; do
+    [[ -n "$d" && "$url" == "${d%/}" ]] && return 0
+  done
+
+  _cs_ref_line Scripts "$url" \
+    "community-scripts/ProxmoxVE community-scripts/ProxmoxVED"
+}
+
 _pveam_available() {
   local dir cache
   dir="$(_cs_runtime_cache_dir)" || {
@@ -474,12 +718,13 @@ arch_check() {
     echo -e "${TAB}If you try it, please report the outcome - success or failure:"
     echo -e "${TAB}${BGN}https://github.com/community-scripts/ProxmoxVED/issues${CL}"
     echo ""
-    if [[ ! -t 0 ]]; then
+    local arm64_src
+    if ! arm64_src="$(_cs_stdin_source)"; then
       msg_error "Not running interactively - refusing to guess on arm64. Set var_arm64=yes to override."
       sleep 2
       exit 106
     fi
-    read -r -p "${TAB}Continue anyway? (y/N): " arm64_prompt </dev/tty
+    read -r -p "${TAB}Continue anyway? (y/N): " arm64_prompt <"$arm64_src"
     if [[ "${arm64_prompt,,}" =~ ^(y|yes)$ ]]; then
       msg_ok "Continuing on arm64 - thanks for testing"
       return 0
@@ -714,13 +959,32 @@ silent() {
 # - Runs in infinite loop until killed by stop_spinner()
 # - Uses color_spinner() colors for output
 # ------------------------------------------------------------------------------
+_msg_fit() {
+  local msg="$1" reserved="${2:-4}" size cols max
+  size="$(stty size 2>/dev/null </dev/tty)" || size=""
+  cols="${size##* }"
+  [[ "$cols" =~ ^[1-9][0-9]*$ ]] || cols="${COLUMNS:-}"
+  if [[ ! "$cols" =~ ^[1-9][0-9]*$ ]]; then
+    printf '%s' "$msg"
+    return 0
+  fi
+  max=$((cols - reserved))
+  ((max < 10)) && max=10
+  if ((${#msg} > max)); then
+    printf '%s…' "${msg:0:max-1}"
+  else
+    printf '%s' "$msg"
+  fi
+}
+
 spinner() {
   # Reset bash's command hash table — package upgrades (dnf/pacman) may have
   # moved /usr/bin <-> /usr/sbin during /usr-merge, leaving the parent shell
   # with stale cached paths that get inherited by this background subshell.
   hash -r 2>/dev/null || true
   local chars=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
-  local msg="${SPINNER_MSG:-Processing...}"
+  local msg
+  msg="$(_msg_fit "${SPINNER_MSG:-Processing...}" 4)"
   local i=0
   while true; do
     local index=$((i++ % ${#chars[@]}))
@@ -1085,13 +1349,23 @@ get_header() {
       return 0
     fi
 
-    local cached="/usr/local/community-scripts/headers/${rel}"
+    # Not the hardcoded /usr/local path: a non-root operator on an Incus host
+    # cannot create it, so the fetch below had nowhere to write and every
+    # banner silently vanished. community_scripts_dir() already falls back to
+    # ~/.config, which is where that run's logs were going anyway.
+    local cache_root
+    cache_root="$(declare -f community_scripts_dir >/dev/null 2>&1 && community_scripts_dir || echo /usr/local/community-scripts)"
+    local cached="${cache_root}/headers/${rel}"
     if [[ -s "$cached" ]]; then
       cat "$cached" 2>/dev/null || true
       return 0
     fi
 
-    mkdir -p "$(dirname "$cached")"
+    if ! mkdir -p "$(dirname "$cached")" 2>/dev/null; then
+      # Nothing writable anywhere: still draw the banner, just uncached.
+      curl -fsSL --connect-timeout 5 --max-time 15 "${core_url}/headers/${rel}" 2>/dev/null && return 0
+      continue
+    fi
     # No retry here, unlike every other engine fetch: this one only decides
     # whether an ASCII banner appears, and the loop has several candidates to
     # get through. It does need a bound, though — without one a black-holed
@@ -1145,7 +1419,7 @@ ensure_tput() {
     if grep -qi 'alpine' /etc/os-release; then
       apk add --no-cache ncurses >/dev/null 2>&1
     elif command -v apt-get >/dev/null 2>&1; then
-      apt-get update -qq >/dev/null
+      apt-get update -qq >/dev/null 2>&1 || true
       apt-get install -y -qq ncurses-bin >/dev/null 2>&1
     fi
   fi
@@ -1262,13 +1536,12 @@ EOF
 # ------------------------------------------------------------------------------
 is_verbose_mode() {
   local verbose="${VERBOSE:-${var_verbose:-no}}"
-  local tty_status
-  if [[ -t 2 ]]; then
-    tty_status="interactive"
-  else
-    tty_status="not-a-tty"
-  fi
-  [[ "$verbose" != "no" || ! -t 2 ]]
+  [[ "$verbose" != "no" ]] && return 0
+  # A non-terminal stderr normally means an animation would be invisible. That
+  # is wrong inside a container: `incus exec` proxies the stream to the
+  # operator's terminal, so the frames do arrive. The host sets
+  # CS_ANIMATION_OK when a terminal is on the far end, and only then.
+  [[ ! -t 2 && "${CS_ANIMATION_OK:-0}" != "1" ]]
 }
 
 # ------------------------------------------------------------------------------
@@ -1368,6 +1641,17 @@ show_missing_values_warning() {
   return 0
 }
 
+# Where to read an answer from, or failure when nobody can answer. Incus has no /dev/tty.
+_cs_stdin_source() {
+  if : 2>/dev/null </dev/tty; then
+    printf '/dev/tty'
+  elif [[ -t 0 || "${CS_STDIN_OK:-0}" == "1" ]]; then
+    printf '/dev/stdin'
+  else
+    return 1
+  fi
+}
+
 # ------------------------------------------------------------------------------
 # prompt_confirm()
 #
@@ -1421,9 +1705,8 @@ prompt_confirm() {
     fi
   fi
 
-  # Check if running in a TTY
-  if [[ ! -t 0 ]]; then
-    # Not a TTY, use default
+  local prompt_src
+  if ! prompt_src="$(_cs_stdin_source)"; then
     if [[ "$default" == "y" ]]; then
       return 0
     else
@@ -1434,7 +1717,7 @@ prompt_confirm() {
   # Interactive prompt with timeout
   echo -en "${YW}${message} ${hint} (auto-${default} in ${timeout}s): ${CL}"
 
-  if read -t "$timeout" -r response </dev/tty; then
+  if read -t "$timeout" -r response <"$prompt_src"; then
     # User provided input
     response="${response,,}" # lowercase
     case "$response" in
@@ -1701,8 +1984,12 @@ prompt_select() {
     return 0
   fi
 
-  # Check if running in a TTY
-  if [[ ! -t 0 ]]; then
+  # The read below takes /dev/tty, not stdin, so a piped or exhausted stdin says
+  # nothing about whether the operator can answer. Testing -t 0 here meant that
+  # `curl ... | bash` silently took the default without ever printing the menu --
+  # which on a mixed-GPU host handed the container the iGPU and never said so.
+  # Ask whenever a terminal is reachable at all.
+  if [[ ! -r /dev/tty ]]; then
     echo "${options[$((default - 1))]}"
     return 0
   fi
@@ -1928,9 +2215,10 @@ cleanup_lxc() {
     $STD go clean -cache 2>/dev/null || true
   fi
 
-  # Rust (only registry cache, not build artifacts)
+  # Rust (registry cache and toolchains a build pulled in, not build artifacts)
   if command -v cargo &>/dev/null; then
     rm -rf /root/.cargo/registry/cache /root/.cargo/.package-cache 2>/dev/null || true
+    declare -f rust_prune_toolchains >/dev/null 2>&1 && rust_prune_toolchains
   fi
 
   # Ruby
@@ -1945,8 +2233,10 @@ cleanup_lxc() {
 
   msg_ok "Cleaned"
 
-  # Send progress ping if available (defined in install.func)
-  if declare -f post_progress_to_api &>/dev/null; then
+  # Installs only. An update reaches here through update_script without ever
+  # calling post_to_api, so nothing would follow the ping with a terminal
+  # status and the row stayed "configuring" for good.
+  if [[ -n "${POST_TO_API_DONE:-}" ]] && declare -f post_progress_to_api &>/dev/null; then
     post_progress_to_api
   fi
 }
@@ -2095,32 +2385,36 @@ function get_lxc_ip() {
 # apt_update_safe()
 #
 # - Runs apt-get update without letting a partial failure abort the caller
-# - Disarms errexit and the ERR trap for the duration, then restores them
-# - Warns on a non-zero exit and hints at the enterprise-repo 401/403 case
+# - Retries up to three times; a mirror hiccup is the usual cause
+# - Leaves the caller's shell options and ERR trap untouched
+# - Warns after the last attempt and hints at the enterprise-repo 401/403 case
 # ------------------------------------------------------------------------------
 apt_update_safe() {
-  local logfile
+  local logfile rc=0 attempt from
   logfile="$(get_active_logfile)"
 
-  local _restore_errexit=false
-  [[ "$-" == *e* ]] && _restore_errexit=true
-
-  set +Eeuo pipefail
-  trap - ERR
-
-  apt-get update >>"$logfile" 2>&1
-  local rc=$?
-
-  if $_restore_errexit; then
-    set -Eeuo pipefail
-    trap 'error_handler' ERR
-  fi
+  # `|| rc=$?` is exempt from errexit and the ERR trap, so nothing here has to
+  # touch the caller's shell options.
+  for attempt in 1 2 3; do
+    from=$(($(wc -l <"$logfile" 2>/dev/null || echo 0) + 1))
+    rc=0
+    apt-get update >>"$logfile" 2>&1 || rc=$?
+    if [[ "${VERBOSE:-no}" == "yes" ]]; then
+      tail -n "+${from}" "$logfile" 2>/dev/null
+    fi
+    if ((rc == 0)); then
+      return 0
+    fi
+    if ((attempt < 3)); then
+      sleep $((attempt * 5))
+    fi
+  done
 
   if [[ $rc -ne 0 ]]; then
-    msg_warn "apt-get update exited with code ${rc} — some repositories may have failed."
+    msg_warn "apt-get update exited with code ${rc} after 3 attempts — some repositories may have failed."
 
     # Check log for common 401/403 enterprise repo issues
-    if grep -qiE '401\s*Unauthorized|403\s*Forbidden|enterprise\.proxmox\.com' "$logfile" 2>/dev/null; then
+    if tail -n "+${from}" "$logfile" 2>/dev/null | grep -qiE '401\s*Unauthorized|403\s*Forbidden|enterprise\.proxmox\.com'; then
       echo -e "${TAB}${INFO} ${YWB}Hint: Proxmox enterprise repository returned an auth error.${CL}"
       echo -e "${TAB}       If you don't have a subscription, you can disable the enterprise"
       echo -e "${TAB}       repo and use the no-subscription repo instead."
@@ -2130,6 +2424,51 @@ apt_update_safe() {
     echo ""
   fi
 
+  return 0
+}
+
+# dpkg's conffile prompt has no tty during an update and takes the whole run
+# with it. APT_CONFIG is read after apt.conf.d and dies with the process, so an
+# early exit cannot leave a drop-in behind.
+_cs_conffile_list() {
+  # 2>/dev/null hides find's message about an unreadable /etc/credstore, not its
+  # exit status, which pipefail then passes on as if sort had failed.
+  { find "${_CS_CONFFILE_ROOT:-/etc}" -maxdepth 6 \( -name '*.dpkg-dist' -o -name '*.dpkg-new' \) 2>/dev/null || true; } | sort
+}
+
+apt_conffile_guard() {
+  command -v apt-get >/dev/null 2>&1 || return 0
+  [[ -n "${_CS_CONFFILE_GUARD:-}" ]] && return 0
+
+  local conf
+  conf="$(mktemp 2>/dev/null)" || return 0
+  printf 'Dpkg::Options { "--force-confdef"; "--force-confold"; };\n' >"$conf" 2>/dev/null || {
+    rm -f "$conf"
+    return 0
+  }
+
+  export APT_CONFIG="$conf"
+  _CS_CONFFILE_GUARD="$conf"
+  _CS_CONFFILE_BASELINE="$(_cs_conffile_list)"
+  return 0
+}
+
+apt_conffile_report() {
+  [[ -n "${_CS_CONFFILE_GUARD:-}" ]] || return 0
+
+  local added
+  added="$(comm -13 <(printf '%s\n' "${_CS_CONFFILE_BASELINE:-}") <(_cs_conffile_list) 2>/dev/null)"
+  rm -f "$_CS_CONFFILE_GUARD"
+  _CS_CONFFILE_GUARD=""
+  unset APT_CONFIG
+  [[ -n "${added//[[:space:]]/}" ]] || return 0
+
+  msg_warn "Kept your version of these config files - upstream shipped changes to them too:"
+  local f
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    echo -e "${TAB}${YW}${f%.dpkg-*}${CL} - new upstream version at ${YW}${f}${CL}"
+  done <<<"$added"
   return 0
 }
 

@@ -77,4 +77,5 @@ jobs:
 
             Headers are derived artifacts — edit the `APP=` line in the script
             instead, and this workflow follows.
+          labels: automated pr
           delete-branch: true
