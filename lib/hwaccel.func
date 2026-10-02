@@ -198,7 +198,7 @@ setup_hwaccel() {
       selection="${selection^^}" # uppercase
     else
       echo ""
-      msg_info "Timeout - configuring all GPUs automatically"
+      msg_custom "ℹ️" "${YW}" "Timeout - configuring all GPUs automatically"
       selection="A"
     fi
 
@@ -391,7 +391,7 @@ _setup_intel_arc() {
     # For Trixie/Sid: Fetch latest drivers from GitHub (Debian repo packages may be too old or missing)
     # For Bookworm: Use repo packages (GitHub latest requires libstdc++6 >= 13.1, unavailable on Bookworm)
     if [[ "$os_codename" == "trixie" || "$os_codename" == "sid" ]]; then
-      msg_info "Fetching Intel compute-runtime from GitHub for Arc support"
+      msg_custom "ℹ️" "${YW}" "Fetching Intel compute-runtime from GitHub for Arc support"
 
       # intel-opencl-icd declares it; dpkg refuses the package without it.
       _cs_apt_install_optional ocl-icd-libopencl1
@@ -449,7 +449,7 @@ _setup_intel_modern() {
 
     # For Trixie/Sid: Fetch from GitHub (Debian packages too old or missing)
     if [[ "$os_codename" == "trixie" || "$os_codename" == "sid" ]]; then
-      msg_info "Fetching Intel compute-runtime from GitHub"
+      msg_custom "ℹ️" "${YW}" "Fetching Intel compute-runtime from GitHub"
 
       # intel-opencl-icd declares it; dpkg refuses the package without it.
       _cs_apt_install_optional ocl-icd-libopencl1
@@ -684,7 +684,7 @@ _setup_nvidia_gpu() {
     return 0
   fi
 
-  msg_info "Host NVIDIA driver version: ${nvidia_host_version}"
+  msg_custom "ℹ️" "${YW}" "Host NVIDIA driver version: ${nvidia_host_version}"
 
   if [[ "$os_id" == "debian" ]]; then
     # Enable non-free components
@@ -728,6 +728,7 @@ _setup_nvidia_gpu() {
       cuda_keyring="$(mktemp)"
       if curl -fsSL -o "$cuda_keyring" "https://developer.download.nvidia.com/compute/cuda/repos/${cuda_repos[0]}/x86_64/cuda-keyring_1.1-1_all.deb" 2>/dev/null; then
         $STD dpkg -i "$cuda_keyring" 2>/dev/null || true
+        msg_ok "Added NVIDIA CUDA repository keyring"
       else
         msg_warn "Failed to download NVIDIA CUDA keyring"
       fi
@@ -842,6 +843,7 @@ NVIDIA_PIN
       cuda_keyring="$(mktemp)"
       if curl -fsSL -o "$cuda_keyring" "https://developer.download.nvidia.com/compute/cuda/repos/${ubuntu_cuda_repo}/x86_64/cuda-keyring_1.1-1_all.deb" 2>/dev/null; then
         $STD dpkg -i "$cuda_keyring" 2>/dev/null || true
+        msg_ok "Added NVIDIA CUDA repository (${ubuntu_cuda_repo})"
       else
         msg_warn "Failed to download NVIDIA CUDA keyring"
       fi
@@ -900,7 +902,7 @@ NVIDIA_PIN
   if command -v update-glx &>/dev/null; then
     local nvidia_glx_dir="/usr/lib/nvidia"
     if [[ ! -f "${nvidia_glx_dir}/libGL.so.1" ]] && [[ -d /usr/lib/mesa-diverted ]]; then
-      msg_info "NVIDIA GLX libs missing in container - falling back to mesa"
+      msg_custom "ℹ️" "${YW}" "NVIDIA GLX libs missing in container - falling back to mesa"
       $STD update-glx --set glx /usr/lib/mesa-diverted 2>/dev/null || true
       ldconfig 2>/dev/null || true
     fi
@@ -1083,7 +1085,7 @@ _setup_gpu_permissions() {
       # Verify VA-API
       if command -v vainfo &>/dev/null; then
         if vainfo &>/dev/null; then
-          msg_info "VA-API verified and working"
+          msg_custom "✔️" "${GN}" "VA-API verified and working"
         else
           msg_warn "vainfo test failed - check GPU passthrough"
         fi
@@ -1109,11 +1111,12 @@ _setup_gpu_permissions() {
         }
       done
     fi
+    msg_ok "Configured NVIDIA device permissions"
 
     # Verify nvidia-smi
     if command -v nvidia-smi &>/dev/null; then
       if nvidia-smi &>/dev/null; then
-        msg_info "nvidia-smi verified and working"
+        msg_custom "✔️" "${GN}" "nvidia-smi verified and working"
       else
         msg_warn "nvidia-smi test failed - check driver version match"
       fi
@@ -1124,7 +1127,7 @@ _setup_gpu_permissions() {
   if [[ -e /dev/kfd ]]; then
     chgrp render /dev/kfd 2>/dev/null || true
     chmod 660 /dev/kfd 2>/dev/null || true
-    msg_info "AMD ROCm compute device configured"
+    msg_custom "✔️" "${GN}" "AMD ROCm compute device configured"
   fi
 
   # Add service user to render and video groups for GPU hardware acceleration

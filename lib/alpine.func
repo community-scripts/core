@@ -337,14 +337,14 @@ check_for_gh_release() {
       msg_ok "$app pinned v$pinned installed (upstream v$release)"
       return 1
     fi
-    msg_info "$app pinned v$pinned (upstream v$release) → update/downgrade"
+    msg_ok "$app pinned v$pinned (upstream v$release) → update/downgrade"
     CHECK_UPDATE_RELEASE="$pinned"
     return 0
   fi
 
   if [ "$release" != "$current" ] || [ ! -f "$current_file" ]; then
     CHECK_UPDATE_RELEASE="$release"
-    msg_info "New release available: v$release (current: v${current:-none})"
+    msg_ok "New release available: v$release (current: v${current:-none})"
     return 0
   fi
 

@@ -735,7 +735,7 @@ run_addon_updates() {
   ((${#addons[@]} == 0)) && return 0
 
   if [[ "${PHS_SILENT:-0}" == "1" ]]; then
-    msg_info "Detected ${#addons[@]} addon update script(s) - skipping (PHS_SILENT)"
+    msg_custom "ℹ️" "${YW}" "Detected ${#addons[@]} addon update script(s) - skipping (PHS_SILENT)"
     return 0
   fi
 
@@ -756,7 +756,7 @@ run_addon_updates() {
       bash "$a" || msg_warn "Addon update for $name failed (rc=$?)"
       ;;
     *)
-      msg_info "Skipped addon: $name"
+      msg_custom "ℹ️" "${YW}" "Skipped addon: $name"
       ;;
     esac
   done
@@ -828,11 +828,11 @@ runtime_script_status_guard() {
       [[ "$installed_clean" =~ ^v[0-9] ]] && installed_clean="${installed_clean:1}"
       if [[ "$installed_clean" == "$pinned_clean" ]]; then
         if [[ -n "$pin_reason" ]]; then
-          msg_info "You are already on the pinned version (${pinned_version}). ${pin_reason}"
+          msg_custom "ℹ️" "${YW}" "You are already on the pinned version (${pinned_version}). ${pin_reason}"
         else
-          msg_info "You are already on the pinned version (${pinned_version}). No newer update is offered intentionally — please do not open an issue unless you see an actual error."
+          msg_custom "ℹ️" "${YW}" "You are already on the pinned version (${pinned_version}). No newer update is offered intentionally — please do not open an issue unless you see an actual error."
         fi
-        msg_info "More info: ${info_url}"
+        msg_custom "ℹ️" "${YW}" "More info: ${info_url}"
       fi
     fi
   fi
@@ -1161,7 +1161,7 @@ start() {
     set_std_mode
     _cs_run_update
   elif ! command -v whiptail &>/dev/null || ! [ -t 0 ] || [[ "$TERM" == "dumb" ]]; then
-    msg_info "No interactive terminal detected – defaulting to silent update mode"
+    msg_custom "ℹ️" "${YW}" "No interactive terminal detected – defaulting to silent update mode"
     VERBOSE="no"
     set_std_mode
     _cs_run_update

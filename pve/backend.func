@@ -1531,7 +1531,7 @@ PROFILE
         echo -e "  Network: ${NET:-dhcp} | Bridge: ${BRG:-vmbr0}"
         echo -e "  Verbose: ${GN}enabled${CL}"
         echo ""
-        msg_info "Restarting installation..."
+        msg_custom "ℹ️" "${YW}" "Restarting installation..."
         declare -f telemetry_new_attempt &>/dev/null && telemetry_new_attempt
         build_container
         return $?
@@ -1639,7 +1639,7 @@ PROFILE
           echo -e "  Disk: ${DISK_SIZE} GB | Network: ${NET:-dhcp} | Bridge: ${BRG:-vmbr0}"
           echo -e "  Verbose: ${GN}enabled${CL}"
           echo ""
-          msg_info "Restarting installation..."
+          msg_custom "ℹ️" "${YW}" "Restarting installation..."
           declare -f telemetry_new_attempt &>/dev/null && telemetry_new_attempt
           build_container
           return $?
@@ -1668,7 +1668,7 @@ PROFILE
           echo -e "  Network: ${NET:-dhcp} | Bridge: ${BRG:-vmbr0}"
           echo -e "  Verbose: ${GN}enabled${CL}"
           echo ""
-          msg_info "Restarting installation..."
+          msg_custom "ℹ️" "${YW}" "Restarting installation..."
           declare -f telemetry_new_attempt &>/dev/null && telemetry_new_attempt
           build_container
           return $?
@@ -1692,7 +1692,7 @@ PROFILE
           echo -e "  DNS: ${GN}8.8.8.8, 1.1.1.1${CL} (inside LXC only)"
           echo -e "  Verbose: ${GN}enabled${CL}"
           echo ""
-          msg_info "Restarting installation..."
+          msg_custom "ℹ️" "${YW}" "Restarting installation..."
           declare -f telemetry_new_attempt &>/dev/null && telemetry_new_attempt
           build_container
           return $?
