@@ -182,7 +182,7 @@ EOF
     local HAD_MARIADB_REPO=false
     if [[ -f /etc/apt/sources.list.d/mariadb.sources ]] || [[ -f /etc/apt/sources.list.d/mariadb.list ]]; then
       HAD_MARIADB_REPO=true
-      msg_info "Removing MariaDB official repository (switching to distribution packages)"
+      msg_custom "ℹ️" "${YW}" "Removing MariaDB official repository (switching to distribution packages)"
     fi
 
     # Clean up any existing MariaDB repository files to avoid conflicts
@@ -250,7 +250,7 @@ EOF
 
     # Check if old repo points to a different version
     if [[ -n "$OLD_REPO_VERSION" ]] && [[ "${OLD_REPO_VERSION%.*}" != "${MARIADB_VERSION%.*}" ]]; then
-      msg_info "Cleaning up old MariaDB repository (was: $OLD_REPO_VERSION, requested: $MARIADB_VERSION)"
+      msg_custom "ℹ️" "${YW}" "Cleaning up old MariaDB repository (was: $OLD_REPO_VERSION, requested: $MARIADB_VERSION)"
       cleanup_old_repo_files "mariadb"
       $STD apt update || msg_warn "APT update had issues, continuing..."
     fi
@@ -570,7 +570,7 @@ setup_meilisearch() {
       local NEEDS_MIGRATION=false
       if [[ "$CURRENT_MAJOR_MINOR" != "$NEW_MAJOR_MINOR" ]]; then
         NEEDS_MIGRATION=true
-        msg_info "MeiliSearch version change detected (${CURRENT_VERSION} → ${NEW_VERSION}), preparing data migration"
+        msg_custom "ℹ️" "${YW}" "MeiliSearch version change detected (${CURRENT_VERSION} → ${NEW_VERSION}), preparing data migration"
       fi
 
       # Read connection + storage paths for the in-place (dumpless) upgrade
@@ -1258,6 +1258,7 @@ setup_postgresql() {
       msg_error "Failed to backup PostgreSQL databases"
       return 150
     }
+    msg_ok "Backed up PostgreSQL ${CURRENT_PG_VERSION} databases to ${PG_BACKUP_FILE}"
     $STD systemctl stop postgresql || true
     $STD apt purge -y "postgresql-${CURRENT_PG_VERSION}" "postgresql-client-${CURRENT_PG_VERSION}" 2>/dev/null || true
   else

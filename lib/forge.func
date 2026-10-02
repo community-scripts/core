@@ -2250,6 +2250,7 @@ fetch_and_deploy_from_url() {
     msg_error "Download failed: $url"
     return 250
   }
+  msg_ok "Downloaded ${filename}"
 
   # Auto-detect archive type using file description
   local file_desc
@@ -2276,7 +2277,7 @@ fetch_and_deploy_from_url() {
     return 65
   fi
 
-  msg_info "Detected archive type: $archive_type (file type: $file_desc)"
+  debug_log "Detected archive type: $archive_type (file type: $file_desc)"
 
   if [[ "$archive_type" == "deb" ]]; then
     msg_info "Installing .deb package"
