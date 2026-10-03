@@ -1413,23 +1413,19 @@ setup_nodejs() {
   # Priority:
   #   1) --max-old-space-size already in NODE_OPTIONS (caller/user override)
   #   2) NODE_MAX_OLD_SPACE_SIZE (explicit MB override)
-  #   3) var_ram (LXC memory setting, MB)
-  #   4) /proc/meminfo (runtime memory detection)
+  #   3) /proc/meminfo (what the container actually has)
+  #   4) var_ram (LXC memory setting, MB)
   # Auto value is clamped to 1024..12288 MB. Other NODE_OPTIONS flags are kept.
   if [[ "${NODE_OPTIONS:-}" != *--max-old-space-size* ]]; then
-    local node_heap_mb=""
+    local node_heap_mb="" total_mem_kb=""
+    total_mem_kb=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo "")
 
     if [[ -n "${NODE_MAX_OLD_SPACE_SIZE:-}" ]] && [[ "${NODE_MAX_OLD_SPACE_SIZE}" =~ ^[0-9]+$ ]]; then
       node_heap_mb="${NODE_MAX_OLD_SPACE_SIZE}"
+    elif [[ "$total_mem_kb" =~ ^[0-9]+$ ]]; then
+      node_heap_mb=$((total_mem_kb / 1024 * 75 / 100))
     elif [[ -n "${var_ram:-}" ]] && [[ "${var_ram}" =~ ^[0-9]+$ ]]; then
       node_heap_mb=$((var_ram * 75 / 100))
-    else
-      local total_mem_kb=""
-      total_mem_kb=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo "")
-      if [[ "$total_mem_kb" =~ ^[0-9]+$ ]]; then
-        local total_mem_mb=$((total_mem_kb / 1024))
-        node_heap_mb=$((total_mem_mb * 75 / 100))
-      fi
     fi
 
     if [[ -z "$node_heap_mb" ]] || ((node_heap_mb < 1024)); then

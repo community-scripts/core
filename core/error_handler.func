@@ -484,15 +484,14 @@ _eh_hint_node_oom() {
     { [[ "$node_build" == "true" ]] && [[ "$exit_code" =~ ^(134|137)$ ]]; } ||
     return 0
 
-  local mb=""
+  local mb="" kb
+  kb=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo "")
   if [[ "${NODE_OPTIONS:-}" =~ max-old-space-size=([0-9]+) ]]; then
     mb="${BASH_REMATCH[1]}"
+  elif [[ "$kb" =~ ^[0-9]+$ ]]; then
+    mb=$((kb / 1024 * 75 / 100))
   elif [[ "${var_ram:-}" =~ ^[0-9]+$ ]]; then
     mb=$((var_ram * 75 / 100))
-  else
-    local kb
-    kb=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo "")
-    [[ "$kb" =~ ^[0-9]+$ ]] && mb=$((kb / 1024 * 75 / 100))
   fi
 
   if [[ -z "$mb" ]] || ((mb < 1024)); then
