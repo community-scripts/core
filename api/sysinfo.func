@@ -26,7 +26,7 @@ _API_SYSINFO_LOADED=1
 #   * "ProxmoxVED" — official community-scripts/ProxmoxVED (development)
 #   * "external"   — any fork or unknown source
 # - Additionally sets REPO_SLUG to the real "owner/repo" string
-# - Fallback: "ProxmoxVED" (CI sed transforms ProxmoxVED → ProxmoxVE on promotion)
+# - Fallback: "ProxmoxVE", the default scripts base
 # - Skips detection if REPO_SOURCE is already set (e.g., exported by the host
 #   into the container environment)
 # ------------------------------------------------------------------------------
@@ -76,8 +76,15 @@ detect_repo_source() {
     fi
   fi
 
+  # A script run through bash -c carries its own text here, not its URL, and the
+  # first URL in that text is the engine bootstrap. The license header names the
+  # repository it was published from.
   if [[ -z "$owner_repo" && -n "$content" ]]; then
-    owner_repo=$(echo "$content" | grep -oE 'raw\.githubusercontent\.com/[^/]+/[^/]+' | head -1 | sed 's|raw\.githubusercontent\.com/||') || true
+    owner_repo=$(echo "$content" | grep -oE '(raw\.githubusercontent\.com|github\.com)/community-scripts/ProxmoxVED?/' | head -1 | sed -E 's#^[^/]+/##; s#/$##') || true
+  fi
+
+  if [[ -z "$owner_repo" && -n "$content" ]]; then
+    owner_repo=$(echo "$content" | grep -oE 'raw\.githubusercontent\.com/[^/]+/[^/]+' | sed 's|raw\.githubusercontent\.com/||' | grep -vx 'community-scripts/core' | head -1) || true
     if [[ -z "$owner_repo" ]]; then
       owner_repo=$(echo "$content" | grep -oE 'git\.community-scripts\.org/[^/]+/[^/]+' | head -1 | sed 's|git\.community-scripts\.org/||') || true
     fi
@@ -93,18 +100,11 @@ detect_repo_source() {
     REPO_SLUG="community-scripts/ProxmoxVED"
     ;;
   "" | community-scripts/core)
-    # No script repo identified — hardcoded fallback (CI rewrites VED → VE on
-    # promotion).
-    #
-    # core lands here rather than in the fork branch below. The bootstrap line
-    # names the engine, not the repo the ct/ script came from, so the scraping
-    # above finds "community-scripts/core" for every run where
-    # COMMUNITY_SCRIPTS_URL was not set. That is not a fork, and filing it as
-    # one attributed thousands of official runs to "external" and gave the
-    # slug its own row on the dashboard, second only to ProxmoxVE.
-
-    REPO_SOURCE="ProxmoxVED"
-    REPO_SLUG="community-scripts/ProxmoxVED"
+    # No script repo identified. ProxmoxVE, matching build.func's default base:
+    # ProxmoxVED here filed every tool and add-on run from ProxmoxVE as a
+    # development build.
+    REPO_SOURCE="ProxmoxVE"
+    REPO_SLUG="community-scripts/ProxmoxVE"
     ;;
   *)
     REPO_SOURCE="external"
