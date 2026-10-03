@@ -2308,20 +2308,20 @@ create_lxc_container() {
     msg_warn "An update for the Proxmox LXC stack is available"
     echo "  pve-container: installed=${_pvec_i:-n/a}  candidate=${_pvec_c:-n/a}"
     echo "  lxc-pve     : installed=${_lxcp_i:-n/a}  candidate=${_lxcp_c:-n/a}"
-    echo "  note        : option 1 runs host apt update + apt upgrade"
+    echo "  note        : option 1 runs host apt update + apt dist-upgrade"
     echo
 
     local _has_fallback_option=false
     if [[ "$do_retry" == "yes" ]] && has_previous_os_version_template; then
       _has_fallback_option=true
-      echo "  [1] Run host upgrade now (recommended). WARNING: this runs apt upgrade and updates all Packages on your host!"
+      echo "  [1] Run host upgrade now (recommended). WARNING: this runs apt dist-upgrade and updates all packages on your host!"
       echo "  [2] Use an older ${PCT_OSTYPE} template instead (may not work with all scripts)"
       echo "  [3] Ignore (continue without upgrading)"
       echo "  [4] Cancel (abort the script)"
       echo
       read -rp "Select option [1/2/3/4]: " _ans </dev/tty
     else
-      echo "  [1] Run host upgrade now (recommended). WARNING: this runs apt upgrade and updates all Packages on your host!"
+      echo "  [1] Run host upgrade now (recommended). WARNING: this runs apt dist-upgrade and updates all packages on your host!"
       echo "  [2] Ignore (continue without upgrading)"
       echo "  [3] Cancel (abort the script)"
       echo
@@ -2355,13 +2355,13 @@ create_lxc_container() {
     y | yes)
       msg_info "Running host upgrade for LXC stack compatibility"
       apt_update_safe
-      if $STD apt-get upgrade -y; then
+      if DEBIAN_FRONTEND=noninteractive $STD apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold dist-upgrade -y; then
         msg_ok "LXC stack upgraded."
         if ! pct list &>/dev/null; then
           msg_error "LXC stack upgrade caused PVE tool breakage (likely Perl module incompatibility)."
           msg_custom "⚠️" "${YW}" "A partial package upgrade has left the PVE stack in an inconsistent state."
           msg_custom "🔧" "${YW}" "Please run the following on the Proxmox host, then retry:"
-          echo -e "${TAB}  apt update && apt upgrade -y"
+          echo -e "${TAB}  apt update && apt dist-upgrade -y"
           echo -e "${TAB}  reboot"
           return 3
         fi
