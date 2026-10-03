@@ -2296,7 +2296,7 @@ create_lxc_container() {
     fi
     if [[ $need -eq 0 ]]; then
       msg_debug "No newer candidate for pve-container/lxc-pve (installed=$_pvec_i/$_lxcp_i, cand=$_pvec_c/$_lxcp_c)"
-      return 0
+      return 5
     fi
 
     local _disable_update="${DISABLE_UPDATE:-no}"
@@ -2976,6 +2976,13 @@ create_lxc_container() {
     fi
   }
 
+  _lxc_stack_too_old() {
+    msg_error "pve-container $(pkg_ver pve-container) does not support ${PCT_OSTYPE:-this} ${PCT_OSVERSION:-template}, and no newer version is available from the configured repositories."
+    msg_custom "🔧" "${YW}" "Enable a Proxmox VE package repository, run 'apt update && apt dist-upgrade' on the host, then retry."
+    msg_custom "💡" "${YW}" "Alternatively, choose an older ${PCT_OSTYPE:-OS} version in the advanced settings."
+    _flush_pct_log
+  }
+
   # Validate template before pct create (while holding lock)
   if [[ ! -s "$TEMPLATE_PATH" || "$(stat -c%s "$TEMPLATE_PATH" 2>/dev/null || echo 0)" -lt 1000000 ]]; then
     msg_info "Template file missing or too small – downloading"
@@ -3100,6 +3107,10 @@ create_lxc_container() {
                 _flush_pct_log
                 exit 231
                 ;;
+              5)
+                _lxc_stack_too_old
+                exit 231
+                ;;
               esac
             else
               msg_error "Container creation failed. See $LOGFILE"
@@ -3134,6 +3145,10 @@ create_lxc_container() {
             4)
               msg_error "Cancelled by user."
               _flush_pct_log
+              exit 231
+              ;;
+            5)
+              _lxc_stack_too_old
               exit 231
               ;;
             esac
