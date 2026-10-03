@@ -1411,12 +1411,12 @@ setup_nodejs() {
 
   # Set a safe default heap limit for Node.js builds if not explicitly provided.
   # Priority:
-  #   1) NODE_OPTIONS (caller/user override)
+  #   1) --max-old-space-size already in NODE_OPTIONS (caller/user override)
   #   2) NODE_MAX_OLD_SPACE_SIZE (explicit MB override)
   #   3) var_ram (LXC memory setting, MB)
   #   4) /proc/meminfo (runtime memory detection)
-  # Auto value is clamped to 1024..12288 MB.
-  if [[ -z "${NODE_OPTIONS:-}" ]]; then
+  # Auto value is clamped to 1024..12288 MB. Other NODE_OPTIONS flags are kept.
+  if [[ "${NODE_OPTIONS:-}" != *--max-old-space-size* ]]; then
     local node_heap_mb=""
 
     if [[ -n "${NODE_MAX_OLD_SPACE_SIZE:-}" ]] && [[ "${NODE_MAX_OLD_SPACE_SIZE}" =~ ^[0-9]+$ ]]; then
@@ -1438,7 +1438,7 @@ setup_nodejs() {
       node_heap_mb=12288
     fi
 
-    export NODE_OPTIONS="--max-old-space-size=${node_heap_mb}"
+    export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--max-old-space-size=${node_heap_mb}"
   fi
 
   # Ensure valid working directory for npm (avoids uv_cwd error)
