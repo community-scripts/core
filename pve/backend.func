@@ -160,6 +160,87 @@ _pct_restart() {
 }
 
 # ------------------------------------------------------------------------------
+# validate_ct_settings()
+#
+# Checks the settings pct create would reject, whichever way they were set:
+# the wizard checks its own input, but default.vars, app defaults and var_*
+# from the environment arrive unchecked, and pct reported them only after the
+# storage selection and template download, as a generic creation failure.
+# ------------------------------------------------------------------------------
+validate_ct_settings() {
+  local -a problems=()
+  local ns="${NS#-nameserver=}" sd="${SD#-searchdomain=}"
+
+  if ! validate_ram_size "${RAM_SIZE:-}"; then
+    if [[ "${RAM_SIZE:-}" =~ ^[1-9][0-9]*$ ]]; then
+      problems+=("RAM ${RAM_SIZE} MiB is too little (var_ram is in MiB; ${RAM_SIZE} GiB would be $((RAM_SIZE * 1024)))")
+    else
+      problems+=("RAM '${RAM_SIZE:-}' is not a number of MiB (var_ram)")
+    fi
+  fi
+  if [[ -n "${PW:-}" && ${#PW} -lt 5 ]]; then
+    problems+=("the root password needs at least 5 characters (var_pw)")
+  fi
+  if [[ -n "${NET:-}" && "$NET" != "dhcp" && "$NET" != "manual" ]] && ! validate_ip_address "$NET"; then
+    problems+=("IPv4 '${NET}' is not dhcp or an address with prefix, e.g. 192.168.1.50/24 (var_net)")
+  fi
+  if [[ -n "${GATE:-}" ]] && ! validate_gateway_ip "${GATE#,gw=}"; then
+    problems+=("gateway '${GATE#,gw=}' is not an IPv4 address (var_gateway)")
+  fi
+  if ! validate_nameservers "$ns"; then
+    problems+=("DNS server '${ns}' must be IP addresses (var_ns)")
+  fi
+  if ! validate_searchdomain "$sd"; then
+    problems+=("search domain '${sd}' is not a DNS name (var_searchdomain)")
+  fi
+  if ! validate_mount_fs "${ALLOW_MOUNT_FS:-}"; then
+    problems+=("mount types '${ALLOW_MOUNT_FS}' must be filesystem types such as nfs or cifs, not paths (var_mount_fs)")
+  fi
+
+  [[ ${#problems[@]} -eq 0 ]] && return 0
+  msg_error "These settings would be rejected by pct create:"
+  local p
+  for p in "${problems[@]}"; do
+    echo -e "${TAB}- ${p}"
+  done
+  msg_custom "🔧" "${YW}" "Fix them in the advanced settings or in the defaults file they came from, then retry."
+  exit 208
+}
+
+# ------------------------------------------------------------------------------
+# _lvmthin_check <storage>
+#
+# LVM refuses a new thin volume once the pool's data or metadata use reaches
+# 100% or passes activation/thin_pool_autoextend_threshold. pct reported that
+# as "Cannot create new thin volume" after the template download; full
+# metadata with free data space is the usual case on PVE.
+# ------------------------------------------------------------------------------
+_lvmthin_check() {
+  local storage="$1" vg pool data meta threshold
+  read -r vg pool < <(awk -v s="$storage" '
+    $1 == "lvmthin:" { f = ($2 == s); next }
+    /^[a-z]+:/ { f = 0 }
+    f && $1 == "vgname" { vg = $2 }
+    f && $1 == "thinpool" { tp = $2 }
+    END { if (vg != "" && tp != "") print vg, tp }' /etc/pve/storage.cfg 2>/dev/null)
+  [[ -n "$vg" && -n "$pool" ]] || return 0
+  read -r data meta < <(lvs --noheadings --nosuffix -o data_percent,metadata_percent "${vg}/${pool}" 2>/dev/null) || return 0
+  [[ -n "$data" && -n "$meta" ]] || return 0
+  threshold="$(lvmconfig --type full activation/thin_pool_autoextend_threshold 2>/dev/null | cut -d= -f2)"
+  [[ "$threshold" =~ ^[0-9]+$ ]] || threshold=100
+  if awk -v d="$data" -v m="$meta" -v t="$threshold" 'BEGIN { exit !(d >= 100 || m >= 100 || d > t || m > t) }'; then
+    msg_error "Thin pool ${vg}/${pool} of storage '${storage}' is full (data ${data}%, metadata ${meta}%): LVM will not create a new volume in it."
+    if awk -v m="$meta" -v t="$threshold" 'BEGIN { exit !(m >= 100 || m > t) }'; then
+      msg_custom "🔧" "${YW}" "Grow its metadata: lvextend --poolmetadatasize +1G ${vg}/${pool}"
+    else
+      msg_custom "🔧" "${YW}" "Free space in it (unused disks, old snapshots, fstrim on containers) or extend it with lvextend."
+    fi
+    return 1
+  fi
+  return 0
+}
+
+# ------------------------------------------------------------------------------
 # build_container()
 #
 # - Main function for creating and configuring LXC container
@@ -344,6 +425,8 @@ build_container() {
   # This tells install scripts whether to prompt for input or use defaults
   export MODE="${METHOD:-default}"
 
+  validate_ct_settings
+
   # Build PCT_OPTIONS as multi-line string
   PCT_OPTIONS_STRING="  -hostname $HN"
 
@@ -385,12 +468,16 @@ $PCT_OPTIONS_STRING"
   -protection 1"
   fi
 
-  # Timezone (map Etc/* to "host" as pct doesn't accept them)
+  # pct takes UTC or a zone.tab name only; aliases resolve, "host" is read here
   if [ -n "${CT_TIMEZONE:-}" ]; then
-    local _pct_timezone="$CT_TIMEZONE"
-    [[ "$_pct_timezone" == Etc/* ]] && _pct_timezone="host"
-    PCT_OPTIONS_STRING="$PCT_OPTIONS_STRING
+    local _pct_timezone
+    _pct_timezone="$(pct_timezone "$CT_TIMEZONE")"
+    if [[ -n "$_pct_timezone" ]]; then
+      PCT_OPTIONS_STRING="$PCT_OPTIONS_STRING
   -timezone $_pct_timezone"
+    else
+      msg_warn "Timezone '${CT_TIMEZONE}' cannot be set by pct; the container keeps the template's (UTC)."
+    fi
   fi
 
   # PVE derives ostype from the template name, then rejects its own value when
@@ -2618,6 +2705,9 @@ create_lxc_container() {
     msg_custom "🔗" "${YW}" "Help: https://github.com/community-scripts/ProxmoxVE/discussions"
     exit 213
   fi
+  if [[ "$STORAGE_TYPE" == "lvmthin" ]] && ! _lvmthin_check "$CONTAINER_STORAGE"; then
+    exit 214
+  fi
   msg_ok "Storage '$CONTAINER_STORAGE' ($STORAGE_TYPE) validated"
 
   msg_info "Validating template storage '$TEMPLATE_STORAGE'"
@@ -3048,6 +3138,18 @@ create_lxc_container() {
       echo -e "${TAB}  reboot"
       _flush_pct_log
       exit 232
+    fi
+
+    # A rejected setting is not a broken template: re-downloading it and
+    # retrying on local storage only ended in the same rejection.
+    if grep -q 'Parameter verification failed' "$LOGFILE"; then
+      msg_error "pct create rejected a setting:"
+      grep -A6 'Parameter verification failed' "$LOGFILE" | grep -E '^[a-z0-9_]+: ' | while IFS= read -r _line; do
+        echo -e "${TAB}- ${_line}"
+      done
+      msg_custom "🔧" "${YW}" "Fix it in the advanced settings or in the defaults file it came from, then retry."
+      _flush_pct_log
+      exit 208
     fi
 
     if grep -qiE 'already exists|already in use' "$LOGFILE"; then
