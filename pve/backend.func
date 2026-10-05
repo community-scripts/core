@@ -144,6 +144,32 @@ _pct_create() {
   return $rc
 }
 
+# ------------------------------------------------------------------------------
+# _pct_start_failed <ctid> [pct start output]
+#
+# pct says only that the startup failed; lxc writes why to the container's
+# journal. Shows those lines and appends them to the build log, whose tail is
+# what the telemetry reports: 80 failed starts a week arrived there as nothing
+# more than "failed to start".
+# ------------------------------------------------------------------------------
+_pct_start_failed() {
+  local ctid="$1" out="${2:-}" reason line
+  # The last start attempt only, without systemd's own bookkeeping.
+  reason="$(journalctl -u "pve-container@${ctid}" -n 80 --no-pager -o cat 2>/dev/null |
+    awk '/^Starting pve-container@/ { n = 0; next } { l[++n] = $0 } END { for (i = 1; i <= n; i++) print l[i] }' |
+    grep -vE '^pve-container@[0-9]+\.service: |^Failed to start pve-container@|To get more details, run the container in foreground mode' |
+    tail -n 10)"
+  {
+    echo "--- pct start ${ctid} ---"
+    [[ -n "$out" ]] && echo "$out"
+    [[ -n "$reason" ]] && echo "$reason"
+  } >>"${BUILD_LOG:-/dev/null}" 2>/dev/null
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && echo -e "${TAB}${line}"
+  done <<<"${reason:-$out}"
+  msg_custom "🔧" "${YW}" "More: journalctl -u pve-container@${ctid}, or in the foreground: lxc-start -n ${ctid} -F -l DEBUG -o /tmp/lxc-${ctid}.log"
+}
+
 # Restart after a config change, and say something useful when it fails. The
 # two call sites used to be `pct start "$CTID" >/dev/null 2>&1`, so a failure
 # aborted the run under errexit with a bare 255 and the output discarded - six
@@ -154,8 +180,7 @@ _pct_restart() {
   err="$(pct start "$ctid" 2>&1)" || true
   [[ "$(pct status "$ctid" 2>/dev/null)" == "status: running" ]] && return 0
   msg_error "Container ${ctid} did not start after ${what}"
-  [[ -n "$err" ]] && msg_custom "ℹ️" "${YW}" "$err"
-  msg_custom "ℹ️" "${YW}" "See: pct config ${ctid} and journalctl -u pve-container@${ctid}"
+  _pct_start_failed "$ctid" "$err"
   return 1
 }
 
@@ -922,9 +947,10 @@ EOF
   # generic 255 -- which the exit table reads as DPKG's fatal error, so 197 runs
   # across 70 apps in a fortnight were filed as a package manager problem when
   # the container simply would not start.
-  if ! pct start "$CTID"; then
+  local _start_out
+  if ! _start_out="$(pct start "$CTID" 2>&1)"; then
     msg_error "Container ${CTID} was created but would not start"
-    msg_warn "pct start failed. Check: pct config ${CTID} and journalctl -u pve-container@${CTID}"
+    _pct_start_failed "$CTID" "$_start_out"
     exit 227
   fi
 
@@ -939,6 +965,7 @@ EOF
       local ct_status
       ct_status=$(pct status "$CTID" 2>/dev/null || echo "unknown")
       msg_error "LXC Container did not reach running state (status: ${ct_status})"
+      _pct_start_failed "$CTID" "$_start_out"
       exit 117
     fi
   done
