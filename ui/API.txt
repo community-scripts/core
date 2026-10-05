@@ -148,6 +148,7 @@ on_interrupt
 on_pve_host
 on_terminate
 parse_dev_mode
+pmxcfs_check
 post_addon_to_api
 post_progress_to_api
 post_to_api
