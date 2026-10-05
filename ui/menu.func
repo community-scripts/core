@@ -206,6 +206,7 @@ install_script() {
   arm64_notice
   ssh_check
   maxkeys_check
+  storage_content_check
   diagnostics_check
 
   if systemctl is-active -q ping-instances.service; then
