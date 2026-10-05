@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2021-2026 community-scripts ORG
-# License: MIT | https://github.com/community-scripts/ProxmoxVED/raw/main/LICENSE
+# License: MIT | https://github.com/community-scripts/core/raw/main/LICENSE
 
 # ==============================================================================
 # PREFLIGHT.FUNC - OPTIONAL PRE-FLIGHT CHECKS (disabled by default)
@@ -554,7 +554,7 @@ run_preflight() {
     done
     echo ""
     echo -e "${INFO} Please resolve the above issues before creating a container."
-    echo -e "${INFO} Documentation: ${BL}https://community-scripts.github.io/ProxmoxVED/${CL}"
+    echo -e "${INFO} Documentation: ${BL}${COMMUNITY_SCRIPTS_WEBSITE_URL:-https://community-scripts.org}/docs${CL}"
 
     # Report to telemetry (if consent was given)
     post_preflight_to_api

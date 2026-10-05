@@ -43,7 +43,7 @@ DIAGNOSTICS=yes
 #This file is used to store the diagnostics settings for the Community-Scripts API.
 #https://github.com/community-scripts/ProxmoxVE/discussions/1836
 #Your diagnostics will be sent to the Community-Scripts API for troubleshooting/statistical purposes.
-#You can review the data at https://community-scripts.github.io/ProxmoxVED/data
+#You can review the data at https://community-scripts.org/analytics
 #If you do not wish to send diagnostics, please set the variable 'DIAGNOSTICS' to "no" in ${_diag_file}, or use the menue.
 #This will disable the diagnostics feature.
 #To send diagnostics, set the variable 'DIAGNOSTICS' to "yes" in ${_diag_file}, or use the menue.
@@ -68,7 +68,7 @@ DIAGNOSTICS=no
 #This file is used to store the diagnostics settings for the Community-Scripts API.
 #https://github.com/community-scripts/ProxmoxVE/discussions/1836
 #Your diagnostics will be sent to the Community-Scripts API for troubleshooting/statistical purposes.
-#You can review the data at https://community-scripts.github.io/ProxmoxVED/data
+#You can review the data at https://community-scripts.org/analytics
 #If you do not wish to send diagnostics, please set the variable 'DIAGNOSTICS' to "no" in ${_diag_file}, or use the menue.
 #This will disable the diagnostics feature.
 #To send diagnostics, set the variable 'DIAGNOSTICS' to "yes" in ${_diag_file}, or use the menue.

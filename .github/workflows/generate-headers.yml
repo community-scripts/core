@@ -39,11 +39,11 @@ jobs:
           repository: community-scripts/ProxmoxVE
           path: .src/ProxmoxVE
 
-      - name: Checkout ProxmoxVED
+      - name: Checkout DevScripts
         uses: actions/checkout@v4
         with:
-          repository: community-scripts/ProxmoxVED
-          path: .src/ProxmoxVED
+          repository: community-scripts/DevScripts
+          path: .src/DevScripts
 
       - name: Checkout Incus
         uses: actions/checkout@v4
@@ -57,7 +57,7 @@ jobs:
       - name: Generate
         run: |
           set -euo pipefail
-          python3 .github/scripts/generate-headers.py .src/ProxmoxVE .src/ProxmoxVED .src/Incus
+          python3 .github/scripts/generate-headers.py .src/ProxmoxVE .src/DevScripts .src/Incus
 
       - name: Clean up sources
         run: rm -rf .src
@@ -71,7 +71,7 @@ jobs:
             Generate app headers
 
             Regenerated with figlet from the APP= line of every script in
-            ProxmoxVE, ProxmoxVED and Incus.
+            ProxmoxVE, DevScripts and Incus.
           body: |
             Regenerated automatically from the script repositories.
 

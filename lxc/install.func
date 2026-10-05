@@ -3,7 +3,7 @@
 # Author: tteck (tteckster)
 # Co-Author: MickLesk
 # Co-Author: michelroegl-brunner
-# License: MIT | https://github.com/community-scripts/ProxmoxVED/raw/main/LICENSE
+# License: MIT | https://github.com/community-scripts/core/raw/main/LICENSE
 
 # ==============================================================================
 # INSTALL.FUNC - UNIFIED CONTAINER INSTALLATION & SETUP
@@ -1488,7 +1488,7 @@ EOF
   fi
 
   # Create MOTD profile script. The testing block is conditional -- printed
-  # unconditionally it told every Incus container it was a ProxmoxVED build.
+  # unconditionally it told every Incus container it was a DevScripts build.
   local PROFILE_FILE="/etc/profile.d/00_lxc-details.sh"
   cat >"$PROFILE_FILE" <<EOF
 [ -z "\${SSH_CONNECTION:-}\${SSH_TTY:-}" ] && [ -t 1 ] && printf '\033[3J\033[H\033[2J'
@@ -1496,8 +1496,8 @@ echo ""
 EOF
 
   # A script that names a feedback thread does not name a repository: it may
-  # already have been promoted out of ProxmoxVED and still be collecting
-  # feedback, and saying "ProxmoxVED" there would be wrong.
+  # already have been promoted out of DevScripts and still be collecting
+  # feedback, and saying "DevScripts" there would be wrong.
   if [[ -n "${CS_TESTING_URL:-}" ]]; then
     cat >>"$PROFILE_FILE" <<EOF
 echo -e "${BOLD:-}${YW:-}${APPLICATION:-Container} LXC Container - TESTING BUILD${CL:-}"
@@ -1506,7 +1506,7 @@ EOF
   elif [[ "${CS_TESTING:-}" == "yes" ]]; then
     cat >>"$PROFILE_FILE" <<EOF
 echo -e "${BOLD:-}${YW:-}${APPLICATION:-Container} LXC Container - DEV Repository${CL:-}"
-echo -e "${RD:-}WARNING: This is a DEVELOPMENT version (ProxmoxVED). Do NOT use in production!${CL:-}"
+echo -e "${RD:-}WARNING: This is a DEVELOPMENT version (DevScripts). Do NOT use in production!${CL:-}"
 EOF
   else
     cat >>"$PROFILE_FILE" <<EOF
@@ -1530,7 +1530,7 @@ echo -e "${YW:-} Works, broken, or anything odd - one line is enough.${CL:-}"
 EOF
   elif [[ "${CS_TESTING:-}" == "yes" ]]; then
     cat >>"$PROFILE_FILE" <<EOF
-echo -e "${YW:-} Repository: ${GN:-}https://github.com/community-scripts/ProxmoxVED${CL:-}"
+echo -e "${YW:-} Repository: ${GN:-}https://github.com/community-scripts/DevScripts${CL:-}"
 EOF
   fi
 
@@ -1559,9 +1559,9 @@ EOF
     cat >/etc/motd <<EOF
 
 ${APPLICATION:-Container} LXC Container - DEV Repository
-WARNING: This is a DEVELOPMENT version (ProxmoxVED). Do NOT use in production!
+WARNING: This is a DEVELOPMENT version (DevScripts). Do NOT use in production!
  OS: ${os_name} - Version: ${os_version}
- Repository: https://github.com/community-scripts/ProxmoxVED
+ Repository: https://github.com/community-scripts/DevScripts
 
 EOF
   else

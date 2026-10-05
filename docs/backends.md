@@ -102,7 +102,7 @@ in what they can actually do:
   do not pretend to have succeeded.
 
 The one thing that is genuinely not portable is the creation itself. Every
-script in `ProxmoxVE`/`ProxmoxVED` `vm/` runs `qm create`, `pvesm alloc`,
+script in `ProxmoxVE`/`DevScripts` `vm/` runs `qm create`, `pvesm alloc`,
 `qm importdisk` and `qm set` inline, and there is no `qm` on an Incus host.
 `incus_vm_create` is the Incus counterpart for that block; it takes a remote
 alias such as `images:debian/13` or, since a Proxmox VM script always downloads

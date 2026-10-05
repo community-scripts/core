@@ -6,7 +6,7 @@ A header is a figlet banner derived from a script's `APP=` line — a generated
 artifact, never hand-written. The same banner renders on both platforms, so
 keeping a copy in every script repository was pure duplication.
 
-`.github/workflows/generate-headers.yml` walks ProxmoxVE, ProxmoxVED and Incus
+`.github/workflows/generate-headers.yml` walks ProxmoxVE, DevScripts and Incus
 every six hours, or immediately on a `scripts-changed` dispatch, and regenerates
 the tree.
 
