@@ -133,6 +133,37 @@ prompt_for_github_token() {
 }
 
 # ------------------------------------------------------------------------------
+# _github_release_noapi <repo> <tag|latest> <outfile>
+#
+# - Builds the release object the API would have returned, as far as callers
+#   read it (tag_name, assets with their download URLs), from github.com
+#   itself, which the API rate limit does not cover: the tag from where
+#   /releases/latest redirects, the assets from the release's
+#   expanded_assets page
+# - For a rate-limited API: 60 calls an hour per address are soon spent behind
+#   a shared address, and retrying seconds later does not help
+# ------------------------------------------------------------------------------
+_github_release_noapi() {
+  local repo="$1" tag="$2" out="$3" loc html
+  if [[ "$tag" == "latest" ]]; then
+    loc="$(curl -sSI --connect-timeout 10 --max-time 30 "https://github.com/${repo}/releases/latest" 2>/dev/null |
+      tr -d '\r' | awk 'tolower($1) == "location:" {print $2}' | tail -n1)"
+    [[ "$loc" == */releases/tag/* ]] || return 1
+    tag="${loc##*/releases/tag/}"
+    tag="$(printf '%b' "${tag//%/\\x}")"
+  fi
+  html="$(curl -fsSL --connect-timeout 10 --max-time 30 "https://github.com/${repo}/releases/expanded_assets/${tag}" 2>/dev/null)" || return 1
+  {
+    grep -oE 'href="[^"]+"' <<<"$html" | sed -E 's/^href="//; s/"$//' |
+      grep -iF "/${repo}/releases/download/" | sort -u || true
+  } | jq -R -s --arg tag "$tag" '{
+      tag_name: $tag, name: $tag, draft: false, prerelease: false, body: "",
+      assets: (split("\n") | map(select(length > 0))
+        | map({name: (split("/") | last), browser_download_url: ("https://github.com" + .)}))
+    }' >"$out" 2>/dev/null
+}
+
+# ------------------------------------------------------------------------------
 # GitHub API call with authentication and rate limit handling
 # ------------------------------------------------------------------------------
 github_api_call() {
@@ -170,7 +201,13 @@ github_api_call() {
       fi
       return 22
       ;;
-    403)
+    403 | 429)
+      # A release can still be read from github.com without the API.
+      if [[ "$url" =~ ^https://api\.github\.com/repos/([^/]+/[^/]+)/releases/(latest|tags/(.+))$ ]] &&
+        _github_release_noapi "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]:-latest}" "$output_file"; then
+        msg_warn "GitHub API rate limit reached; read the release from github.com instead. A token avoids this: var_github_token"
+        return 0
+      fi
       # Rate limit - check if we can retry
       if [[ $attempt -lt $max_retries ]]; then
         msg_warn "GitHub API rate limit, waiting ${retry_delay}s... (attempt $attempt/$max_retries)"
@@ -1473,6 +1510,15 @@ _forge_release_json() {
     fi
 
     if [[ "$code" == "$(_forge_descriptor "$forge" ratelimit)" ]]; then
+      # Waiting seconds does not lift an hourly limit, but github.com itself
+      # still answers for the latest stable release or a named tag.
+      if [[ "$forge" == "github" && -z "$tag_prefix" ]] &&
+        { [[ "$version" != "latest" ]] || [[ "${GH_INCLUDE_PRERELEASE:-0}" != "1" ]]; } &&
+        _github_release_noapi "$repo" "$version" "$out"; then
+        msg_warn "GitHub API rate limit reached; read the release from github.com instead. A token avoids this: var_github_token"
+        rm -f "$raw"
+        return 0
+      fi
       if ((attempt < ${#timeouts[@]})); then
         msg_warn "${forge} rate limit hit, retrying in ${delay}s... (attempt ${attempt}/${#timeouts[@]})"
         sleep "$delay"
@@ -2246,7 +2292,7 @@ fetch_and_deploy_from_url() {
   }
   trap 'rm -rf "$tmpdir" "${unpack_tmp:-}"; trap - RETURN' RETURN
 
-  curl -fsSL -o "$tmpdir/$filename" "$url" || {
+  curl_download "$tmpdir/$filename" "$url" || {
     msg_error "Download failed: $url"
     return 250
   }

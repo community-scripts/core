@@ -2204,27 +2204,46 @@ ensure_usr_local_bin_persist() {
 # slow but progressing downloads (e.g. large .deb files from slow mirrors) are
 # never aborted mid-transfer.  Only aborts when throughput drops below 1 KB/s
 # for 60 consecutive seconds (i.e. a genuine stall or dead connection).
-# Retries up to 3 times on failure.
+# Retries up to 3 times on failure, continuing where the last attempt stopped:
+# starting a 1.5 GB archive over on every stall is how large downloads kept
+# failing. The last attempt goes over IPv4, since a broken IPv6 path is a
+# common cause of stalls. The file is written to <output>.part and moved into
+# place only when complete, so a failure leaves an existing <output> intact.
 # Returns 0 on success, 7 if all attempts fail.
 # ------------------------------------------------------------------------------
 curl_download() {
   local output="$1"
   local url="$2"
+  local part="${output}.part"
   local retries=3
   local attempt=1
+  local rc
+  local -a extra
 
+  rm -f "$part"
   while ((attempt <= retries)); do
-    if curl --connect-timeout 15 \
+    extra=()
+    ((attempt > 1)) && [[ -s "$part" ]] && extra+=(-C -)
+    if ((attempt == retries)) && ip -4 route show default 2>/dev/null | grep -q .; then
+      extra+=(-4)
+    fi
+    rc=0
+    curl --connect-timeout 15 \
       --speed-limit 1024 \
       --speed-time 60 \
-      -fsSL -o "$output" "$url"; then
-      return 0
+      -fsSL "${extra[@]}" -o "$part" "$url" || rc=$?
+    if ((rc == 0)); then
+      mv -f "$part" "$output" && return 0
+      rc=1
     fi
+    # 33: the server cannot resume, so the next attempt starts over.
+    ((rc == 33)) && rm -f "$part"
     if ((attempt < retries)); then
       msg_warn "Download failed or stalled (attempt ${attempt}/${retries}), retrying..."
     fi
     ((attempt++))
   done
+  rm -f "$part"
   return 7
 }
 
