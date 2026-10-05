@@ -23,7 +23,8 @@ _API_SYSINFO_LOADED=1
 # - Inspects /proc/$$/cmdline and $0 to find the source URL
 # - Maps detected repo to one of three canonical values:
 #   * "ProxmoxVE"  — official community-scripts/ProxmoxVE (production)
-#   * "ProxmoxVED" — official community-scripts/ProxmoxVED (development)
+#   * "DevScripts" — official community-scripts/DevScripts (development,
+#     formerly ProxmoxVED)
 #   * "external"   — any fork or unknown source
 # - Additionally sets REPO_SLUG to the real "owner/repo" string
 # - Fallback: "ProxmoxVE", the default scripts base
@@ -34,10 +35,11 @@ detect_repo_source() {
   # Allow explicit override via environment (also how the container inherits
   # the host's attribution instead of re-detecting)
   if [[ -n "${REPO_SOURCE:-}" ]]; then
+    [[ "$REPO_SOURCE" == "ProxmoxVED" ]] && REPO_SOURCE="DevScripts"
     if [[ -z "${REPO_SLUG:-}" ]]; then
       case "$REPO_SOURCE" in
       ProxmoxVE) REPO_SLUG="community-scripts/ProxmoxVE" ;;
-      ProxmoxVED) REPO_SLUG="community-scripts/ProxmoxVED" ;;
+      DevScripts) REPO_SLUG="community-scripts/DevScripts" ;;
       esac
       export REPO_SLUG
     fi
@@ -50,7 +52,7 @@ detect_repo_source() {
   # scripts base, so it answers directly instead of being inferred. Necessary,
   # not merely better: the bootstrap line now names only the engine, so the
   # scraping below read every modern script as "community-scripts/core" and
-  # attributed all of ProxmoxVED and Incus as external.
+  # attributed all of DevScripts and Incus as external.
   if [[ -n "${COMMUNITY_SCRIPTS_URL:-}" ]]; then
     owner_repo=$(echo "$COMMUNITY_SCRIPTS_URL" |
       grep -oE 'raw\.githubusercontent\.com/[^/]+/[^/]+' |
@@ -80,7 +82,7 @@ detect_repo_source() {
   # first URL in that text is the engine bootstrap. The license header names the
   # repository it was published from.
   if [[ -z "$owner_repo" && -n "$content" ]]; then
-    owner_repo=$(echo "$content" | grep -oE '(raw\.githubusercontent\.com|github\.com)/community-scripts/ProxmoxVED?/' | head -1 | sed -E 's#^[^/]+/##; s#/$##') || true
+    owner_repo=$(echo "$content" | grep -oE '(raw\.githubusercontent\.com|github\.com)/community-scripts/(ProxmoxVED?|DevScripts)/' | head -1 | sed -E 's#^[^/]+/##; s#/$##') || true
   fi
 
   if [[ -z "$owner_repo" && -n "$content" ]]; then
@@ -95,13 +97,13 @@ detect_repo_source() {
     REPO_SOURCE="ProxmoxVE"
     REPO_SLUG="community-scripts/ProxmoxVE"
     ;;
-  community-scripts/ProxmoxVED)
-    REPO_SOURCE="ProxmoxVED"
-    REPO_SLUG="community-scripts/ProxmoxVED"
+  community-scripts/DevScripts | community-scripts/ProxmoxVED)
+    REPO_SOURCE="DevScripts"
+    REPO_SLUG="community-scripts/DevScripts"
     ;;
   "" | community-scripts/core)
     # No script repo identified. ProxmoxVE, matching build.func's default base:
-    # ProxmoxVED here filed every tool and add-on run from ProxmoxVE as a
+    # DevScripts here would file every tool and add-on run from ProxmoxVE as a
     # development build.
     REPO_SOURCE="ProxmoxVE"
     REPO_SLUG="community-scripts/ProxmoxVE"

@@ -10,7 +10,7 @@ scrutiny than an application script does.
 | I want to… | Go here |
 | ---------- | ------- |
 | Change the engine | Open a PR here, and say which platforms you tested on |
-| Add a new application script | [ProxmoxVED](https://github.com/community-scripts/ProxmoxVED) |
+| Add a new application script | [DevScripts](https://github.com/community-scripts/DevScripts) |
 | Fix an existing application script | [ProxmoxVE](https://github.com/community-scripts/ProxmoxVE) |
 | Add Incus host tooling | [Incus](https://github.com/community-scripts/Incus) |
 | Report a bug | [Issues](https://github.com/community-scripts/core/issues) — include your host platform and whether it reproduces on the other one |
@@ -63,7 +63,7 @@ into a syntax error and takes the whole engine with it — nothing would install
 
 Every pull request that touches an engine folder gets a comment with the exact
 command to run a script against that branch — `.github/workflows/pr-test-command.yml`
-assembles it from the PR's own head repository and branch. ProxmoxVED does the
+assembles it from the PR's own head repository and branch. DevScripts does the
 same for the scripts it touches. So reviewing a change starts with a copy and a
 paste, not with building URLs by hand.
 

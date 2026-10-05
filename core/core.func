@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2021-2026 community-scripts ORG
-# License: MIT | https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main/LICENSE
+# License: MIT | https://raw.githubusercontent.com/community-scripts/core/main/LICENSE
 
 # ==============================================================================
 # CORE FUNCTIONS - LXC CONTAINER UTILITIES
@@ -609,15 +609,17 @@ _cs_scripts_ref_line() {
   [[ -n "$url" ]] || return 0
 
   # Both official mains count as default, not just one literal: _CS_DEFAULT_URL
-  # is not exported either, and ProxmoxVED scripts pin their own.
+  # is not exported either, and DevScripts scripts pin their own. ProxmoxVED is
+  # the name DevScripts had before.
   for d in "${_CS_DEFAULT_URL:-}" \
     https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main \
+    https://raw.githubusercontent.com/community-scripts/DevScripts/main \
     https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main; do
     [[ -n "$d" && "$url" == "${d%/}" ]] && return 0
   done
 
   _cs_ref_line Scripts "$url" \
-    "community-scripts/ProxmoxVE community-scripts/ProxmoxVED"
+    "community-scripts/ProxmoxVE community-scripts/DevScripts community-scripts/ProxmoxVED"
 }
 
 _pveam_available() {
@@ -716,7 +718,7 @@ arch_check() {
     msg_warn "This script has not been verified on arm64."
     echo -e "${TAB}It may work, or it may fail on an architecture-specific dependency."
     echo -e "${TAB}If you try it, please report the outcome - success or failure:"
-    echo -e "${TAB}${BGN}https://github.com/community-scripts/ProxmoxVED/issues${CL}"
+    echo -e "${TAB}${BGN}https://github.com/community-scripts/DevScripts/issues${CL}"
     echo ""
     local arm64_src
     if ! arm64_src="$(_cs_stdin_source)"; then
@@ -2161,7 +2163,7 @@ prompt_password() {
 #
 # var_testurl is declared by the script, not configured by the user: a script
 # under test points at the thread collecting its feedback. It is additive --
-# a ProxmoxVED script without one still gets the generic warning, so the
+# a DevScripts script without one still gets the generic warning, so the
 # variable can be filled in one script at a time without a flag day. A script
 # promoted to ProxmoxVE keeps asking for feedback as long as it carries one.
 #
@@ -2192,9 +2194,9 @@ cs_testing_state() {
     fi
   fi
 
-  # ProxmoxVED is the testing repository, so its scripts are testing builds
+  # DevScripts is the testing repository, so its scripts are testing builds
   # whether or not they name a thread yet.
-  [[ -z "$CS_TESTING" && "${REPO_SOURCE:-}" == "ProxmoxVED" ]] && CS_TESTING="yes"
+  [[ -z "$CS_TESTING" && "${REPO_SOURCE:-}" == "DevScripts" ]] && CS_TESTING="yes"
 
   export CS_TESTING CS_TESTING_URL
 }

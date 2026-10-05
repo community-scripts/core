@@ -4,7 +4,7 @@
 #
 # Remote fork/branch runner.
 #
-# The engine (core) and the scripts (ProxmoxVE / ProxmoxVED / Incus) live in
+# The engine (core) and the scripts (ProxmoxVE / DevScripts / Incus) live in
 # separate repositories and resolve independently, so this sets both bases and
 # then runs a script from the script base. Either can point at a fork.
 #

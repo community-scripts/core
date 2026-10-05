@@ -30,7 +30,7 @@ location is deliberate — conflating the two is what used to break local
    ([`host/source-origin.func`](../host/source-origin.func)). GitHub remotes
    only; a checkout hosted anywhere else needs the URL set by hand.
 3. **Defaults** — `community-scripts/core@main` for the engine,
-   `community-scripts/ProxmoxVE@main` for the scripts. ProxmoxVED and Incus
+   `community-scripts/ProxmoxVE@main` for the scripts. DevScripts and Incus
    scripts override the latter with `_CS_DEFAULT_URL` on their second line.
 
 ## Environment variables
@@ -119,7 +119,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/community-scripts/Proxmo
 it is the step people miss:
 
 ```bash
-export COMMUNITY_SCRIPTS_URL=https://raw.githubusercontent.com/YOU/ProxmoxVED/my-branch
+export COMMUNITY_SCRIPTS_URL=https://raw.githubusercontent.com/YOU/DevScripts/my-branch
 bash -c "$(curl -fsSL "$COMMUNITY_SCRIPTS_URL/ct/debian.sh")"
 ```
 

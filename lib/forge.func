@@ -1114,7 +1114,7 @@ fetch_and_deploy_gh_branch() {
 #
 # check_for_gh_release / _gl_ / _codeberg_ stay as wrappers, so no call site has
 # to change. None of them inspects the return code either: every call across
-# ProxmoxVE, ProxmoxVED and Incus is `if check_for_...; then`, which is why the
+# ProxmoxVE, DevScripts and Incus is `if check_for_...; then`, which is why the
 # previously divergent code sets can safely become one union.
 # ==============================================================================
 
@@ -1718,7 +1718,7 @@ check_for_release() {
 }
 
 # Wrapper: the implementation is check_for_release. Kept so the 82 call
-# sites in ProxmoxVED and the ~900 in ProxmoxVE keep working unchanged.
+# sites in DevScripts and the ~900 in ProxmoxVE keep working unchanged.
 check_for_gh_release() {
   check_for_release github "$1" "$2" "${3:-}" "${4:-}" "${5:-}"
 }

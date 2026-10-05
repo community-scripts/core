@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2021-2026 community-scripts ORG
-# License: MIT | https://github.com/community-scripts/ProxmoxVED/raw/main/LICENSE
+# License: MIT | https://github.com/community-scripts/DevScripts/raw/main/LICENSE
 
 # ==============================================================================
 # PVE-BACKEND.FUNC - PROXMOX VE LXC CREATE / DEPLOY BACKEND
@@ -3227,7 +3227,7 @@ description() {
   IP=$(pct exec "$CTID" ip a s dev eth0 | awk '/inet / {print $2}' | cut -d/ -f1)
 
   # Links follow the repository the script actually came from, which
-  # detect_repo_source() has already established. Hardcoding ProxmoxVED sent
+  # detect_repo_source() has already established. Hardcoding DevScripts sent
   # every Incus container to a repository it has nothing to do with.
   local repo_slug="${REPO_SLUG:-community-scripts/ProxmoxVE}"
   local repo_url="https://github.com/${repo_slug}"

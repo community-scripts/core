@@ -7,7 +7,7 @@
 # BUILD.FUNC — TWO-ROOT ENTRY POINT
 # ==============================================================================
 # The engine (this repo, community-scripts/core) and the scripts (ProxmoxVE,
-# ProxmoxVED, Incus) live in SEPARATE repositories, so a single origin can no
+# DevScripts, Incus) live in SEPARATE repositories, so a single origin can no
 # longer address both. Everything below distinguishes two roots:
 #
 #   ENGINE  — shared/ pve/ incus/     → core
