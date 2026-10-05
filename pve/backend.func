@@ -144,20 +144,6 @@ _pct_create() {
   return $rc
 }
 
-# Restart after a config change, and say something useful when it fails. The
-# two call sites used to be `pct start "$CTID" >/dev/null 2>&1`, so a failure
-# aborted the run under errexit with a bare 255 and the output discarded - six
-# runs across four apps in the telemetry, none of them diagnosable. pct can
-# also return 0 and leave the container stopped, so ask for the real state.
-_pct_restart() {
-  local ctid="$1" what="$2" err
-  err="$(pct start "$ctid" 2>&1)" || true
-  [[ "$(pct status "$ctid" 2>/dev/null)" == "status: running" ]] && return 0
-  msg_error "Container ${ctid} did not start after ${what}"
-  _pct_start_failed "$ctid" "$err"
-  return 1
-}
-
 # ------------------------------------------------------------------------------
 # _pct_start_failed <ctid> [pct start output]
 #
@@ -182,6 +168,20 @@ _pct_start_failed() {
     [[ -n "$line" ]] && echo -e "${TAB}${line}"
   done <<<"${reason:-$out}"
   msg_custom "🔧" "${YW}" "More: journalctl -u pve-container@${ctid}, or in the foreground: lxc-start -n ${ctid} -F -l DEBUG -o /tmp/lxc-${ctid}.log"
+}
+
+# Restart after a config change, and say something useful when it fails. The
+# two call sites used to be `pct start "$CTID" >/dev/null 2>&1`, so a failure
+# aborted the run under errexit with a bare 255 and the output discarded - six
+# runs across four apps in the telemetry, none of them diagnosable. pct can
+# also return 0 and leave the container stopped, so ask for the real state.
+_pct_restart() {
+  local ctid="$1" what="$2" err
+  err="$(pct start "$ctid" 2>&1)" || true
+  [[ "$(pct status "$ctid" 2>/dev/null)" == "status: running" ]] && return 0
+  msg_error "Container ${ctid} did not start after ${what}"
+  _pct_start_failed "$ctid" "$err"
+  return 1
 }
 
 # ------------------------------------------------------------------------------
