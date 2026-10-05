@@ -182,7 +182,7 @@ if ! declare -f explain_exit_code &>/dev/null; then
     225) echo "Proxmox: No template available for OS/Version" ;;
     226) echo "Proxmox: VM disk import or post-creation setup failed" ;;
     228) echo "Proxmox: Cluster filesystem /etc/pve not available" ;;
-    231) echo "Proxmox: LXC stack upgrade failed" ;;
+    231) echo "Proxmox: LXC stack too old for the template, or its upgrade failed" ;;
     232) echo "Tools: Wrong execution environment (run on PVE host, not inside LXC)" ;;
     233) echo "Tools: Application not installed (update prerequisite missing)" ;;
     234) echo "Tools: No LXC containers found or available" ;;
