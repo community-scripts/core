@@ -2564,7 +2564,7 @@ create_lxc_container() {
       msg_error "/etc/pve/storage.cfg does not exist."
       msg_custom "🔧" "${YW}" "Check Proxmox cluster filesystem integrity: pvecm status"
     fi
-    exit 213
+    exit 228
   fi
 
   STORAGE_TYPE=$(grep -E "^[^:]+:[[:space:]]*${CONTAINER_STORAGE}[[:space:]]*$" /etc/pve/storage.cfg | cut -d: -f1 | head -1 || true)
