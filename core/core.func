@@ -652,6 +652,7 @@ pve_check() {
     msg_error "${APP:-This script} must be run on the Proxmox VE host."
     exit 232
   fi
+  pmxcfs_check
   PVE_VER="$(_pve_version)"
 
   # Check for Proxmox VE 8.x: allow 8.0–8.9
@@ -680,6 +681,47 @@ pve_check() {
   msg_error "This version of Proxmox VE is not supported."
   msg_error "Supported versions: Proxmox VE 8.0 – 8.9 or 9.0 – 9.2"
   exit 1
+}
+
+# ------------------------------------------------------------------------------
+# pmxcfs_check()
+#
+# - Every pct, qm and pvesm call needs the cluster filesystem at /etc/pve.
+#   Without it a run went through the whole settings menu and failed at the
+#   storage validation, filed as an unsupported storage type (54 runs a week)
+# - Offers to restart pve-cluster when the filesystem is not mounted, and
+#   names quorum when a cluster node has /etc/pve read-only
+# ------------------------------------------------------------------------------
+pmxcfs_check() {
+  if ! mountpoint -q /etc/pve 2>/dev/null; then
+    msg_error "The Proxmox cluster filesystem is not mounted at /etc/pve (pve-cluster: $(systemctl is-active pve-cluster 2>/dev/null || echo unknown))."
+    if [[ "${PHS_SILENT:-0}" != "1" && -t 0 ]] && command -v whiptail &>/dev/null &&
+      whiptail --backtitle "Proxmox VE Helper Scripts" --title "/etc/pve not available" --yesno \
+        "The Proxmox cluster filesystem (pmxcfs) is not mounted at /etc/pve, so nothing can be created.\n\nRestart the pve-cluster service now?" 12 72; then
+      msg_info "Restarting pve-cluster"
+      if systemctl restart pve-cluster 2>/dev/null && sleep 2 && mountpoint -q /etc/pve 2>/dev/null; then
+        msg_ok "Restarted pve-cluster, /etc/pve is back"
+      else
+        msg_error "Restarting pve-cluster did not bring /etc/pve back."
+      fi
+    fi
+    if ! mountpoint -q /etc/pve 2>/dev/null; then
+      msg_custom "🔧" "${YW}" "Run: systemctl restart pve-cluster, and if that fails: journalctl -u pve-cluster -n 50"
+      exit 228
+    fi
+  fi
+
+  if [[ ! -r /etc/pve/storage.cfg ]]; then
+    msg_error "/etc/pve is mounted, but /etc/pve/storage.cfg is missing."
+    msg_custom "🔧" "${YW}" "The cluster configuration looks damaged. Check: pvecm status and journalctl -u pve-cluster -n 50"
+    exit 228
+  fi
+
+  if [[ -f /etc/pve/corosync.conf ]] && ! pvecm status 2>/dev/null | grep -qE '^Quorate:[[:space:]]+Yes'; then
+    msg_error "This cluster node has no quorum, so /etc/pve is read-only and nothing can be created."
+    msg_custom "🔧" "${YW}" "Bring enough cluster nodes online, then check: pvecm status"
+    exit 210
+  fi
 }
 
 # ------------------------------------------------------------------------------

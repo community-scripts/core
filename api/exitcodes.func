@@ -216,7 +216,8 @@ explain_exit_code() {
   224) echo "Proxmox: PBS storage is for backups only" ;;
   225) echo "Proxmox: No template available for OS/Version" ;;
   226) echo "Proxmox: VM disk import or post-creation setup failed" ;;
-  231) echo "Proxmox: LXC stack upgrade failed" ;;
+  228) echo "Proxmox: Cluster filesystem /etc/pve not available" ;;
+  231) echo "Proxmox: LXC stack too old for the template, or its upgrade failed" ;;
 
   # --- Tools & Addon Scripts (232-238) ---
   232) echo "Tools: Wrong execution environment (run on PVE host, not inside LXC)" ;;
@@ -279,7 +280,7 @@ categorize_error() {
   100 | 101 | 102 | 127 | 160 | 161 | 162 | 255) echo "dependency" ;;
   126 | 152) echo "permission" ;;
   128 | 203 | 204 | 205 | 206 | 207 | 208) echo "config" ;;
-  200 | 209 | 210 | 212 | 213 | 215 | 216 | 218 | 220 | 221 | 222 | 223 | 225 | 227 | 231) echo "proxmox" ;;
+  200 | 209 | 210 | 212 | 213 | 215 | 216 | 218 | 220 | 221 | 222 | 223 | 225 | 227 | 228 | 231) echo "proxmox" ;;
   150 | 151 | 153 | 154) echo "service" ;;
   170 | 171 | 172 | 173 | 180 | 181 | 182 | 183 | 190 | 191 | 192 | 193) echo "database" ;;
   243 | 245 | 246 | 247 | 248 | 249) echo "runtime" ;;
