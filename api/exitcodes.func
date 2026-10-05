@@ -192,7 +192,7 @@ explain_exit_code() {
   205) echo "Proxmox: Invalid CTID (<100)" ;;
   206) echo "Proxmox: CTID already in use" ;;
   207) echo "Proxmox: Password contains unescaped special characters" ;;
-  208) echo "Proxmox: Invalid configuration (DNS/MAC/Network format)" ;;
+  208) echo "Proxmox: Invalid container settings (network, DNS, RAM, password, mounts)" ;;
   209) echo "Proxmox: Container creation failed" ;;
   210) echo "Proxmox: Cluster not quorate" ;;
   211) echo "Proxmox: Timeout waiting for template lock" ;;

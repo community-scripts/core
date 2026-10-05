@@ -144,6 +144,32 @@ _pct_create() {
   return $rc
 }
 
+# ------------------------------------------------------------------------------
+# _pct_start_failed <ctid> [pct start output]
+#
+# pct says only that the startup failed; lxc writes why to the container's
+# journal. Shows those lines and appends them to the build log, whose tail is
+# what the telemetry reports: 80 failed starts a week arrived there as nothing
+# more than "failed to start".
+# ------------------------------------------------------------------------------
+_pct_start_failed() {
+  local ctid="$1" out="${2:-}" reason line
+  # The last start attempt only, without systemd's own bookkeeping.
+  reason="$(journalctl -u "pve-container@${ctid}" -n 80 --no-pager -o cat 2>/dev/null |
+    awk '/^Starting pve-container@/ { n = 0; next } { l[++n] = $0 } END { for (i = 1; i <= n; i++) print l[i] }' |
+    grep -vE '^pve-container@[0-9]+\.service: |^Failed to start pve-container@|To get more details, run the container in foreground mode' |
+    tail -n 10)"
+  {
+    echo "--- pct start ${ctid} ---"
+    [[ -n "$out" ]] && echo "$out"
+    [[ -n "$reason" ]] && echo "$reason"
+  } >>"${BUILD_LOG:-/dev/null}" 2>/dev/null
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && echo -e "${TAB}${line}"
+  done <<<"${reason:-$out}"
+  msg_custom "🔧" "${YW}" "More: journalctl -u pve-container@${ctid}, or in the foreground: lxc-start -n ${ctid} -F -l DEBUG -o /tmp/lxc-${ctid}.log"
+}
+
 # Restart after a config change, and say something useful when it fails. The
 # two call sites used to be `pct start "$CTID" >/dev/null 2>&1`, so a failure
 # aborted the run under errexit with a bare 255 and the output discarded - six
@@ -154,9 +180,166 @@ _pct_restart() {
   err="$(pct start "$ctid" 2>&1)" || true
   [[ "$(pct status "$ctid" 2>/dev/null)" == "status: running" ]] && return 0
   msg_error "Container ${ctid} did not start after ${what}"
-  [[ -n "$err" ]] && msg_custom "ℹ️" "${YW}" "$err"
-  msg_custom "ℹ️" "${YW}" "See: pct config ${ctid} and journalctl -u pve-container@${ctid}"
+  _pct_start_failed "$ctid" "$err"
   return 1
+}
+
+# Where a template lands in $TEMPLATE_STORAGE, or the default dir layout when
+# pvesm cannot say.
+_template_path() {
+  local p
+  p="$(pvesm path "${TEMPLATE_STORAGE}:vztmpl/$1" 2>/dev/null)" || p=""
+  echo "${p:-/var/lib/vz/template/cache/$1}"
+}
+
+# ------------------------------------------------------------------------------
+# _template_download_failed <pveam output>
+#
+# Says why the template download failed, as far as the host can tell, and
+# files a network or storage problem as such for the telemetry instead of as
+# a Proxmox one.
+# ------------------------------------------------------------------------------
+_template_download_failed() {
+  local out="$1" host="download.proxmox.com" last
+  last="$(grep -iE 'failed|error|no such|denied|no space' <<<"$out" | tail -n1)"
+  msg_error "Template download failed after 3 attempts: ${TEMPLATE}"
+  [[ -n "$last" ]] && msg_custom "ℹ️" "${YW}" "pveam: ${last}"
+  if grep -qi 'no space left' <<<"$out"; then
+    msg_custom "🔧" "${YW}" "Free up space on storage '${TEMPLATE_STORAGE}', then retry."
+    export ERROR_CATEGORY_OVERRIDE="storage"
+  elif grep -q '^http_proxy:' /etc/pve/datacenter.cfg 2>/dev/null; then
+    msg_custom "🔧" "${YW}" "Downloads go through the HTTP proxy set in Datacenter → Options; check that it is reachable."
+    export ERROR_CATEGORY_OVERRIDE="network"
+  elif ! getent hosts "$host" &>/dev/null; then
+    msg_custom "🔧" "${YW}" "This host cannot resolve ${host}: check its DNS servers (node → System → DNS)."
+    export ERROR_CATEGORY_OVERRIDE="network"
+  elif grep -qiE 'unreachable|timed out|connection refused|name resolution|unable to resolve|interrupted by signal' <<<"$out" ||
+    ! curl -fsI --connect-timeout 10 --max-time 20 -o /dev/null "http://${host}/images/system/"; then
+    msg_custom "🔧" "${YW}" "This host cannot reliably reach ${host}: check its gateway, firewall and connection."
+    export ERROR_CATEGORY_OVERRIDE="network"
+  else
+    msg_custom "🔧" "${YW}" "Try it by hand: pveam download ${TEMPLATE_STORAGE} ${TEMPLATE}"
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# lxc_os_supported <os> <version>
+#
+# Asks this host's pve-container whether it can set up an OS release, through
+# the same constructor pct create runs, so old and new pve-container answer
+# exactly as they would later. Returns 0 supported, 1 not supported, 2 unknown
+# (other OS types, or the check itself could not run).
+# ------------------------------------------------------------------------------
+lxc_os_supported() {
+  local os="$1" ver="$2" module dir rc
+  case "$os" in
+  debian) module="Debian" ;;
+  ubuntu) module="Ubuntu" ;;
+  *) return 2 ;;
+  esac
+  # Debian templates always carry a point release, and older pve-container
+  # compared it as a number: 13.6 fails "<= 13" where a bare 13 passes.
+  [[ "$os" == "debian" && "$ver" != *.* ]] && ver="${ver}.1"
+  dir="$(mktemp -d 2>/dev/null)" || return 2
+  mkdir -p "$dir/etc"
+  if [[ "$os" == "debian" ]]; then
+    echo "$ver" >"$dir/etc/debian_version"
+  else
+    printf 'DISTRIB_ID=Ubuntu\nDISTRIB_RELEASE=%s\n' "$ver" >"$dir/etc/lsb-release"
+  fi
+  rc=0
+  perl -e '
+    my ($module, $root) = @ARGV;
+    eval "require PVE::LXC::Setup::$module; 1" or exit 2;
+    exit 0 if eval { "PVE::LXC::Setup::$module"->new({}, $root, undef, sub {}); 1 };
+    exit($@ =~ /unsupported|too old/i ? 1 : 2);
+  ' "$module" "$dir" 2>/dev/null || rc=$?
+  rm -rf "$dir"
+  return "$rc"
+}
+
+# ------------------------------------------------------------------------------
+# lxc_os_support_check()
+#
+# Runs as soon as the OS release is settled, before storage selection and the
+# template download. A pve-container too old for the release used to surface
+# only after both, as a failed pct create.
+# Offers what can actually help on this host: updating the LXC stack when a
+# newer pve-container is available, or the newest older release it supports.
+# ------------------------------------------------------------------------------
+lxc_os_support_check() {
+  local os="${var_os:-}" ver="${var_version:-}" rc=0
+  [[ -n "$os" && -n "$ver" ]] || return 0
+  lxc_os_supported "$os" "$ver" || rc=$?
+  [[ $rc -eq 1 ]] || return 0
+
+  local installed candidate="" older="" v
+  installed="$(dpkg-query -W -f='${Version}' pve-container 2>/dev/null)"
+  v="$(apt-cache policy pve-container 2>/dev/null | awk '/Candidate:/ {print $2}')"
+  if [[ -n "$v" && "$v" != "(none)" ]] && dpkg --compare-versions "$v" gt "${installed:-0}"; then
+    candidate="$v"
+  fi
+  while read -r v; do
+    dpkg --compare-versions "$v" lt "$ver" || continue
+    if lxc_os_supported "$os" "$v"; then
+      older="$v"
+      break
+    fi
+  done < <(_pveam_available | awk '{print $2}' | sed -nE "s/^${os}-([0-9]+(\.[0-9]+)?)-standard_.*/\1/p" | sort -u -rV)
+
+  msg_error "pve-container ${installed:-?} on this host cannot create ${os^} ${ver} containers."
+  local interactive=0
+  [[ "${PHS_SILENT:-0}" != "1" && -t 0 ]] && command -v whiptail &>/dev/null && interactive=1
+
+  if [[ $interactive -eq 0 || (-z "$candidate" && -z "$older") ]]; then
+    if [[ -n "$candidate" ]]; then
+      msg_custom "🔧" "${YW}" "pve-container ${candidate} is available: run 'apt update && apt dist-upgrade' on the host, then retry."
+    else
+      msg_custom "🔧" "${YW}" "No newer pve-container in the configured repositories. Enable a Proxmox VE repository"
+      msg_custom "  " "${YW}" "(the post-pve-install tool can set one up), run 'apt update && apt dist-upgrade', then retry."
+    fi
+    [[ -n "$older" ]] && msg_custom "💡" "${YW}" "Or install with ${os^} ${older}: var_version=${older}"
+    exit 231
+  fi
+
+  local -a menu=()
+  [[ -n "$candidate" ]] && menu+=("upgrade" "Update the LXC stack to pve-container ${candidate} (apt dist-upgrade)")
+  [[ -n "$older" ]] && menu+=("older" "Use ${os^} ${older} instead (not every app supports it)")
+  menu+=("cancel" "Cancel")
+  local choice
+  choice=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "${os^} ${ver} not supported" --menu \
+    "\npve-container ${installed:-?} on this host cannot create ${os^} ${ver} containers.\n\nHow do you want to continue?" \
+    16 78 3 "${menu[@]}" 3>&1 1>&2 2>&3) || choice="cancel"
+
+  case "$choice" in
+  upgrade)
+    msg_info "Updating the Proxmox LXC stack"
+    apt_update_safe
+    if ! DEBIAN_FRONTEND=noninteractive $STD apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold dist-upgrade -y; then
+      msg_error "The upgrade failed. Check the APT output above, then retry."
+      exit 231
+    fi
+    if ! pct list &>/dev/null; then
+      msg_error "The upgrade left the Proxmox tools unusable. Run 'apt update && apt dist-upgrade' and reboot, then retry."
+      exit 231
+    fi
+    msg_ok "Updated the Proxmox LXC stack"
+    rc=0
+    lxc_os_supported "$os" "$ver" || rc=$?
+    if [[ $rc -eq 1 ]]; then
+      msg_error "pve-container $(dpkg-query -W -f='${Version}' pve-container 2>/dev/null) still cannot create ${os^} ${ver} containers."
+      exit 231
+    fi
+    ;;
+  older)
+    var_version="$older"
+    msg_ok "Using ${os^} ${older}"
+    ;;
+  *)
+    msg_error "Cancelled by user."
+    exit 231
+    ;;
+  esac
 }
 
 # ------------------------------------------------------------------------------
@@ -174,6 +357,8 @@ _pct_restart() {
 # ------------------------------------------------------------------------------
 build_container() {
   #  if [ "$VERBOSE" == "yes" ]; then set -x; fi
+
+  lxc_os_support_check
 
   NET_STRING="-net0 name=eth0,bridge=${BRG:-vmbr0}"
   if [[ -n "${var_sdn_vnet:-${SDN_VNET:-}}" ]]; then
@@ -344,6 +529,8 @@ build_container() {
   # This tells install scripts whether to prompt for input or use defaults
   export MODE="${METHOD:-default}"
 
+  validate_ct_settings
+
   # Build PCT_OPTIONS as multi-line string
   PCT_OPTIONS_STRING="  -hostname $HN"
 
@@ -385,12 +572,16 @@ $PCT_OPTIONS_STRING"
   -protection 1"
   fi
 
-  # Timezone (map Etc/* to "host" as pct doesn't accept them)
+  # pct takes UTC or a zone.tab name only; aliases resolve, "host" is read here
   if [ -n "${CT_TIMEZONE:-}" ]; then
-    local _pct_timezone="$CT_TIMEZONE"
-    [[ "$_pct_timezone" == Etc/* ]] && _pct_timezone="host"
-    PCT_OPTIONS_STRING="$PCT_OPTIONS_STRING
+    local _pct_timezone
+    _pct_timezone="$(pct_timezone "$CT_TIMEZONE")"
+    if [[ -n "$_pct_timezone" ]]; then
+      PCT_OPTIONS_STRING="$PCT_OPTIONS_STRING
   -timezone $_pct_timezone"
+    else
+      msg_warn "Timezone '${CT_TIMEZONE}' cannot be set by pct; the container keeps the template's (UTC)."
+    fi
   fi
 
   # PVE derives ostype from the template name, then rejects its own value when
@@ -762,9 +953,10 @@ EOF
   # generic 255 -- which the exit table reads as DPKG's fatal error, so 197 runs
   # across 70 apps in a fortnight were filed as a package manager problem when
   # the container simply would not start.
-  if ! pct start "$CTID"; then
+  local _start_out
+  if ! _start_out="$(pct start "$CTID" 2>&1)"; then
     msg_error "Container ${CTID} was created but would not start"
-    msg_warn "pct start failed. Check: pct config ${CTID} and journalctl -u pve-container@${CTID}"
+    _pct_start_failed "$CTID" "$_start_out"
     exit 227
   fi
 
@@ -779,6 +971,7 @@ EOF
       local ct_status
       ct_status=$(pct status "$CTID" 2>/dev/null || echo "unknown")
       msg_error "LXC Container did not reach running state (status: ${ct_status})"
+      _pct_start_failed "$CTID" "$_start_out"
       exit 117
     fi
   done
@@ -2004,6 +2197,87 @@ select_storage() {
 }
 
 # ------------------------------------------------------------------------------
+# validate_ct_settings()
+#
+# Checks the settings pct create would reject, whichever way they were set:
+# the wizard checks its own input, but default.vars, app defaults and var_*
+# from the environment arrive unchecked, and pct reported them only after the
+# storage selection and template download, as a generic creation failure.
+# ------------------------------------------------------------------------------
+validate_ct_settings() {
+  local -a problems=()
+  local ns="${NS#-nameserver=}" sd="${SD#-searchdomain=}"
+
+  if ! validate_ram_size "${RAM_SIZE:-}"; then
+    if [[ "${RAM_SIZE:-}" =~ ^[1-9][0-9]*$ ]]; then
+      problems+=("RAM ${RAM_SIZE} MiB is too little (var_ram is in MiB; ${RAM_SIZE} GiB would be $((RAM_SIZE * 1024)))")
+    else
+      problems+=("RAM '${RAM_SIZE:-}' is not a number of MiB (var_ram)")
+    fi
+  fi
+  if [[ -n "${PW:-}" && ${#PW} -lt 5 ]]; then
+    problems+=("the root password needs at least 5 characters (var_pw)")
+  fi
+  if [[ -n "${NET:-}" && "$NET" != "dhcp" && "$NET" != "manual" ]] && ! validate_ip_address "$NET"; then
+    problems+=("IPv4 '${NET}' is not dhcp or an address with prefix, e.g. 192.168.1.50/24 (var_net)")
+  fi
+  if [[ -n "${GATE:-}" ]] && ! validate_gateway_ip "${GATE#,gw=}"; then
+    problems+=("gateway '${GATE#,gw=}' is not an IPv4 address (var_gateway)")
+  fi
+  if ! validate_nameservers "$ns"; then
+    problems+=("DNS server '${ns}' must be IP addresses (var_ns)")
+  fi
+  if ! validate_searchdomain "$sd"; then
+    problems+=("search domain '${sd}' is not a DNS name (var_searchdomain)")
+  fi
+  if ! validate_mount_fs "${ALLOW_MOUNT_FS:-}"; then
+    problems+=("mount types '${ALLOW_MOUNT_FS}' must be filesystem types such as nfs or cifs, not paths (var_mount_fs)")
+  fi
+
+  [[ ${#problems[@]} -eq 0 ]] && return 0
+  msg_error "These settings would be rejected by pct create:"
+  local p
+  for p in "${problems[@]}"; do
+    echo -e "${TAB}- ${p}"
+  done
+  msg_custom "🔧" "${YW}" "Fix them in the advanced settings or in the defaults file they came from, then retry."
+  exit 208
+}
+
+# ------------------------------------------------------------------------------
+# _lvmthin_check <storage>
+#
+# LVM refuses a new thin volume once the pool's data or metadata use reaches
+# 100% or passes activation/thin_pool_autoextend_threshold. pct reported that
+# as "Cannot create new thin volume" after the template download; full
+# metadata with free data space is the usual case on PVE.
+# ------------------------------------------------------------------------------
+_lvmthin_check() {
+  local storage="$1" vg pool data meta threshold
+  read -r vg pool < <(awk -v s="$storage" '
+    $1 == "lvmthin:" { f = ($2 == s); next }
+    /^[a-z]+:/ { f = 0 }
+    f && $1 == "vgname" { vg = $2 }
+    f && $1 == "thinpool" { tp = $2 }
+    END { if (vg != "" && tp != "") print vg, tp }' /etc/pve/storage.cfg 2>/dev/null)
+  [[ -n "$vg" && -n "$pool" ]] || return 0
+  read -r data meta < <(lvs --noheadings --nosuffix -o data_percent,metadata_percent "${vg}/${pool}" 2>/dev/null) || return 0
+  [[ -n "$data" && -n "$meta" ]] || return 0
+  threshold="$(lvmconfig --type full activation/thin_pool_autoextend_threshold 2>/dev/null | cut -d= -f2)"
+  [[ "$threshold" =~ ^[0-9]+$ ]] || threshold=100
+  if awk -v d="$data" -v m="$meta" -v t="$threshold" 'BEGIN { exit !(d >= 100 || m >= 100 || d > t || m > t) }'; then
+    msg_error "Thin pool ${vg}/${pool} of storage '${storage}' is full (data ${data}%, metadata ${meta}%): LVM will not create a new volume in it."
+    if awk -v m="$meta" -v t="$threshold" 'BEGIN { exit !(m >= 100 || m > t) }'; then
+      msg_custom "🔧" "${YW}" "Grow its metadata: lvextend --poolmetadatasize +1G ${vg}/${pool}"
+    else
+      msg_custom "🔧" "${YW}" "Free space in it (unused disks, old snapshots, fstrim on containers) or extend it with lvextend."
+    fi
+    return 1
+  fi
+  return 0
+}
+
+# ------------------------------------------------------------------------------
 # validate_storage_space()
 #
 # - Validates if storage has enough free space for container
@@ -2127,7 +2401,6 @@ create_lxc_container() {
   ver_lt() { dpkg --compare-versions "$1" lt "$2"; }
 
   # Extract Debian OS minor from template name: debian-13-standard_13.1-1_amd64.tar.zst => "13.1"
-  parse_template_osver() { sed -n 's/.*_\([0-9][0-9]*\(\.[0-9]\+\)\?\)-.*/\1/p' <<<"$1"; }
 
   # Switch to the previous OS major version template and retry pct create
   fallback_to_previous_os_version() {
@@ -2618,6 +2891,9 @@ create_lxc_container() {
     msg_custom "🔗" "${YW}" "Help: https://github.com/community-scripts/ProxmoxVE/discussions"
     exit 213
   fi
+  if [[ "$STORAGE_TYPE" == "lvmthin" ]] && ! _lvmthin_check "$CONTAINER_STORAGE"; then
+    exit 214
+  fi
   msg_ok "Storage '$CONTAINER_STORAGE' ($STORAGE_TYPE) validated"
 
   msg_info "Validating template storage '$TEMPLATE_STORAGE'"
@@ -2865,6 +3141,7 @@ create_lxc_container() {
       msg_warn "Local template is outdated: $TEMPLATE (latest available: $ONLINE_TEMPLATE)"
       if whiptail --yesno "A newer template is available:\n$ONLINE_TEMPLATE\n\nDo you want to download and use it instead?" 12 70; then
         TEMPLATE="$ONLINE_TEMPLATE"
+        TEMPLATE_PATH="$(_template_path "$TEMPLATE")"
         NEED_DOWNLOAD=1
       else
         msg_custom "ℹ️" "${BL}" "Continuing with local template $TEMPLATE"
@@ -2883,14 +3160,29 @@ create_lxc_container() {
         exit 225
       fi
       [[ -f "$TEMPLATE_PATH" ]] && rm -f "$TEMPLATE_PATH"
+      local _dl_out="" _fresh=""
       for attempt in {1..3}; do
         msg_info "Attempt $attempt: Downloading template $TEMPLATE to $TEMPLATE_STORAGE"
-        if pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" >>"${BUILD_LOG:-/dev/null}" 2>&1; then
+        _dl_out="$(pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" 2>&1)" || true
+        printf '%s\n' "$_dl_out" >>"${BUILD_LOG:-/dev/null}"
+        # pveam can report a failed download and still exit 0, so only the
+        # template in storage counts as success.
+        if pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -qF "$TEMPLATE"; then
           msg_ok "Template download successful."
           break
         fi
+        # A catalog left over from a failed update can name a template the
+        # server has replaced since. Refresh it and take the current one.
+        if grep -q 'no such template' <<<"$_dl_out" && _pveam_update; then
+          _fresh="$(_list_templates "$TEMPLATE_SEARCH" "$TEMPLATE_PATTERN" | tail -n1)"
+          if [[ -n "$_fresh" && "$_fresh" != "$TEMPLATE" ]]; then
+            msg_warn "$TEMPLATE is no longer offered, using $_fresh"
+            TEMPLATE="$_fresh"
+            TEMPLATE_PATH="$(_template_path "$TEMPLATE")"
+          fi
+        fi
         if [[ $attempt -eq 3 ]]; then
-          msg_error "Failed after 3 attempts. Please check network access, permissions, or manually run:\n  pveam download $TEMPLATE_STORAGE $TEMPLATE"
+          _template_download_failed "$_dl_out"
           exit 222
         fi
         sleep $((attempt * 5))
@@ -2900,20 +3192,6 @@ create_lxc_container() {
     if ! pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -q "$TEMPLATE"; then
       msg_error "Template $TEMPLATE not available in storage $TEMPLATE_STORAGE after download."
       exit 223
-    fi
-  fi
-
-  # ------------------------------------------------------------------------------
-  # Dynamic preflight for Debian 13.x: offer upgrade if available (no hard mins)
-  # ------------------------------------------------------------------------------
-  if [[ "$PCT_OSTYPE" == "debian" ]]; then
-    OSVER="$(parse_template_osver "$TEMPLATE")"
-    if [[ -n "$OSVER" ]]; then
-      local _lxc_stack_rc=0
-      offer_lxc_stack_upgrade_and_maybe_retry "no" || _lxc_stack_rc=$?
-      if [[ $_lxc_stack_rc -eq 4 ]]; then
-        exit_script
-      fi
     fi
   fi
 
@@ -3048,6 +3326,18 @@ create_lxc_container() {
       echo -e "${TAB}  reboot"
       _flush_pct_log
       exit 232
+    fi
+
+    # A rejected setting is not a broken template: re-downloading it and
+    # retrying on local storage only ended in the same rejection.
+    if grep -q 'Parameter verification failed' "$LOGFILE"; then
+      msg_error "pct create rejected a setting:"
+      grep -A6 'Parameter verification failed' "$LOGFILE" | grep -E '^[a-z0-9_]+: ' | while IFS= read -r _line; do
+        echo -e "${TAB}- ${_line}"
+      done
+      msg_custom "🔧" "${YW}" "Fix it in the advanced settings or in the defaults file it came from, then retry."
+      _flush_pct_log
+      exit 208
     fi
 
     if grep -qiE 'already exists|already in use' "$LOGFILE"; then
