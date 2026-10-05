@@ -2105,6 +2105,73 @@ check_storage_support() {
   [[ $VALID -eq 1 ]]
 }
 
+_storage_content_of() {
+  awk -v s="$1" '/^[a-z]+:/ { f = ($2 == s); next } f && $1 == "content" { print $2; exit }' /etc/pve/storage.cfg 2>/dev/null
+}
+
+# ------------------------------------------------------------------------------
+# _offer_storage_content <vztmpl|rootdir>
+#
+# Lists the active storages that can hold the content and, when interactive,
+# switches it on for the one picked, keeping what that storage already holds.
+# ------------------------------------------------------------------------------
+_offer_storage_content() {
+  local content="$1" label types id type current choice
+  case "$content" in
+  vztmpl)
+    label="container templates"
+    types=" dir nfs cifs btrfs cephfs glusterfs "
+    ;;
+  rootdir)
+    label="container disks"
+    types=" dir nfs cifs btrfs lvm lvmthin zfspool rbd "
+    ;;
+  *) return 1 ;;
+  esac
+
+  msg_error "No storage on this host is enabled for ${label} (content '${content}')."
+  local -a menu=()
+  while read -r id type; do
+    [[ "$types" == *" $type "* ]] && menu+=("$id" "${type}, holds: $(_storage_content_of "$id")")
+  done < <(pvesm status 2>/dev/null | awk 'NR > 1 && $3 == "active" {print $1, $2}')
+
+  if ((${#menu[@]} == 0)); then
+    msg_custom "🔧" "${YW}" "Add a storage that can hold them (Datacenter → Storage) and enable content '${content}' on it."
+    return 1
+  fi
+  if [[ "${PHS_SILENT:-0}" == "1" || ! -t 0 ]] || ! command -v whiptail &>/dev/null; then
+    current="$(_storage_content_of "${menu[0]}")"
+    msg_custom "🔧" "${YW}" "Enable it on a storage, e.g.: pvesm set ${menu[0]} --content ${current:+${current},}${content}"
+    return 1
+  fi
+
+  choice=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "No storage for ${label}" --menu \
+    "\nNo storage is enabled for ${label} ('${content}').\n\nEnable it on one of these, keeping what it already holds?" \
+    18 78 6 "${menu[@]}" 3>&1 1>&2 2>&3) || return 1
+
+  current="$(_storage_content_of "$choice")"
+  [[ "$current" == "none" ]] && current=""
+  if pvesm set "$choice" --content "${current:+${current},}${content}" >/dev/null 2>&1 && check_storage_support "$content"; then
+    msg_ok "Enabled ${label} on storage '${choice}'"
+    return 0
+  fi
+  msg_error "Could not enable '${content}' on storage '${choice}'."
+  return 1
+}
+
+# ------------------------------------------------------------------------------
+# storage_content_check()
+#
+# Runs before the settings menu. A host without a storage for container
+# templates or container disks failed only once everything was chosen, with
+# 120 or 119. The usual cause is the 'local' directory storage with that
+# content switched off, which can be switched on in place.
+# ------------------------------------------------------------------------------
+storage_content_check() {
+  check_storage_support "vztmpl" || _offer_storage_content "vztmpl" || exit 120
+  check_storage_support "rootdir" || _offer_storage_content "rootdir" || exit 119
+}
+
 select_storage() {
   local CLASS=$1 CONTENT CONTENT_LABEL
   case $CLASS in
