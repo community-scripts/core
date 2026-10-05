@@ -390,11 +390,44 @@ base_settings() {
 }
 
 # ------------------------------------------------------------------------------
+# var_* keys in .vars files
+#
+# VAR_WHITELIST: engine settings; load_vars_file validates each one.
+# VAR_RESERVED: never taken from a file, not even an app's own. Unique per
+#   container, declared by the script, read before any file is loaded, or a
+#   safety override that has to be asked for on the run that needs it.
+# Any other var_* is an app's own setting and loads only from its app file.
+# The frontend's .vars export mirrors both lists.
+# ------------------------------------------------------------------------------
+declare -ag VAR_WHITELIST=(
+  var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
+  var_gateway var_hostname var_ipv6_method var_mac var_mknod var_mount_fs var_mtu
+  var_net var_nesting var_ns var_os var_post_install var_protection var_pw var_ram var_sdn_vnet var_searchdomain var_tags var_timezone var_tun var_unprivileged
+  var_verbose var_version var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
+)
+declare -ag VAR_RESERVED=(
+  var_arm64 var_bridge var_ctid var_force_breaking_update var_ignore_breaking_changes
+  var_ignore_disable var_ignore_os_mismatch var_install var_ipv6_static var_testurl
+)
+
+_is_whitelisted_key() {
+  local k="$1" w
+  for w in "${VAR_WHITELIST[@]}"; do [[ "$k" == "$w" ]] && return 0; done
+  return 1
+}
+
+_is_reserved_var_key() {
+  local k="$1" w
+  for w in "${VAR_RESERVED[@]}"; do [[ "$k" == "$w" ]] && return 0; done
+  return 1
+}
+
+# ------------------------------------------------------------------------------
 # load_vars_file()
 #
 # - Safe parser for KEY=VALUE lines from vars files
 # - Used by default_var_settings and app defaults loading
-# - Only loads whitelisted var_* keys
+# - Loads whitelisted var_* keys; with app_keys=yes also the app's own ones
 # - Optional force parameter to override existing values (for app defaults)
 # - Optional protected list preserves genuinely user-exported var_* values
 # ------------------------------------------------------------------------------
@@ -402,23 +435,9 @@ load_vars_file() {
   local file="$1"
   local force="${2:-no}"    # If "yes", override existing variables
   local protected="${3:-}"  # space-separated var_* keys the user genuinely exported before this file loaded; never overwritten
+  local app_keys="${4:-no}" # If "yes", also load var_* outside the whitelist (the app's own file)
   [ -f "$file" ] || return 0
   msg_info "Loading defaults from ${file}"
-
-  # Allowed var_* keys
-  local VAR_WHITELIST=(
-    var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
-    var_gateway var_hostname var_ipv6_method var_mac var_mknod var_mount_fs var_mtu
-    var_net var_nesting var_ns var_os var_post_install var_protection var_pw var_ram var_sdn_vnet var_searchdomain var_tags var_timezone var_tun var_unprivileged
-    var_verbose var_version var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
-  )
-
-  # Whitelist check helper
-  _is_whitelisted() {
-    local k="$1" w
-    for w in "${VAR_WHITELIST[@]}"; do [ "$k" = "$w" ] && return 0; done
-    return 1
-  }
 
   # Protected check helper (genuinely user-exported vars, see $protected above)
   _is_protected() {
@@ -437,7 +456,13 @@ load_vars_file() {
       local var_val="${BASH_REMATCH[2]}"
 
       [[ "$var_key" != var_* ]] && continue
-      _is_whitelisted "$var_key" || continue
+      if _is_reserved_var_key "$var_key"; then
+        msg_warn "${var_key} in ${file} is ignored: set it on the command line of the run that needs it"
+        continue
+      fi
+      if ! _is_whitelisted_key "$var_key"; then
+        [[ "$app_keys" == "yes" && "$var_key" =~ ^var_[a-z0-9_]+$ ]] || continue
+      fi
 
       # Strip inline comments (anything after unquoted #)
       # Only strip if not inside quotes
@@ -657,15 +682,6 @@ load_vars_file() {
 # - Calls base_settings "$VERBOSE" and echo_default
 # ------------------------------------------------------------------------------
 default_var_settings() {
-  # Allowed var_* keys (alphabetically sorted)
-  # Note: Removed var_ctid (can only exist once), var_ipv6_static (static IPs are unique)
-  local VAR_WHITELIST=(
-    var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
-    var_gateway var_hostname var_ipv6_method var_mac var_mknod var_mount_fs var_mtu
-    var_net var_nesting var_ns var_os var_post_install var_protection var_pw var_ram var_sdn_vnet var_searchdomain var_tags var_timezone var_tun var_unprivileged
-    var_verbose var_version var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
-  )
-
   # Snapshot: environment variables (highest precedence)
   declare -A _HARD_ENV=()
   local _k
@@ -784,15 +800,6 @@ EOF
     # Silent creation - no output message
   }
 
-  # Whitelist check
-  local _is_whitelisted_key
-  _is_whitelisted_key() {
-    local k="$1"
-    local w
-    for w in "${VAR_WHITELIST[@]}"; do [ "$k" = "$w" ] && return 0; done
-    return 1
-  }
-
   # 1) Ensure file exists
   _ensure_default_vars
 
@@ -840,33 +847,6 @@ get_app_defaults_path() {
   echo "${base}/defaults/${n}.vars"
 }
 
-# ------------------------------------------------------------------------------
-# maybe_offer_save_app_defaults
-#
-# - Called after advanced_settings returned with fully chosen values.
-# - If no <nsapp>.vars exists, offers to persist current advanced settings
-#   into /usr/local/community-scripts/defaults/<nsapp>.vars
-# - Only writes whitelisted var_* keys.
-# - Extracts raw values from flags like ",gw=..." ",mtu=..." etc.
-# ------------------------------------------------------------------------------
-if ! declare -p VAR_WHITELIST >/dev/null 2>&1; then
-  # Note: Removed var_ctid (can only exist once), var_ipv6_static (static IPs are unique)
-  declare -ag VAR_WHITELIST=(
-    var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
-    var_gateway var_hostname var_ipv6_method var_mac var_mknod var_mount_fs var_mtu
-    var_net var_nesting var_ns var_os var_post_install var_protection var_pw var_ram var_sdn_vnet var_searchdomain var_tags var_timezone var_tun var_unprivileged
-    var_verbose var_version var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
-  )
-fi
-
-# Global whitelist check function (used by _load_vars_file_to_map and others)
-_is_whitelisted_key() {
-  local k="$1"
-  local w
-  for w in "${VAR_WHITELIST[@]}"; do [ "$k" = "$w" ] && return 0; done
-  return 1
-}
-
 _sanitize_value() {
   # Disallow Command-Substitution / Shell-Meta
   case "$1" in
@@ -905,9 +885,7 @@ _load_vars_file_to_map() {
     val=$(printf "%s" "$line" | cut -d= -f2-)
     case "$key" in
     var_*)
-      if _is_whitelisted_key "$key"; then
-        _VARS_IN["$key"]="$val"
-      fi
+      _is_reserved_var_key "$key" || _VARS_IN["$key"]="$val"
       ;;
     esac
   done <"$file"
@@ -1081,6 +1059,30 @@ _build_current_app_vars_tmp() {
     [ -n "$_tpl_storage" ] && echo "var_template_storage=$(_sanitize_value "$_tpl_storage")"
     [ -n "$_ct_storage" ] && echo "var_container_storage=$(_sanitize_value "$_ct_storage")"
     [ -n "${var_post_install:-}" ] && echo "var_post_install=$(_sanitize_value "${var_post_install}")"
+
+    # The app's own settings are not in the dialog: keep what the file holds,
+    # and take what this run was started with.
+    local -A _own=()
+    local _k _f
+    _f="$(get_app_defaults_path)"
+    if [[ -f "$_f" ]]; then
+      _load_vars_file_to_map "$_f"
+      for _k in "${!_VARS_IN[@]}"; do
+        _is_whitelisted_key "$_k" || _own["$_k"]="${_VARS_IN[$_k]}"
+      done
+    fi
+    for _k in $(compgen -e var_); do
+      [[ "$_k" =~ ^var_[a-z0-9_]+$ && "${!_k}" != *$'\n'* ]] || continue
+      if _is_whitelisted_key "$_k" || _is_reserved_var_key "$_k"; then continue; fi
+      _own["$_k"]="\"${!_k}\""
+    done
+    if ((${#_own[@]} > 0)); then
+      echo
+      echo "# ${APP}'s own settings"
+      while IFS= read -r _k; do
+        echo "${_k}=${_own[$_k]}"
+      done < <(printf '%s\n' "${!_own[@]}" | sort)
+    fi
   } >"$tmpf"
 
   echo "$tmpf"
@@ -1107,7 +1109,7 @@ maybe_offer_save_app_defaults() {
     if whiptail --backtitle "Proxmox VE Helper Scripts" \
       --yesno "Save these advanced settings as defaults for ${APP}?\n\nThis will create:\n${app_vars_path}" 12 72; then
       mkdir -p "$(dirname "$app_vars_path")"
-      install -m 0644 "$new_tmp" "$app_vars_path"
+      install -m 0600 "$new_tmp" "$app_vars_path"
       msg_ok "Saved app defaults: ${app_vars_path}"
     fi
     rm -f "$new_tmp" "$diff_tmp"
@@ -1141,7 +1143,7 @@ maybe_offer_save_app_defaults() {
 
     case "$sel" in
     "Update Defaults")
-      install -m 0644 "$new_tmp" "$app_vars_path"
+      install -m 0600 "$new_tmp" "$app_vars_path"
       msg_ok "Updated app defaults: ${app_vars_path}"
       break
       ;;

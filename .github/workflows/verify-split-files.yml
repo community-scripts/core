@@ -125,3 +125,19 @@ jobs:
           check ui/build-ui.func  ui/API.txt     || fail=1
           check api/api.func      api/API.txt    || fail=1
           exit $fail
+      - name: Every var_* the engine reads is classified
+        # An app's own .vars file may set any var_* outside VAR_RESERVED, so each
+        # one the engine reads has to be placed: VAR_WHITELIST (validated),
+        # VAR_RESERVED (never from a file) or FILE_OK (harmless unvalidated).
+        run: |
+          set -euo pipefail
+          FILE_OK="var_appversion var_extra_disk var_extra_disk_path var_full_verbose var_profile var_ssh_import_glob var_unattended"
+          LOCALS="var_key var_val"
+          listed=" $(sed -n '/^declare -ag VAR_\(WHITELIST\|RESERVED\)=(/,/^)/p' ui/defaults.func | grep -oE '\bvar_[a-z0-9_]+' | tr '\n' ' ') $FILE_OK $LOCALS "
+          fail=0
+          for v in $(grep -rhoE '\$\{?!?#?var_[a-z0-9_]+' $ENGINE_DIRS --include='*.func' | grep -oE 'var_[a-z0-9_]+' | sort -u); do
+            [[ "$listed" == *" $v "* ]] && continue
+            echo "::error file=ui/defaults.func::$v is read by the engine but in neither VAR_WHITELIST, VAR_RESERVED nor FILE_OK"
+            fail=1
+          done
+          exit $fail

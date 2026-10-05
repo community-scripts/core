@@ -35,6 +35,7 @@ _eh_write_debug_log
 _get_current_ip
 _in_zone_tab
 _is_container_context
+_is_reserved_var_key
 _is_whitelisted_key
 _list_os_versions
 _list_templates

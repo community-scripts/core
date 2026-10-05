@@ -328,7 +328,7 @@ install_script() {
         header_info
         echo -e "${DEFAULT}${BOLD}${BL}Using App Defaults for ${APP} on node $PVEHOST_NAME${CL}"
         METHOD="appdefaults"
-        load_vars_file "$(get_app_defaults_path)" "yes" # Force override script defaults
+        load_vars_file "$(get_app_defaults_path)" "yes" "" "yes" # Force override script defaults, the app's own settings included
         base_settings
         echo_default
         defaults_target="$(get_app_defaults_path)"
