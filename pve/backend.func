@@ -160,6 +160,126 @@ _pct_restart() {
 }
 
 # ------------------------------------------------------------------------------
+# lxc_os_supported <os> <version>
+#
+# Asks this host's pve-container whether it can set up an OS release, through
+# the same constructor pct create runs, so old and new pve-container answer
+# exactly as they would later. Returns 0 supported, 1 not supported, 2 unknown
+# (other OS types, or the check itself could not run).
+# ------------------------------------------------------------------------------
+lxc_os_supported() {
+  local os="$1" ver="$2" module dir rc
+  case "$os" in
+  debian) module="Debian" ;;
+  ubuntu) module="Ubuntu" ;;
+  *) return 2 ;;
+  esac
+  # Debian templates always carry a point release, and older pve-container
+  # compared it as a number: 13.6 fails "<= 13" where a bare 13 passes.
+  [[ "$os" == "debian" && "$ver" != *.* ]] && ver="${ver}.1"
+  dir="$(mktemp -d 2>/dev/null)" || return 2
+  mkdir -p "$dir/etc"
+  if [[ "$os" == "debian" ]]; then
+    echo "$ver" >"$dir/etc/debian_version"
+  else
+    printf 'DISTRIB_ID=Ubuntu\nDISTRIB_RELEASE=%s\n' "$ver" >"$dir/etc/lsb-release"
+  fi
+  rc=0
+  perl -e '
+    my ($module, $root) = @ARGV;
+    eval "require PVE::LXC::Setup::$module; 1" or exit 2;
+    exit 0 if eval { "PVE::LXC::Setup::$module"->new({}, $root, undef, sub {}); 1 };
+    exit($@ =~ /unsupported|too old/i ? 1 : 2);
+  ' "$module" "$dir" 2>/dev/null || rc=$?
+  rm -rf "$dir"
+  return "$rc"
+}
+
+# ------------------------------------------------------------------------------
+# lxc_os_support_check()
+#
+# Runs as soon as the OS release is settled, before storage selection and the
+# template download. A pve-container too old for the release used to surface
+# only after both, as a failed pct create.
+# Offers what can actually help on this host: updating the LXC stack when a
+# newer pve-container is available, or the newest older release it supports.
+# ------------------------------------------------------------------------------
+lxc_os_support_check() {
+  local os="${var_os:-}" ver="${var_version:-}" rc=0
+  [[ -n "$os" && -n "$ver" ]] || return 0
+  lxc_os_supported "$os" "$ver" || rc=$?
+  [[ $rc -eq 1 ]] || return 0
+
+  local installed candidate="" older="" v
+  installed="$(dpkg-query -W -f='${Version}' pve-container 2>/dev/null)"
+  v="$(apt-cache policy pve-container 2>/dev/null | awk '/Candidate:/ {print $2}')"
+  if [[ -n "$v" && "$v" != "(none)" ]] && dpkg --compare-versions "$v" gt "${installed:-0}"; then
+    candidate="$v"
+  fi
+  while read -r v; do
+    dpkg --compare-versions "$v" lt "$ver" || continue
+    if lxc_os_supported "$os" "$v"; then
+      older="$v"
+      break
+    fi
+  done < <(_pveam_available | awk '{print $2}' | sed -nE "s/^${os}-([0-9]+(\.[0-9]+)?)-standard_.*/\1/p" | sort -u -rV)
+
+  msg_error "pve-container ${installed:-?} on this host cannot create ${os^} ${ver} containers."
+  local interactive=0
+  [[ "${PHS_SILENT:-0}" != "1" && -t 0 ]] && command -v whiptail &>/dev/null && interactive=1
+
+  if [[ $interactive -eq 0 || (-z "$candidate" && -z "$older") ]]; then
+    if [[ -n "$candidate" ]]; then
+      msg_custom "🔧" "${YW}" "pve-container ${candidate} is available: run 'apt update && apt dist-upgrade' on the host, then retry."
+    else
+      msg_custom "🔧" "${YW}" "No newer pve-container in the configured repositories. Enable a Proxmox VE repository"
+      msg_custom "  " "${YW}" "(the post-pve-install tool can set one up), run 'apt update && apt dist-upgrade', then retry."
+    fi
+    [[ -n "$older" ]] && msg_custom "💡" "${YW}" "Or install with ${os^} ${older}: var_version=${older}"
+    exit 231
+  fi
+
+  local -a menu=()
+  [[ -n "$candidate" ]] && menu+=("upgrade" "Update the LXC stack to pve-container ${candidate} (apt dist-upgrade)")
+  [[ -n "$older" ]] && menu+=("older" "Use ${os^} ${older} instead (not every app supports it)")
+  menu+=("cancel" "Cancel")
+  local choice
+  choice=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "${os^} ${ver} not supported" --menu \
+    "\npve-container ${installed:-?} on this host cannot create ${os^} ${ver} containers.\n\nHow do you want to continue?" \
+    16 78 3 "${menu[@]}" 3>&1 1>&2 2>&3) || choice="cancel"
+
+  case "$choice" in
+  upgrade)
+    msg_info "Updating the Proxmox LXC stack"
+    apt_update_safe
+    if ! DEBIAN_FRONTEND=noninteractive $STD apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold dist-upgrade -y; then
+      msg_error "The upgrade failed. Check the APT output above, then retry."
+      exit 231
+    fi
+    if ! pct list &>/dev/null; then
+      msg_error "The upgrade left the Proxmox tools unusable. Run 'apt update && apt dist-upgrade' and reboot, then retry."
+      exit 231
+    fi
+    msg_ok "Updated the Proxmox LXC stack"
+    rc=0
+    lxc_os_supported "$os" "$ver" || rc=$?
+    if [[ $rc -eq 1 ]]; then
+      msg_error "pve-container $(dpkg-query -W -f='${Version}' pve-container 2>/dev/null) still cannot create ${os^} ${ver} containers."
+      exit 231
+    fi
+    ;;
+  older)
+    var_version="$older"
+    msg_ok "Using ${os^} ${older}"
+    ;;
+  *)
+    msg_error "Cancelled by user."
+    exit 231
+    ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------
 # build_container()
 #
 # - Main function for creating and configuring LXC container
@@ -174,6 +294,8 @@ _pct_restart() {
 # ------------------------------------------------------------------------------
 build_container() {
   #  if [ "$VERBOSE" == "yes" ]; then set -x; fi
+
+  lxc_os_support_check
 
   NET_STRING="-net0 name=eth0,bridge=${BRG:-vmbr0}"
   if [[ -n "${var_sdn_vnet:-${SDN_VNET:-}}" ]]; then
@@ -2127,7 +2249,6 @@ create_lxc_container() {
   ver_lt() { dpkg --compare-versions "$1" lt "$2"; }
 
   # Extract Debian OS minor from template name: debian-13-standard_13.1-1_amd64.tar.zst => "13.1"
-  parse_template_osver() { sed -n 's/.*_\([0-9][0-9]*\(\.[0-9]\+\)\?\)-.*/\1/p' <<<"$1"; }
 
   # Switch to the previous OS major version template and retry pct create
   fallback_to_previous_os_version() {
@@ -2900,20 +3021,6 @@ create_lxc_container() {
     if ! pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -q "$TEMPLATE"; then
       msg_error "Template $TEMPLATE not available in storage $TEMPLATE_STORAGE after download."
       exit 223
-    fi
-  fi
-
-  # ------------------------------------------------------------------------------
-  # Dynamic preflight for Debian 13.x: offer upgrade if available (no hard mins)
-  # ------------------------------------------------------------------------------
-  if [[ "$PCT_OSTYPE" == "debian" ]]; then
-    OSVER="$(parse_template_osver "$TEMPLATE")"
-    if [[ -n "$OSVER" ]]; then
-      local _lxc_stack_rc=0
-      offer_lxc_stack_upgrade_and_maybe_retry "no" || _lxc_stack_rc=$?
-      if [[ $_lxc_stack_rc -eq 4 ]]; then
-        exit_script
-      fi
     fi
   fi
 
