@@ -159,6 +159,44 @@ _pct_restart() {
   return 1
 }
 
+# Where a template lands in $TEMPLATE_STORAGE, or the default dir layout when
+# pvesm cannot say.
+_template_path() {
+  local p
+  p="$(pvesm path "${TEMPLATE_STORAGE}:vztmpl/$1" 2>/dev/null)" || p=""
+  echo "${p:-/var/lib/vz/template/cache/$1}"
+}
+
+# ------------------------------------------------------------------------------
+# _template_download_failed <pveam output>
+#
+# Says why the template download failed, as far as the host can tell, and
+# files a network or storage problem as such for the telemetry instead of as
+# a Proxmox one.
+# ------------------------------------------------------------------------------
+_template_download_failed() {
+  local out="$1" host="download.proxmox.com" last
+  last="$(grep -iE 'failed|error|no such|denied|no space' <<<"$out" | tail -n1)"
+  msg_error "Template download failed after 3 attempts: ${TEMPLATE}"
+  [[ -n "$last" ]] && msg_custom "ℹ️" "${YW}" "pveam: ${last}"
+  if grep -qi 'no space left' <<<"$out"; then
+    msg_custom "🔧" "${YW}" "Free up space on storage '${TEMPLATE_STORAGE}', then retry."
+    export ERROR_CATEGORY_OVERRIDE="storage"
+  elif grep -q '^http_proxy:' /etc/pve/datacenter.cfg 2>/dev/null; then
+    msg_custom "🔧" "${YW}" "Downloads go through the HTTP proxy set in Datacenter → Options; check that it is reachable."
+    export ERROR_CATEGORY_OVERRIDE="network"
+  elif ! getent hosts "$host" &>/dev/null; then
+    msg_custom "🔧" "${YW}" "This host cannot resolve ${host}: check its DNS servers (node → System → DNS)."
+    export ERROR_CATEGORY_OVERRIDE="network"
+  elif grep -qiE 'unreachable|timed out|connection refused|name resolution|unable to resolve|interrupted by signal' <<<"$out" ||
+    ! curl -fsI --connect-timeout 10 --max-time 20 -o /dev/null "http://${host}/images/system/"; then
+    msg_custom "🔧" "${YW}" "This host cannot reliably reach ${host}: check its gateway, firewall and connection."
+    export ERROR_CATEGORY_OVERRIDE="network"
+  else
+    msg_custom "🔧" "${YW}" "Try it by hand: pveam download ${TEMPLATE_STORAGE} ${TEMPLATE}"
+  fi
+}
+
 # ------------------------------------------------------------------------------
 # lxc_os_supported <os> <version>
 #
@@ -2986,6 +3024,7 @@ create_lxc_container() {
       msg_warn "Local template is outdated: $TEMPLATE (latest available: $ONLINE_TEMPLATE)"
       if whiptail --yesno "A newer template is available:\n$ONLINE_TEMPLATE\n\nDo you want to download and use it instead?" 12 70; then
         TEMPLATE="$ONLINE_TEMPLATE"
+        TEMPLATE_PATH="$(_template_path "$TEMPLATE")"
         NEED_DOWNLOAD=1
       else
         msg_custom "ℹ️" "${BL}" "Continuing with local template $TEMPLATE"
@@ -3004,14 +3043,29 @@ create_lxc_container() {
         exit 225
       fi
       [[ -f "$TEMPLATE_PATH" ]] && rm -f "$TEMPLATE_PATH"
+      local _dl_out="" _fresh=""
       for attempt in {1..3}; do
         msg_info "Attempt $attempt: Downloading template $TEMPLATE to $TEMPLATE_STORAGE"
-        if pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" >>"${BUILD_LOG:-/dev/null}" 2>&1; then
+        _dl_out="$(pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" 2>&1)" || true
+        printf '%s\n' "$_dl_out" >>"${BUILD_LOG:-/dev/null}"
+        # pveam can report a failed download and still exit 0, so only the
+        # template in storage counts as success.
+        if pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -qF "$TEMPLATE"; then
           msg_ok "Template download successful."
           break
         fi
+        # A catalog left over from a failed update can name a template the
+        # server has replaced since. Refresh it and take the current one.
+        if grep -q 'no such template' <<<"$_dl_out" && _pveam_update; then
+          _fresh="$(_list_templates "$TEMPLATE_SEARCH" "$TEMPLATE_PATTERN" | tail -n1)"
+          if [[ -n "$_fresh" && "$_fresh" != "$TEMPLATE" ]]; then
+            msg_warn "$TEMPLATE is no longer offered, using $_fresh"
+            TEMPLATE="$_fresh"
+            TEMPLATE_PATH="$(_template_path "$TEMPLATE")"
+          fi
+        fi
         if [[ $attempt -eq 3 ]]; then
-          msg_error "Failed after 3 attempts. Please check network access, permissions, or manually run:\n  pveam download $TEMPLATE_STORAGE $TEMPLATE"
+          _template_download_failed "$_dl_out"
           exit 222
         fi
         sleep $((attempt * 5))
