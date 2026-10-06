@@ -544,21 +544,25 @@ incus_set_container_hostname() {
   _incus_soft incus config set "${CT_NAME}" "user.hostname=${hn}" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
   # Prefer instance name for system hostname when UI used CT_ID as name
   local sys_hn="${CT_NAME}"
-  _incus_soft incus_ct_exec bash -c "
+  # sh, not bash: a fresh Alpine image has only busybox at this point.
+  if incus_ct_exec sh -c "
     echo '${sys_hn}' >/etc/hostname
     hostname '${sys_hn}' 2>/dev/null || true
     if command -v hostnamectl >/dev/null 2>&1; then
       hostnamectl set-hostname '${sys_hn}' 2>/dev/null || true
     fi
-    if [[ -f /etc/hosts ]]; then
+    if [ -f /etc/hosts ]; then
       if grep -qE '^127\\.0\\.1\\.1' /etc/hosts; then
-        sed -i 's/^127\\.0\\.1\\.1.*/127.0.1.1\\t${sys_hn}/' /etc/hosts
+        sed -i 's/^127\\.0\\.1\\.1.*/127.0.1.1 ${sys_hn}/' /etc/hosts
       else
-        echo -e '127.0.1.1\\t${sys_hn}' >>/etc/hosts
+        echo '127.0.1.1 ${sys_hn}' >>/etc/hosts
       fi
     fi
-  " >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
-  msg_ok "Hostname set to ${sys_hn}"
+  " >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1; then
+    msg_ok "Hostname set to ${sys_hn}"
+  else
+    msg_warn "Could not set the hostname inside ${CT_NAME} (see the log)"
+  fi
 }
 
 incus_is_gpu_app() {
