@@ -869,8 +869,8 @@ pkg_clean() {
     $STD apk cache clean
     ;;
   dnf)
-    $STD dnf clean all
     $STD dnf autoremove -y
+    $STD dnf clean all
     ;;
   yum)
     $STD yum clean all
