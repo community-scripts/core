@@ -307,7 +307,6 @@ pve_check() {
   fi
   incus_check
 }
-arch_check() { :; }
 arm64_notice() { :; }
 ssh_check() { :; }
 
