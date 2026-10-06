@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: MickLesk
-# License: MIT | https://github.com/community-scripts/ProxmoxVED/raw/main/LICENSE
+# License: MIT | https://github.com/community-scripts/core/raw/main/LICENSE
 
 # ==============================================================================
 # INCUS-TOOLS.FUNC - INCUS COMPATIBILITY + 1:1 MISC TOOLS PARITY
@@ -17,7 +17,7 @@
 [[ -n "${_INCUS_TOOLS_FUNC_LOADED:-}" ]] && return
 _INCUS_TOOLS_FUNC_LOADED=1
 
-INCUS_COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+INCUS_COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}"
 
 # Load Incus core first so msg_*/silent/catch_errors aliases are available.
 if [[ -z "${_INCUS_CORE_FUNC_LOADED:-}" ]]; then

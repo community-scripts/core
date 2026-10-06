@@ -9,7 +9,7 @@ change belongs, what CI enforces, and how to test one.
 Short version:
 
 - Application scripts do not live here. New ones go to
-  [ProxmoxVED](https://github.com/community-scripts/ProxmoxVED), fixes to
+  [DevScripts](https://github.com/community-scripts/DevScripts), fixes to
   [ProxmoxVE](https://github.com/community-scripts/ProxmoxVE), Incus host
   tooling to [Incus](https://github.com/community-scripts/Incus).
 - Source the loaders (`lib/tools.func`, `ui/build-ui.func`, `api/api.func`), not

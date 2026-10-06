@@ -16,7 +16,7 @@ belongs in.
 One line in the `ct/` script, in the same pattern as the other variables:
 
 ```bash
-var_testurl="${var_testurl:-https://github.com/community-scripts/ProxmoxVED/issues/2135}"
+var_testurl="${var_testurl:-https://github.com/community-scripts/DevScripts/issues/2135}"
 ```
 
 Anything else follows from that.
@@ -25,16 +25,16 @@ Anything else follows from that.
 
 | `REPO_SOURCE` | `var_testurl` | Result |
 | ------------- | ------------- | ------ |
-| ProxmoxVED | unset | Generic development warning, links to the repository |
-| ProxmoxVED | set | Names the thread, and does not name a repository |
+| DevScripts | unset | Generic development warning, links to the repository |
+| DevScripts | set | Names the thread, and does not name a repository |
 | anything else | set | The same — a promoted script keeps collecting feedback |
 | anything else | unset | Nothing |
 
 The last row is the fix for a bug this replaced: the development warning used to
 print unconditionally, so every Incus container was told on every login that it
-was an unusable ProxmoxVED build.
+was an unusable DevScripts build.
 
-Rows two and three deliberately drop the ProxmoxVED wording. A script promoted
+Rows two and three deliberately drop the DevScripts wording. A script promoted
 to ProxmoxVE can still want feedback, and telling its users they are running a
 development build would be wrong.
 

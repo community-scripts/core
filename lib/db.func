@@ -182,7 +182,7 @@ EOF
     local HAD_MARIADB_REPO=false
     if [[ -f /etc/apt/sources.list.d/mariadb.sources ]] || [[ -f /etc/apt/sources.list.d/mariadb.list ]]; then
       HAD_MARIADB_REPO=true
-      msg_info "Removing MariaDB official repository (switching to distribution packages)"
+      msg_custom "ℹ️" "${YW}" "Removing MariaDB official repository (switching to distribution packages)"
     fi
 
     # Clean up any existing MariaDB repository files to avoid conflicts
@@ -250,7 +250,7 @@ EOF
 
     # Check if old repo points to a different version
     if [[ -n "$OLD_REPO_VERSION" ]] && [[ "${OLD_REPO_VERSION%.*}" != "${MARIADB_VERSION%.*}" ]]; then
-      msg_info "Cleaning up old MariaDB repository (was: $OLD_REPO_VERSION, requested: $MARIADB_VERSION)"
+      msg_custom "ℹ️" "${YW}" "Cleaning up old MariaDB repository (was: $OLD_REPO_VERSION, requested: $MARIADB_VERSION)"
       cleanup_old_repo_files "mariadb"
       $STD apt update || msg_warn "APT update had issues, continuing..."
     fi
@@ -403,7 +403,7 @@ _setup_mariadb_runtime_dir() {
 #   MARIADB_DB_EXTRA_GRANTS - Comma-separated GRANT statements (optional)
 #                             Example: "GRANT SELECT ON \`mysql\`.\`time_zone_name\`"
 #   MARIADB_DB_SQL_MODE     - Optional global sql_mode override (e.g. "", "STRICT_TRANS_TABLES")
-#   MARIADB_DB_CREDS_FILE   - Credentials file path (optional, default: ~/${APPLICATION}.creds)
+#   MARIADB_DB_CREDS_FILE   - Credentials file path (optional, default: ~/<app>.creds - APPLICATION lowercased, spaces removed)
 #
 # Exports:
 #   MARIADB_DB_NAME, MARIADB_DB_USER, MARIADB_DB_PASS
@@ -444,6 +444,7 @@ setup_mariadb_db() {
   $STD mariadb -u root -e "FLUSH PRIVILEGES;"
 
   local app_name="${APPLICATION,,}"
+  app_name="${app_name// /}"
   local CREDS_FILE="${MARIADB_DB_CREDS_FILE:-${HOME}/${app_name}.creds}"
   {
     echo "MariaDB Credentials"
@@ -498,6 +499,7 @@ setup_mysql_db() {
   $STD mysql -u root -e "FLUSH PRIVILEGES;"
 
   local app_name="${APPLICATION,,}"
+  app_name="${app_name// /}"
   local CREDS_FILE="${MYSQL_DB_CREDS_FILE:-${HOME}/${app_name}.creds}"
   {
     echo "MySQL Credentials"
@@ -570,7 +572,7 @@ setup_meilisearch() {
       local NEEDS_MIGRATION=false
       if [[ "$CURRENT_MAJOR_MINOR" != "$NEW_MAJOR_MINOR" ]]; then
         NEEDS_MIGRATION=true
-        msg_info "MeiliSearch version change detected (${CURRENT_VERSION} → ${NEW_VERSION}), preparing data migration"
+        msg_custom "ℹ️" "${YW}" "MeiliSearch version change detected (${CURRENT_VERSION} → ${NEW_VERSION}), preparing data migration"
       fi
 
       # Read connection + storage paths for the in-place (dumpless) upgrade
@@ -1258,6 +1260,7 @@ setup_postgresql() {
       msg_error "Failed to backup PostgreSQL databases"
       return 150
     }
+    msg_ok "Backed up PostgreSQL ${CURRENT_PG_VERSION} databases to ${PG_BACKUP_FILE}"
     $STD systemctl stop postgresql || true
     $STD apt purge -y "postgresql-${CURRENT_PG_VERSION}" "postgresql-client-${CURRENT_PG_VERSION}" 2>/dev/null || true
   else
@@ -1389,7 +1392,7 @@ setup_postgresql() {
 #
 # Usage:
 #   PG_DB_NAME="myapp_db" PG_DB_USER="myapp_user" setup_postgresql_db
-#   PG_DB_NAME="immich" PG_DB_USER="immich" PG_DB_EXTENSIONS="pgvector" setup_postgresql_db
+#   PG_DB_NAME="discourse" PG_DB_USER="discourse" PG_DB_EXTENSIONS="vector" setup_postgresql_db
 #   PG_DB_NAME="ghostfolio" PG_DB_USER="ghostfolio" PG_DB_GRANT_SUPERUSER="true" setup_postgresql_db
 #   PG_DB_NAME="adventurelog" PG_DB_USER="adventurelog" PG_DB_EXTENSIONS="postgis" setup_postgresql_db
 #   PG_DB_NAME="splitpro" PG_DB_USER="splitpro" PG_DB_EXTENSIONS="pg_cron" setup_postgresql_db
@@ -1398,11 +1401,12 @@ setup_postgresql() {
 #   PG_DB_NAME             - Database name (required)
 #   PG_DB_USER             - Database user (required)
 #   PG_DB_PASS             - Database password (optional, auto-generated if empty)
-#   PG_DB_EXTENSIONS       - Comma-separated list of extensions (optional, e.g. "postgis,pgvector")
+#   PG_DB_EXTENSIONS       - Comma-separated CREATE EXTENSION names (optional, e.g. "postgis,vector";
+#                            pgvector's extension is "vector" - its package comes from PG_MODULES="pgvector")
 #   PG_DB_GRANT_SUPERUSER  - Grant SUPERUSER privilege (optional, "true" to enable, security risk!)
 #   PG_DB_SCHEMA_PERMS     - Grant schema-level permissions (optional, "true" to enable)
 #   PG_DB_SKIP_ALTER_ROLE  - Skip ALTER ROLE settings (optional, "true" to skip)
-#   PG_DB_CREDS_FILE       - Credentials file path (optional, default: ~/${APPLICATION}.creds)
+#   PG_DB_CREDS_FILE       - Credentials file path (optional, default: ~/<app>.creds - APPLICATION lowercased, spaces removed)
 #
 # Exports:
 #   PG_DB_NAME, PG_DB_USER, PG_DB_PASS - For use in calling script
@@ -1421,18 +1425,19 @@ setup_postgresql_db() {
   fi
 
   msg_info "Setting up PostgreSQL Database"
-  # Escape single quotes in identifiers to prevent SQL injection
-  local _pg_user_escaped _pg_pass_escaped _pg_db_escaped
-  _pg_user_escaped="${PG_DB_USER//\'/\'\'}"
+  # Identifiers are double-quoted so names like "4gaboards" stay valid; literals single-quoted
+  local _pg_user_ident _pg_db_ident _pg_pass_escaped _pg_db_literal
+  _pg_user_ident="\"${PG_DB_USER//\"/\"\"}\""
+  _pg_db_ident="\"${PG_DB_NAME//\"/\"\"}\""
   _pg_pass_escaped="${PG_DB_PASS//\'/\'\'}"
-  _pg_db_escaped="${PG_DB_NAME//\'/\'\'}"
+  _pg_db_literal="${PG_DB_NAME//\'/\'\'}"
 
-  $STD sudo -u postgres psql -c "CREATE ROLE $_pg_user_escaped WITH LOGIN PASSWORD '$_pg_pass_escaped';"
-  $STD sudo -u postgres psql -c "CREATE DATABASE $_pg_db_escaped WITH OWNER $_pg_user_escaped ENCODING 'UTF8' TEMPLATE template0;"
+  $STD sudo -u postgres psql -c "CREATE ROLE $_pg_user_ident WITH LOGIN PASSWORD '$_pg_pass_escaped';"
+  $STD sudo -u postgres psql -c "CREATE DATABASE $_pg_db_ident WITH OWNER $_pg_user_ident ENCODING 'UTF8' TEMPLATE template0;"
 
   # Configure pg_cron database BEFORE creating the extension (must be set before pg_cron loads)
   if [[ -n "${PG_DB_EXTENSIONS:-}" ]] && [[ ",${PG_DB_EXTENSIONS//[[:space:]]/}," == *",pg_cron,"* ]]; then
-    $STD sudo -u postgres psql -c "ALTER SYSTEM SET cron.database_name = '${PG_DB_NAME}';"
+    $STD sudo -u postgres psql -c "ALTER SYSTEM SET cron.database_name = '${_pg_db_literal}';"
     $STD sudo -u postgres psql -c "ALTER SYSTEM SET cron.timezone = 'UTC';"
     $STD systemctl restart postgresql
   fi
@@ -1448,35 +1453,36 @@ setup_postgresql_db() {
 
   # Grant pg_cron schema permissions to DB user
   if [[ -n "${PG_DB_EXTENSIONS:-}" ]] && [[ ",${PG_DB_EXTENSIONS//[[:space:]]/}," == *",pg_cron,"* ]]; then
-    $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "GRANT USAGE ON SCHEMA cron TO ${PG_DB_USER};"
-    $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "GRANT ALL ON ALL TABLES IN SCHEMA cron TO ${PG_DB_USER};"
+    $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "GRANT USAGE ON SCHEMA cron TO $_pg_user_ident;"
+    $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "GRANT ALL ON ALL TABLES IN SCHEMA cron TO $_pg_user_ident;"
   fi
 
   # ALTER ROLE settings for Django/Rails compatibility (unless skipped)
   if [[ "${PG_DB_SKIP_ALTER_ROLE:-}" != "true" ]]; then
-    $STD sudo -u postgres psql -c "ALTER ROLE $PG_DB_USER SET client_encoding TO 'utf8';"
-    $STD sudo -u postgres psql -c "ALTER ROLE $PG_DB_USER SET default_transaction_isolation TO 'read committed';"
-    $STD sudo -u postgres psql -c "ALTER ROLE $PG_DB_USER SET timezone TO 'UTC';"
+    $STD sudo -u postgres psql -c "ALTER ROLE $_pg_user_ident SET client_encoding TO 'utf8';"
+    $STD sudo -u postgres psql -c "ALTER ROLE $_pg_user_ident SET default_transaction_isolation TO 'read committed';"
+    $STD sudo -u postgres psql -c "ALTER ROLE $_pg_user_ident SET timezone TO 'UTC';"
   fi
 
   # Schema permissions (if requested)
   if [[ "${PG_DB_SCHEMA_PERMS:-}" == "true" ]]; then
-    $STD sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $PG_DB_NAME TO $PG_DB_USER;"
-    $STD sudo -u postgres psql -c "ALTER USER $PG_DB_USER CREATEDB;"
-    $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "GRANT ALL ON SCHEMA public TO $PG_DB_USER;"
-    $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "GRANT CREATE ON SCHEMA public TO $PG_DB_USER;"
-    $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO $PG_DB_USER;"
-    $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO $PG_DB_USER;"
+    $STD sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $_pg_db_ident TO $_pg_user_ident;"
+    $STD sudo -u postgres psql -c "ALTER USER $_pg_user_ident CREATEDB;"
+    $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "GRANT ALL ON SCHEMA public TO $_pg_user_ident;"
+    $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "GRANT CREATE ON SCHEMA public TO $_pg_user_ident;"
+    $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO $_pg_user_ident;"
+    $STD sudo -u postgres psql -d "$PG_DB_NAME" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO $_pg_user_ident;"
   fi
 
   # Superuser grant (if requested - WARNING!)
   if [[ "${PG_DB_GRANT_SUPERUSER:-}" == "true" ]]; then
-    $STD sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $PG_DB_NAME to $PG_DB_USER;"
-    $STD sudo -u postgres psql -c "ALTER USER $PG_DB_USER WITH SUPERUSER;"
+    $STD sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $_pg_db_ident TO $_pg_user_ident;"
+    $STD sudo -u postgres psql -c "ALTER USER $_pg_user_ident WITH SUPERUSER;"
   fi
 
   # Save credentials
   local app_name="${APPLICATION,,}"
+  app_name="${app_name// /}"
   local CREDS_FILE="${PG_DB_CREDS_FILE:-${HOME}/${app_name}.creds}"
   {
     echo "PostgreSQL Credentials"

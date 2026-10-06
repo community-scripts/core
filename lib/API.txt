@@ -5,6 +5,7 @@ _cs_apt_install_optional
 _cs_clean_target_dir
 _cs_drop_pm_shim
 _cs_repair_dpkg
+_cs_write_cargo_net
 _cs_write_cargo_profile
 _deploy_source_tarball
 _deploy_unpacked_archive
@@ -26,6 +27,7 @@ _forge_source_url
 _forge_stable_filter
 _forge_strip_v
 _gh_scan_older_releases
+_github_release_noapi
 _gl_scan_older_releases
 _install_uvx_wrapper
 _purge_is_safe

@@ -43,7 +43,7 @@ DIAGNOSTICS=yes
 #This file is used to store the diagnostics settings for the Community-Scripts API.
 #https://github.com/community-scripts/ProxmoxVE/discussions/1836
 #Your diagnostics will be sent to the Community-Scripts API for troubleshooting/statistical purposes.
-#You can review the data at https://community-scripts.github.io/ProxmoxVED/data
+#You can review the data at https://community-scripts.org/analytics
 #If you do not wish to send diagnostics, please set the variable 'DIAGNOSTICS' to "no" in ${_diag_file}, or use the menue.
 #This will disable the diagnostics feature.
 #To send diagnostics, set the variable 'DIAGNOSTICS' to "yes" in ${_diag_file}, or use the menue.
@@ -68,7 +68,7 @@ DIAGNOSTICS=no
 #This file is used to store the diagnostics settings for the Community-Scripts API.
 #https://github.com/community-scripts/ProxmoxVE/discussions/1836
 #Your diagnostics will be sent to the Community-Scripts API for troubleshooting/statistical purposes.
-#You can review the data at https://community-scripts.github.io/ProxmoxVED/data
+#You can review the data at https://community-scripts.org/analytics
 #If you do not wish to send diagnostics, please set the variable 'DIAGNOSTICS' to "no" in ${_diag_file}, or use the menue.
 #This will disable the diagnostics feature.
 #To send diagnostics, set the variable 'DIAGNOSTICS' to "yes" in ${_diag_file}, or use the menue.
@@ -206,6 +206,7 @@ install_script() {
   arm64_notice
   ssh_check
   maxkeys_check
+  storage_content_check
   diagnostics_check
 
   if systemctl is-active -q ping-instances.service; then
@@ -343,7 +344,7 @@ install_script() {
       header_info
       CHOICE=""
       ;;
-    "$GENERATED_OPTION" | generated | GENERATED)
+    generated | GENERATED)
       header_info
       echo -e "${DEFAULT}${BOLD}${BL}Using Generated Settings on node $PVEHOST_NAME${CL}"
       VERBOSE="no"
@@ -735,7 +736,7 @@ run_addon_updates() {
   ((${#addons[@]} == 0)) && return 0
 
   if [[ "${PHS_SILENT:-0}" == "1" ]]; then
-    msg_info "Detected ${#addons[@]} addon update script(s) - skipping (PHS_SILENT)"
+    msg_custom "ℹ️" "${YW}" "Detected ${#addons[@]} addon update script(s) - skipping (PHS_SILENT)"
     return 0
   fi
 
@@ -756,7 +757,7 @@ run_addon_updates() {
       bash "$a" || msg_warn "Addon update for $name failed (rc=$?)"
       ;;
     *)
-      msg_info "Skipped addon: $name"
+      msg_custom "ℹ️" "${YW}" "Skipped addon: $name"
       ;;
     esac
   done
@@ -828,11 +829,11 @@ runtime_script_status_guard() {
       [[ "$installed_clean" =~ ^v[0-9] ]] && installed_clean="${installed_clean:1}"
       if [[ "$installed_clean" == "$pinned_clean" ]]; then
         if [[ -n "$pin_reason" ]]; then
-          msg_info "You are already on the pinned version (${pinned_version}). ${pin_reason}"
+          msg_custom "ℹ️" "${YW}" "You are already on the pinned version (${pinned_version}). ${pin_reason}"
         else
-          msg_info "You are already on the pinned version (${pinned_version}). No newer update is offered intentionally — please do not open an issue unless you see an actual error."
+          msg_custom "ℹ️" "${YW}" "You are already on the pinned version (${pinned_version}). No newer update is offered intentionally — please do not open an issue unless you see an actual error."
         fi
-        msg_info "More info: ${info_url}"
+        msg_custom "ℹ️" "${YW}" "More info: ${info_url}"
       fi
     fi
   fi
@@ -1161,7 +1162,7 @@ start() {
     set_std_mode
     _cs_run_update
   elif ! command -v whiptail &>/dev/null || ! [ -t 0 ] || [[ "$TERM" == "dumb" ]]; then
-    msg_info "No interactive terminal detected – defaulting to silent update mode"
+    msg_custom "ℹ️" "${YW}" "No interactive terminal detected – defaulting to silent update mode"
     VERBOSE="no"
     set_std_mode
     _cs_run_update

@@ -39,7 +39,7 @@ jobs:
             if (!head) return;
 
             const base = `https://raw.githubusercontent.com/${head.full_name}/${pr.head.ref}`;
-            const scripts = 'https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main';
+            const scripts = 'https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main';
 
             const files = await github.paginate(github.rest.pulls.listFiles, {
               owner: context.repo.owner, repo: context.repo.repo, pull_number: pr.number,
@@ -75,7 +75,7 @@ jobs:
               '',
               '```bash',
               `curl -fsSL ${base}/tools/run.sh |`,
-              '  bash -s -- https://raw.githubusercontent.com/YOU/ProxmoxVED/your-branch ct/debian.sh \\',
+              '  bash -s -- https://raw.githubusercontent.com/YOU/DevScripts/your-branch ct/debian.sh \\',
               `             ${base}`,
               '```',
               '',

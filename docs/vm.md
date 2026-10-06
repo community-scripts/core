@@ -27,7 +27,8 @@ helpers as unavailable is what keeps it on its fallback branch instead of
 letting it call into a function that would need `qm`. `vm_provision` applies
 the same `CLOUDINIT_*` variables through the `cloud-init.*` instance keys.
 
-One thing to know before editing it: this is the only file in the repository
-that declares functions as `function name() {` rather than `name() {`. Anything
-that greps for function definitions across the engine will miss them unless it
-accounts for that.
+One thing to know before editing it: this file declares its functions as
+`function name() {` rather than `name() {` — the only one that does, apart from
+`get_lxc_ip` in [`core/core.func`](../core/core.func). Anything that greps for
+function definitions across the engine will miss them unless it accounts for
+that.

@@ -2,7 +2,7 @@
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: MickLesk (CanbiZ)
-# License: MIT | https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main/LICENSE
+# License: MIT | https://raw.githubusercontent.com/community-scripts/core/main/LICENSE
 
 # ==============================================================================
 # VM-APP.FUNC - DEPLOY LXC APPLICATIONS INSIDE VIRTUAL MACHINES
@@ -50,17 +50,15 @@ _CS_CURL_RETRY=(--retry 3 --retry-delay 1 --retry-connrefused --connect-timeout 
 list_available_apps() {
   local exclude_pattern="^(debian|ubuntu|alpine|devuan|fedora|centos|rockylinux|almalinux|opensuse|openeuler|gentoo|arm|openeuler)-install\.sh$"
 
-  # Method 1: Local repo checkout
-  if [[ -d "/tmp/proxmoxved-repo/install" ]]; then
-    find /tmp/proxmoxved-repo/install -name '*-install.sh' -printf '%f\n' |
-      grep -vE "$exclude_pattern" |
-      sed 's/-install\.sh$//' |
-      sort || true
-    return 0
+  # The repository the install scripts are fetched from, not a fixed one: a
+  # list from elsewhere offers apps that then fail to download.
+  local slug="community-scripts/ProxmoxVE" ref="main"
+  if [[ "${COMMUNITY_SCRIPTS_URL:-}" =~ ^https://raw\.githubusercontent\.com/([^/]+/[^/]+)/(.+)$ ]]; then
+    slug="${BASH_REMATCH[1]}"
+    ref="${BASH_REMATCH[2]%/}"
   fi
 
-  # Method 2: GitHub contents API (returns JSON array of files)
-  local api_url="https://api.github.com/repos/community-scripts/ProxmoxVED/contents/install"
+  local api_url="https://api.github.com/repos/${slug}/contents/install?ref=${ref}"
   local api_response
   api_response=$(curl -fsSL --connect-timeout 10 --max-time 30 "$api_url" 2>/dev/null) || true
 
@@ -74,21 +72,6 @@ list_available_apps() {
     return 0
   fi
 
-  # Method 3: GitHub API fallback
-  local gh_api_url="https://api.github.com/repos/community-scripts/ProxmoxVED/contents/install"
-  api_response=$(curl -fsSL --connect-timeout 10 --max-time 30 "$gh_api_url" 2>/dev/null) || true
-
-  if [[ -n "$api_response" ]]; then
-    echo "$api_response" |
-      jq -r '.[].name' 2>/dev/null |
-      grep -E '^[a-z0-9_-]+-install\.sh$' |
-      grep -vE "$exclude_pattern" |
-      sed 's/-install\.sh$//' |
-      sort || true
-    return 0
-  fi
-
-  # All methods failed
   return 1
 }
 

@@ -3,7 +3,7 @@
 # Author: tteck (tteckster)
 # Co-Author: MickLesk
 # Co-Author: michelroegl-brunner
-# License: MIT | https://github.com/community-scripts/ProxmoxVED/raw/main/LICENSE
+# License: MIT | https://github.com/community-scripts/core/raw/main/LICENSE
 
 # ==============================================================================
 # INSTALL.FUNC - UNIFIED CONTAINER INSTALLATION & SETUP
@@ -356,7 +356,7 @@ _bootstrap() {
   # Two roots: the engine (core) and the scripts live in separate repos, and
   # inside the container there is no resolver — the host exports both bases.
   # Override either independently for fork/branch testing.
-  COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+  COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}"
   COMMUNITY_SCRIPTS_CORE_URL="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
 
   # A TMPDIR pointing at something that does not exist kills every mktemp in the
@@ -589,12 +589,11 @@ pkg_update() {
         else
           msg_warn "Find Debian mirrors at: https://www.debian.org/mirror/list"
         fi
-        # Only ask when there is someone to answer. Headless, /dev/tty does not
-        # exist, the read fails instantly, custom_mirror stays empty and the
-        # `continue` below spins the loop forever instead of prompting. Falling
-        # through leaves apt_ok=false, which the caller reports properly.
+        # Only ask when there is someone to answer: otherwise the loop spins forever.
+        local mirror_src
         while ! is_unattended; do
-          read -rp "  Enter a mirror hostname (or 'skip' to abort): " custom_mirror </dev/tty || break
+          mirror_src="$(_cs_stdin_source)" || break
+          read -rp "  Enter a mirror hostname (or 'skip' to abort): " custom_mirror <"$mirror_src" || break
           [[ -z "$custom_mirror" ]] && continue
           [[ "$custom_mirror" == "skip" ]] && break
           [[ ! "$custom_mirror" =~ ^[a-zA-Z0-9._-]+$ ]] && {
@@ -1489,7 +1488,7 @@ EOF
   fi
 
   # Create MOTD profile script. The testing block is conditional -- printed
-  # unconditionally it told every Incus container it was a ProxmoxVED build.
+  # unconditionally it told every Incus container it was a DevScripts build.
   local PROFILE_FILE="/etc/profile.d/00_lxc-details.sh"
   cat >"$PROFILE_FILE" <<EOF
 [ -z "\${SSH_CONNECTION:-}\${SSH_TTY:-}" ] && [ -t 1 ] && printf '\033[3J\033[H\033[2J'
@@ -1497,8 +1496,8 @@ echo ""
 EOF
 
   # A script that names a feedback thread does not name a repository: it may
-  # already have been promoted out of ProxmoxVED and still be collecting
-  # feedback, and saying "ProxmoxVED" there would be wrong.
+  # already have been promoted out of DevScripts and still be collecting
+  # feedback, and saying "DevScripts" there would be wrong.
   if [[ -n "${CS_TESTING_URL:-}" ]]; then
     cat >>"$PROFILE_FILE" <<EOF
 echo -e "${BOLD:-}${YW:-}${APPLICATION:-Container} LXC Container - TESTING BUILD${CL:-}"
@@ -1507,7 +1506,7 @@ EOF
   elif [[ "${CS_TESTING:-}" == "yes" ]]; then
     cat >>"$PROFILE_FILE" <<EOF
 echo -e "${BOLD:-}${YW:-}${APPLICATION:-Container} LXC Container - DEV Repository${CL:-}"
-echo -e "${RD:-}WARNING: This is a DEVELOPMENT version (ProxmoxVED). Do NOT use in production!${CL:-}"
+echo -e "${RD:-}WARNING: This is a DEVELOPMENT version (DevScripts). Do NOT use in production!${CL:-}"
 EOF
   else
     cat >>"$PROFILE_FILE" <<EOF
@@ -1531,7 +1530,7 @@ echo -e "${YW:-} Works, broken, or anything odd - one line is enough.${CL:-}"
 EOF
   elif [[ "${CS_TESTING:-}" == "yes" ]]; then
     cat >>"$PROFILE_FILE" <<EOF
-echo -e "${YW:-} Repository: ${GN:-}https://github.com/community-scripts/ProxmoxVED${CL:-}"
+echo -e "${YW:-} Repository: ${GN:-}https://github.com/community-scripts/DevScripts${CL:-}"
 EOF
   fi
 
@@ -1560,9 +1559,9 @@ EOF
     cat >/etc/motd <<EOF
 
 ${APPLICATION:-Container} LXC Container - DEV Repository
-WARNING: This is a DEVELOPMENT version (ProxmoxVED). Do NOT use in production!
+WARNING: This is a DEVELOPMENT version (DevScripts). Do NOT use in production!
  OS: ${os_name} - Version: ${os_version}
- Repository: https://github.com/community-scripts/ProxmoxVED
+ Repository: https://github.com/community-scripts/DevScripts
 
 EOF
   else
@@ -1820,7 +1819,7 @@ EOF
     write_update_entrypoint "$app" "$update_script_name"
   else
     # Defensive fallback if core.func is not loaded: legacy direct-pull entrypoint.
-    echo "bash -c \"\$(curl -fsSL ${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}/ct/${update_script_name}.sh)\"" >/usr/bin/update
+    echo "bash -c \"\$(curl -fsSL ${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}/ct/${update_script_name}.sh)\"" >/usr/bin/update
     chmod +x /usr/bin/update
   fi
 

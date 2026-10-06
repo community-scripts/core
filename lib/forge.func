@@ -133,6 +133,37 @@ prompt_for_github_token() {
 }
 
 # ------------------------------------------------------------------------------
+# _github_release_noapi <repo> <tag|latest> <outfile>
+#
+# - Builds the release object the API would have returned, as far as callers
+#   read it (tag_name, assets with their download URLs), from github.com
+#   itself, which the API rate limit does not cover: the tag from where
+#   /releases/latest redirects, the assets from the release's
+#   expanded_assets page
+# - For a rate-limited API: 60 calls an hour per address are soon spent behind
+#   a shared address, and retrying seconds later does not help
+# ------------------------------------------------------------------------------
+_github_release_noapi() {
+  local repo="$1" tag="$2" out="$3" loc html
+  if [[ "$tag" == "latest" ]]; then
+    loc="$(curl -sSI --connect-timeout 10 --max-time 30 "https://github.com/${repo}/releases/latest" 2>/dev/null |
+      tr -d '\r' | awk 'tolower($1) == "location:" {print $2}' | tail -n1)"
+    [[ "$loc" == */releases/tag/* ]] || return 1
+    tag="${loc##*/releases/tag/}"
+    tag="$(printf '%b' "${tag//%/\\x}")"
+  fi
+  html="$(curl -fsSL --connect-timeout 10 --max-time 30 "https://github.com/${repo}/releases/expanded_assets/${tag}" 2>/dev/null)" || return 1
+  {
+    grep -oE 'href="[^"]+"' <<<"$html" | sed -E 's/^href="//; s/"$//' |
+      grep -iF "/${repo}/releases/download/" | sort -u || true
+  } | jq -R -s --arg tag "$tag" '{
+      tag_name: $tag, name: $tag, draft: false, prerelease: false, body: "",
+      assets: (split("\n") | map(select(length > 0))
+        | map({name: (split("/") | last), browser_download_url: ("https://github.com" + .)}))
+    }' >"$out" 2>/dev/null
+}
+
+# ------------------------------------------------------------------------------
 # GitHub API call with authentication and rate limit handling
 # ------------------------------------------------------------------------------
 github_api_call() {
@@ -170,7 +201,13 @@ github_api_call() {
       fi
       return 22
       ;;
-    403)
+    403 | 429)
+      # A release can still be read from github.com without the API.
+      if [[ "$url" =~ ^https://api\.github\.com/repos/([^/]+/[^/]+)/releases/(latest|tags/(.+))$ ]] &&
+        _github_release_noapi "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]:-latest}" "$output_file"; then
+        msg_warn "GitHub API rate limit reached; read the release from github.com instead. A token avoids this: var_github_token"
+        return 0
+      fi
       # Rate limit - check if we can retry
       if [[ $attempt -lt $max_retries ]]; then
         msg_warn "GitHub API rate limit, waiting ${retry_delay}s... (attempt $attempt/$max_retries)"
@@ -470,21 +507,45 @@ _download_source_tarball() {
 # directory" for entries deleted on purpose. A file rather than an array,
 # because node_modules reaches tens of thousands of paths.
 _cs_clean_target_dir() {
-  local dir="${1:?directory}" list
+  local dir="${1:?directory}" list entry stash=""
   [[ -d "$dir" ]] || return 0
+  dir="${dir%/}"
+
+  # Moved aside rather than pruned from find: a kept path can be nested, and
+  # removing its parent would take it along. mv also keeps a symlink a symlink.
+  local -a keep=()
+  [[ -n "${CLEAN_INSTALL_KEEP:-}" ]] && read -ra keep <<<"$CLEAN_INSTALL_KEEP"
+  if ((${#keep[@]})); then
+    stash="$(mktemp -d -p "$(dirname "$dir")" .clean-keep.XXXXXX)" || return 1
+    for entry in "${keep[@]}"; do
+      entry="${entry#/}"
+      [[ -n "$entry" && -e "$dir/$entry" ]] || continue
+      mkdir -p "$stash/$(dirname "$entry")"
+      mv "$dir/$entry" "$stash/$entry" || msg_warn "Could not preserve ${entry}"
+    done
+  fi
 
   # mountpoint lives in util-linux, which a minimal Alpine may not have. Without
   # it the -exec below would fail once per directory, and there is nothing to
   # protect anyway -- so drop the top-level entries and let rm recurse.
   if ! command -v mountpoint >/dev/null 2>&1; then
     find "${dir:?}" -mindepth 1 -maxdepth 1 -print0 | xargs -0 rm -rf --
-    return 0
+  else
+    list="$(mktemp)" || return 1
+    find "${dir:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o -print0 >"$list"
+    xargs -0 rm -rf -- <"$list"
+    rm -f "$list"
   fi
 
-  list="$(mktemp)" || return 1
-  find "${dir:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o -print0 >"$list"
-  xargs -0 rm -rf -- <"$list"
-  rm -f "$list"
+  if [[ -n "$stash" ]]; then
+    for entry in "${keep[@]}"; do
+      entry="${entry#/}"
+      [[ -n "$entry" && -e "$stash/$entry" ]] || continue
+      mkdir -p "$dir/$(dirname "$entry")"
+      mv "$stash/$entry" "$dir/$entry" || msg_warn "Could not restore ${entry}"
+    done
+    rm -rf "$stash"
+  fi
 }
 
 # ------------------------------------------------------------------------------
@@ -498,6 +559,8 @@ _cs_clean_target_dir() {
 #   - Honors CLEAN_INSTALL=1 (wipes <target> first, dotfiles included, mount
 #     points preserved — back up config dotfiles like .env via create_backup
 #     and call restore_backup BEFORE any build step that sources them).
+#   - Honors CLEAN_INSTALL_KEEP, a space-separated list of paths relative to
+#     <target> that the wipe leaves alone (e.g. "geodata .env data/uploads").
 #   - Does NOT own <workdir>: the caller creates it and is responsible for its
 #     cleanup (typically via a RETURN trap on its tmpdir).
 #   - cp failures are non-fatal here, matching the previous inline behavior.
@@ -543,6 +606,8 @@ _deploy_source_tarball() {
 #   - Honors CLEAN_INSTALL=1 (wipes <target> first, dotfiles included, mount
 #     points preserved — back up config dotfiles like .env via create_backup
 #     and call restore_backup BEFORE any build step that sources them).
+#   - Honors CLEAN_INSTALL_KEEP, a space-separated list of paths relative to
+#     <target> that the wipe leaves alone (e.g. "geodata .env data/uploads").
 #   - Does NOT own <workdir>: the caller creates it and cleans it up.
 #
 # Returns: 0 on success, 65 on unsupported format, 251 on extraction failure,
@@ -1086,7 +1151,7 @@ fetch_and_deploy_gh_branch() {
 #
 # check_for_gh_release / _gl_ / _codeberg_ stay as wrappers, so no call site has
 # to change. None of them inspects the return code either: every call across
-# ProxmoxVE, ProxmoxVED and Incus is `if check_for_...; then`, which is why the
+# ProxmoxVE, DevScripts and Incus is `if check_for_...; then`, which is why the
 # previously divergent code sets can safely become one union.
 # ==============================================================================
 
@@ -1445,6 +1510,15 @@ _forge_release_json() {
     fi
 
     if [[ "$code" == "$(_forge_descriptor "$forge" ratelimit)" ]]; then
+      # Waiting seconds does not lift an hourly limit, but github.com itself
+      # still answers for the latest stable release or a named tag.
+      if [[ "$forge" == "github" && -z "$tag_prefix" ]] &&
+        { [[ "$version" != "latest" ]] || [[ "${GH_INCLUDE_PRERELEASE:-0}" != "1" ]]; } &&
+        _github_release_noapi "$repo" "$version" "$out"; then
+        msg_warn "GitHub API rate limit reached; read the release from github.com instead. A token avoids this: var_github_token"
+        rm -f "$raw"
+        return 0
+      fi
       if ((attempt < ${#timeouts[@]})); then
         msg_warn "${forge} rate limit hit, retrying in ${delay}s... (attempt ${attempt}/${#timeouts[@]})"
         sleep "$delay"
@@ -1690,7 +1764,7 @@ check_for_release() {
 }
 
 # Wrapper: the implementation is check_for_release. Kept so the 82 call
-# sites in ProxmoxVED and the ~900 in ProxmoxVE keep working unchanged.
+# sites in DevScripts and the ~900 in ProxmoxVE keep working unchanged.
 check_for_gh_release() {
   check_for_release github "$1" "$2" "${3:-}" "${4:-}" "${5:-}"
 }
@@ -2218,10 +2292,11 @@ fetch_and_deploy_from_url() {
   }
   trap 'rm -rf "$tmpdir" "${unpack_tmp:-}"; trap - RETURN' RETURN
 
-  curl -fsSL -o "$tmpdir/$filename" "$url" || {
+  curl_download "$tmpdir/$filename" "$url" || {
     msg_error "Download failed: $url"
     return 250
   }
+  msg_ok "Downloaded ${filename}"
 
   # Auto-detect archive type using file description
   local file_desc
@@ -2248,7 +2323,7 @@ fetch_and_deploy_from_url() {
     return 65
   fi
 
-  msg_info "Detected archive type: $archive_type (file type: $file_desc)"
+  debug_log "Detected archive type: $archive_type (file type: $file_desc)"
 
   if [[ "$archive_type" == "deb" ]]; then
     msg_info "Installing .deb package"

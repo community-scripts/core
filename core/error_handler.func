@@ -162,7 +162,7 @@ if ! declare -f explain_exit_code &>/dev/null; then
     205) echo "Proxmox: Invalid CTID (<100)" ;;
     206) echo "Proxmox: CTID already in use" ;;
     207) echo "Proxmox: Password contains unescaped special characters" ;;
-    208) echo "Proxmox: Invalid configuration (DNS/MAC/Network format)" ;;
+    208) echo "Proxmox: Invalid container settings (network, DNS, RAM, password, mounts)" ;;
     209) echo "Proxmox: Container creation failed" ;;
     210) echo "Proxmox: Cluster not quorate" ;;
     211) echo "Proxmox: Timeout waiting for template lock" ;;
@@ -181,7 +181,8 @@ if ! declare -f explain_exit_code &>/dev/null; then
     224) echo "Proxmox: PBS storage is for backups only" ;;
     225) echo "Proxmox: No template available for OS/Version" ;;
     226) echo "Proxmox: VM disk import or post-creation setup failed" ;;
-    231) echo "Proxmox: LXC stack upgrade failed" ;;
+    228) echo "Proxmox: Cluster filesystem /etc/pve not available" ;;
+    231) echo "Proxmox: LXC stack too old for the template, or its upgrade failed" ;;
     232) echo "Tools: Wrong execution environment (run on PVE host, not inside LXC)" ;;
     233) echo "Tools: Application not installed (update prerequisite missing)" ;;
     234) echo "Tools: No LXC containers found or available" ;;
@@ -484,15 +485,14 @@ _eh_hint_node_oom() {
     { [[ "$node_build" == "true" ]] && [[ "$exit_code" =~ ^(134|137)$ ]]; } ||
     return 0
 
-  local mb=""
+  local mb="" kb
+  kb=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo "")
   if [[ "${NODE_OPTIONS:-}" =~ max-old-space-size=([0-9]+) ]]; then
     mb="${BASH_REMATCH[1]}"
+  elif [[ "$kb" =~ ^[0-9]+$ ]]; then
+    mb=$((kb / 1024 * 75 / 100))
   elif [[ "${var_ram:-}" =~ ^[0-9]+$ ]]; then
     mb=$((var_ram * 75 / 100))
-  else
-    local kb
-    kb=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo "")
-    [[ "$kb" =~ ^[0-9]+$ ]] && mb=$((kb / 1024 * 75 / 100))
   fi
 
   if [[ -z "$mb" ]] || ((mb < 1024)); then

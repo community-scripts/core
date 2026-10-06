@@ -130,7 +130,7 @@ advanced_settings() {
     if [[ -n "$BRIDGES" ]]; then
       while IFS= read -r bridge; do
         if [[ -n "$bridge" ]]; then
-          local description=$(grep -A 10 "iface $bridge" /etc/network/interfaces 2>/dev/null | grep '^#' | head -n1 | sed 's/^#\s*//')
+          local description=$(grep -A 10 "iface $bridge" /etc/network/interfaces 2>/dev/null | grep '^#' | head -n1 | sed 's/^#[[:space:]-]*//')
           BRIDGE_MENU_OPTIONS+=("$bridge" "${description:- }")
         fi
       done <<<"$BRIDGES"
@@ -345,9 +345,11 @@ advanced_settings() {
         --inputbox "\nAllocate RAM in MiB" 10 58 "$_ram_size" \
         3>&1 1>&2 2>&3); then
         local ram_test="${result:-$var_ram}"
-        if [[ "$ram_test" =~ ^[1-9][0-9]*$ ]]; then
+        if validate_ram_size "$ram_test"; then
           _ram_size="$ram_test"
           ((STEP++))
+        elif [[ "$ram_test" =~ ^[1-9][0-9]*$ ]]; then
+          whiptail --msgbox "RAM is set in MiB, and ${ram_test} MiB is too little.\n\nDid you mean $((ram_test * 1024)) MiB (${ram_test} GiB)?" 10 58
         else
           whiptail --msgbox "RAM size must be a positive integer!" 8 58
         fi
@@ -605,8 +607,12 @@ advanced_settings() {
         --ok-button "Next" --cancel-button "Back" \
         --inputbox "\nSet DNS Search Domain\n(leave blank to use host setting)" 12 58 "" \
         3>&1 1>&2 2>&3); then
-        _sd="$result"
-        ((STEP++))
+        if validate_searchdomain "$result"; then
+          _sd="$result"
+          ((STEP++))
+        else
+          whiptail --msgbox "Not a valid DNS domain.\n\nExample: home.lan or example.com" 10 58
+        fi
       else
         ((STEP--))
       fi
@@ -621,8 +627,12 @@ advanced_settings() {
         --ok-button "Next" --cancel-button "Back" \
         --inputbox "\nSet DNS Server IP\n(leave blank to use host setting)" 12 58 "" \
         3>&1 1>&2 2>&3); then
-        _ns="$result"
-        ((STEP++))
+        if validate_nameservers "$result"; then
+          _ns="$result"
+          ((STEP++))
+        else
+          whiptail --msgbox "Enter IP addresses only, separated by spaces.\n\nExample: 1.1.1.1 9.9.9.9" 10 58
+        fi
       else
         ((STEP--))
       fi
@@ -1025,8 +1035,12 @@ advanced_settings() {
         result="${result// /}"
         result="${result%%,}"
         result="${result##,}"
-        _mount_fs="$result"
-        ((STEP++))
+        if validate_mount_fs "$result"; then
+          _mount_fs="$result"
+          ((STEP++))
+        else
+          whiptail --msgbox "Enter filesystem types such as nfs, cifs or ext4, not paths.\n\nTo share a host directory, add a bind mount (mp0) to the container after it is created." 12 66
+        fi
       else
         ((STEP--))
       fi

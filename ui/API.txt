@@ -12,6 +12,7 @@ _cs_run_os_section
 _cs_run_update
 _cs_runtime_cache_dir
 _cs_scripts_ref_line
+_cs_stdin_source
 _dev_step_end
 _dev_step_key
 _dev_step_start
@@ -32,11 +33,13 @@ _eh_signal_exit
 _eh_warn
 _eh_write_debug_log
 _get_current_ip
+_in_zone_tab
 _is_container_context
 _is_whitelisted_key
 _list_os_versions
 _list_templates
 _load_vars_file_to_map
+_msg_block_resume
 _msg_fit
 _pve_version
 _pveam_available
@@ -50,6 +53,7 @@ _tm_find_errinfo
 _tm_payload
 _tm_pick_logfile
 _tm_send
+_vars_file_value
 _write_storage_to_vars
 advanced_settings
 apt_conffile_guard
@@ -146,6 +150,8 @@ on_interrupt
 on_pve_host
 on_terminate
 parse_dev_mode
+pct_timezone
+pmxcfs_check
 post_addon_to_api
 post_progress_to_api
 post_to_api
@@ -158,6 +164,7 @@ prompt_input_required
 prompt_password
 prompt_select
 pve_check
+random_password
 reclaim_tty
 require_debian_like
 require_pve_host
@@ -194,8 +201,12 @@ validate_hostname
 validate_ip_address
 validate_ipv6_address
 validate_mac_address
+validate_mount_fs
 validate_mtu
+validate_nameservers
+validate_ram_size
 validate_sdn_vnet
+validate_searchdomain
 validate_tags
 validate_timezone
 validate_vlan_tag

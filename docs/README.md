@@ -7,7 +7,7 @@ library used by install scripts.
 
 Nothing here is run directly. A script in
 [ProxmoxVE](https://github.com/community-scripts/ProxmoxVE),
-[ProxmoxVED](https://github.com/community-scripts/ProxmoxVED) or
+[DevScripts](https://github.com/community-scripts/DevScripts) or
 [Incus](https://github.com/community-scripts/Incus) sources
 [`core/build.func`](../core/build.func) as its first act, and everything else
 follows from there.

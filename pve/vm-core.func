@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2021-2026 community-scripts ORG
-# License: MIT | https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main/LICENSE
+# License: MIT | https://raw.githubusercontent.com/community-scripts/core/main/LICENSE
 
 # Unified entry point: Proxmox VE and Incus VM scripts share vm/ templates.
 [[ -n "${_VM_CORE_DISPATCHED:-}" ]] && return
@@ -10,7 +10,7 @@ _VM_CORE_DISPATCHED=1
 # that does not itself need downloading first. See core/build.func.
 _CS_CURL_RETRY=(--retry 3 --retry-delay 1 --retry-connrefused --connect-timeout 10)
 
-COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}"
 
 if command -v pveversion &>/dev/null; then
   :
@@ -58,7 +58,7 @@ SPINNER_MSG=""
 [[ -n "${_CORE_FUNC_LOADED:-}" ]] && return
 _CORE_FUNC_LOADED=1
 
-COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}"
 
 load_api_functions() {
   if ! declare -f post_to_api_vm >/dev/null 2>&1; then
@@ -2023,14 +2023,15 @@ vm_enable_consoles() {
   # trixie no longer accepts an empty one - so the getty above puts a prompt
   # nobody can answer on tty1. Decided in the guest: the caller's
   # USE_CLOUD_INIT is only set once vm_prompt_cloud_init has run.
-  # Template level, the way Debian ships the serial one, so it holds for
-  # whichever instance systemd starts. serial-getty is left alone - those
-  # images already autologin there, and it carries --keep-baud.
+  # Template level, so it holds for whichever instance systemd starts. The
+  # nocloud images no longer ship an autologin of their own on either console.
   _vm_customize "console autologin" "$image" --run-command \
     'if ! command -v cloud-init >/dev/null 2>&1; then
-       mkdir -p /etc/systemd/system/getty@.service.d
+       mkdir -p /etc/systemd/system/getty@.service.d /etc/systemd/system/serial-getty@.service.d
        printf "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear %%I \$TERM\n" \
          >/etc/systemd/system/getty@.service.d/autologin.conf
+       printf "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --keep-baud 115200,57600,38400,9600 %%I \$TERM\n" \
+         >/etc/systemd/system/serial-getty@.service.d/autologin.conf
      fi'
 
   # A getty alone only gets you a login prompt after boot -- the kernel still

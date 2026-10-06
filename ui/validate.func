@@ -496,20 +496,122 @@ validate_gateway_ip() {
 # ------------------------------------------------------------------------------
 # validate_timezone()
 #
-# - Validates timezone string against system zoneinfo
+# - Validates a timezone the way pct does: UTC or a zone.tab name, or an alias
+#   of one (see pct_timezone)
 # - Empty value or "host" is allowed
 # - Returns 0 if valid, 1 if invalid
 # ------------------------------------------------------------------------------
 validate_timezone() {
   local tz="$1"
   [[ -z "$tz" || "$tz" == "host" ]] && return 0
+  [[ -n "$(pct_timezone "$tz")" ]]
+}
 
-  # Check if timezone file exists
-  if [[ ! -f "/usr/share/zoneinfo/$tz" ]]; then
-    return 1
+_in_zone_tab() {
+  awk -F'\t' -v z="$1" '!/^#/ && $3 == z {f = 1} END {exit !f}' /usr/share/zoneinfo/zone.tab 2>/dev/null
+}
+
+# ------------------------------------------------------------------------------
+# pct_timezone()
+#
+# - Prints a zone the way pct accepts it: UTC or a name from zone.tab
+# - "host" is resolved here instead of by pct, whose timedatectl call fails on
+#   some hosts
+# - Aliases such as US/Eastern resolve to their canonical zone, through the
+#   zoneinfo link or, with tzdata-legacy not installed, through tzdata.zi
+# - Prints nothing for a zone pct cannot take (Etc/GMT+1), so the container
+#   keeps the template's own setting
+# ------------------------------------------------------------------------------
+pct_timezone() {
+  local tz="$1" real
+  if [[ "$tz" == "host" ]]; then
+    tz="$(cat /etc/timezone 2>/dev/null)"
+    if [[ -z "$tz" ]]; then
+      tz="$(readlink -f /etc/localtime 2>/dev/null)"
+      tz="${tz#/usr/share/zoneinfo/}"
+    fi
   fi
-
+  [[ -n "$tz" ]] || return 0
+  case "$tz" in
+  UTC | Etc/UTC | Etc/UCT | Etc/Universal | Etc/Zulu | Universal | Zulu | UCT)
+    echo "UTC"
+    return 0
+    ;;
+  esac
+  if _in_zone_tab "$tz"; then
+    echo "$tz"
+    return 0
+  fi
+  real="$(readlink -f "/usr/share/zoneinfo/$tz" 2>/dev/null)"
+  real="${real#/usr/share/zoneinfo/}"
+  if [[ "$real" != "$tz" ]] && _in_zone_tab "$real"; then
+    echo "$real"
+    return 0
+  fi
+  real="$(awk -v z="$tz" '$1 == "L" && $3 == z {print $2; exit}' /usr/share/zoneinfo/tzdata.zi 2>/dev/null)"
+  if [[ -n "$real" ]] && _in_zone_tab "$real"; then
+    echo "$real"
+  fi
   return 0
+}
+
+# ------------------------------------------------------------------------------
+# validate_ram_size()
+#
+# - RAM in MiB, at least 128: below that a Debian container cannot install
+#   anything, and the value is nearly always GiB typed into a MiB field
+# ------------------------------------------------------------------------------
+validate_ram_size() {
+  [[ "$1" =~ ^[1-9][0-9]*$ ]] && (($1 >= 128))
+}
+
+# ------------------------------------------------------------------------------
+# validate_nameservers()
+#
+# - IPv4/IPv6 addresses separated by spaces or commas, as pct's nameserver
+#   takes; host names are not accepted there
+# - Empty value is allowed
+# ------------------------------------------------------------------------------
+validate_nameservers() {
+  local ns
+  local -a list
+  read -ra list <<<"${1//[,;]/ }"
+  for ns in "${list[@]}"; do
+    validate_gateway_ip "$ns" && continue
+    [[ "$ns" != */* ]] && validate_ipv6_address "$ns" && continue
+    return 1
+  done
+}
+
+# ------------------------------------------------------------------------------
+# validate_searchdomain()
+#
+# - DNS names separated by spaces or commas, e.g. example.com
+# - Empty value is allowed
+# ------------------------------------------------------------------------------
+validate_searchdomain() {
+  local d label='[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+  local -a list
+  read -ra list <<<"${1//[,;]/ }"
+  for d in "${list[@]}"; do
+    [[ "$d" =~ ^(${label}\.)*${label}\.?$ ]] || return 1
+  done
+}
+
+# ------------------------------------------------------------------------------
+# validate_mount_fs()
+#
+# - Filesystem types a container may mount (feature mount=), e.g. nfs, cifs
+# - Paths are not filesystem types: sharing a host directory is a bind mount
+# - Empty value is allowed
+# ------------------------------------------------------------------------------
+validate_mount_fs() {
+  local fs
+  local -a list
+  read -ra list <<<"${1//[,;]/ }"
+  for fs in "${list[@]}"; do
+    [[ "$fs" =~ ^[a-z0-9_]+$ ]] || return 1
+  done
 }
 
 # ------------------------------------------------------------------------------

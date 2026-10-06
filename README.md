@@ -53,7 +53,7 @@ Incus script tree.
 | ---------- | -------- |
 | **core** (this repo) | The engine |
 | [ProxmoxVE](https://github.com/community-scripts/ProxmoxVE) | Application scripts — `ct/`, `install/`, `vm/`, `json/`, `tools/pve/` |
-| [ProxmoxVED](https://github.com/community-scripts/ProxmoxVED) | Where new scripts are tested before they move to ProxmoxVE |
+| [DevScripts](https://github.com/community-scripts/DevScripts) | Where new scripts are tested before they move to ProxmoxVE |
 | [Incus](https://github.com/community-scripts/Incus) | Incus scripts and host tooling |
 
 ---

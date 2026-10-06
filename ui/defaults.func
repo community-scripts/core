@@ -1164,13 +1164,27 @@ maybe_offer_save_app_defaults() {
   rm -f "$new_tmp" "$diff_tmp"
 }
 
+# One var_* value from a .vars file, read the way load_vars_file reads it:
+# one pair of quotes dropped, an unquoted value ends at #.
+_vars_file_value() {
+  local line val
+  line=$(grep -E "^[[:space:]]*$2=" "$1" 2>/dev/null | tail -n1 || true)
+  [[ -z "$line" ]] && return 0
+  line="${line#"${line%%[![:space:]]*}"}"
+  val="${line#*=}"
+  [[ "$val" =~ ^[\"\'] ]] || val="${val%%#*}"
+  val="${val%"${val##*[![:space:]]}"}"
+  if [[ "$val" =~ ^\"(.*)\"$ || "$val" =~ ^\'(.*)\'$ ]]; then val="${BASH_REMATCH[1]}"; fi
+  printf '%s' "$val"
+}
+
 ensure_storage_selection_for_vars_file() {
   local vf="$1"
 
   # Read stored values (if any)
   local tpl ct
-  tpl=$(grep -E '^var_template_storage=' "$vf" | cut -d= -f2-)
-  ct=$(grep -E '^var_container_storage=' "$vf" | cut -d= -f2-)
+  tpl=$(_vars_file_value "$vf" var_template_storage)
+  ct=$(_vars_file_value "$vf" var_container_storage)
 
   if [[ -n "$tpl" && -n "$ct" ]]; then
     TEMPLATE_STORAGE="$tpl"

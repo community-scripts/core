@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: MickLesk
-# License: MIT | https://github.com/community-scripts/ProxmoxVED/raw/main/LICENSE
+# License: MIT | https://github.com/community-scripts/core/raw/main/LICENSE
 
 # ==============================================================================
 # INCUS-BUILD.FUNC - INCUS ENTRY + HOOKS OVER SHARED BUILD UI
@@ -13,7 +13,7 @@
 [[ -n "${_INCUS_BUILD_FUNC_LOADED:-}" ]] && return
 _INCUS_BUILD_FUNC_LOADED=1
 
-INCUS_COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main}"
+INCUS_COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}"
 
 # Mark update-mode when we are inside an Incus container (not the host daemon).
 if declare -f is_incus_container >/dev/null 2>&1 && is_incus_container; then
@@ -246,6 +246,7 @@ _incus_sync_from_pve_settings() {
     ;;
   esac
   PROFILE="${var_profile:-default}"
+  CONTAINER_STORAGE="${CONTAINER_STORAGE:-${var_container_storage:-}}"
   STORAGE_POOL="${CONTAINER_STORAGE:-${STORAGE_POOL:-}}"
   if [[ -z "$STORAGE_POOL" ]]; then
     STORAGE_POOL=$(incus storage list -f csv,noheader 2>/dev/null | head -1 | cut -d, -f1)
@@ -420,21 +421,19 @@ ensure_storage_selection_for_vars_file() {
   [[ -z "$vf" ]] && vf="$(community_scripts_dir)/default.vars"
   [[ -f "$vf" ]] || { mkdir -p "$(dirname "$vf")" 2>/dev/null || true; touch "$vf" 2>/dev/null || true; }
 
-  local tpl ct
-  tpl=$(grep -E '^var_template_storage=' "$vf" 2>/dev/null | cut -d= -f2-)
-  ct=$(grep -E '^var_container_storage=' "$vf" 2>/dev/null | cut -d= -f2-)
+  # Incus has no template storage: only the container pool is asked for.
+  local ct="${var_container_storage:-}"
+  [[ -z "$ct" ]] && ct=$(_vars_file_value "$vf" var_container_storage)
 
-  if [[ -n "$tpl" && -n "$ct" ]] && incus storage info "$ct" &>/dev/null; then
-    TEMPLATE_STORAGE="$tpl"
+  if [[ -n "$ct" ]] && incus storage info "$ct" &>/dev/null; then
     CONTAINER_STORAGE="$ct"
     if [[ -n "${DISK_SIZE:-}" ]]; then
       validate_storage_space "$ct" "$DISK_SIZE" "yes" || true
     fi
-    return 0
+  else
+    choose_and_set_storage_for_file "$vf" container
   fi
-
-  choose_and_set_storage_for_file "$vf" template
-  choose_and_set_storage_for_file "$vf" container
+  TEMPLATE_STORAGE="$CONTAINER_STORAGE"
 }
 
 select_storage() {
@@ -591,7 +590,7 @@ build_container() {
 
 description() {
   CTID="${CT_NAME:-$CTID}"
-  IP=$(incus exec "${CT_NAME}" -- hostname -I 2>/dev/null | awk '{print $1}')
+  IP=$(incus exec "${CT_NAME}" -- hostname -I 2>/dev/null | awk '{print $1}' || true)
   [[ -z "$IP" ]] && IP=$(incus_instance_field "${CT_NAME}" 4 | tr -d '"' | cut -d' ' -f1)
   export IP
   incus config set "${CT_NAME}" user.description "${APP} LXC (community-scripts)" 2>/dev/null || true
