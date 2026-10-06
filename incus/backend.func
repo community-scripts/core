@@ -833,7 +833,7 @@ incus_configure_device_passthrough() {
     fi
   fi
 
-  if [[ "${ENABLE_TUN:-no}" == "yes" ]]; then
+  if [[ "${ENABLE_TUN:-no}" == "yes" ]] && ! incus_ct_exec test -c /dev/net/tun 2>/dev/null; then
     if incus config device add "${CT_NAME}" tun unix-char source=/dev/net/tun path=/dev/net/tun \
       >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1; then
       msg_ok "TUN device attached"
