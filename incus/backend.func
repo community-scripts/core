@@ -51,6 +51,38 @@ _incus_nic_supports_ip() {
   esac
 }
 
+# A system container takes only a plain address (a DHCP reservation) and no
+# gateway; CIDR and ipv4/ipv6.gateway are OCI-only and stop it from starting.
+_incus_apply_addresses() {
+  local changed=1 addr gw net_gw
+  if [[ -n "${NET:-}" && "${NET}" != "dhcp" ]]; then
+    addr="${NET%%/*}"
+    _incus_device_set ipv4.address "$addr" "Could not reserve ${addr} on '${BRG}' (see the log); the container keeps a DHCP address" && changed=0 || true
+  fi
+
+  gw="${GATE:-}"
+  gw="${gw#,gw=}"
+  if [[ -n "$gw" ]]; then
+    net_gw="$(incus network get "$BRG" ipv4.dhcp.gateway 2>/dev/null || true)"
+    if [[ -z "$net_gw" ]]; then
+      net_gw="$(incus network get "$BRG" ipv4.address 2>/dev/null || true)"
+      net_gw="${net_gw%%/*}"
+    fi
+    if [[ "$gw" != "$net_gw" ]]; then
+      msg_warn "Gateway ${gw} is not applied: Incus DHCP on '${BRG}' hands out ${net_gw:-its own}"
+    fi
+  fi
+
+  if [[ "${IPV6_METHOD:-}" == "static" && -n "${IPV6_ADDR:-}" && "${IPV6_ADDR}" != "auto" ]]; then
+    addr="${IPV6_ADDR%%/*}"
+    _incus_device_set ipv6.address "$addr" "Could not reserve ${addr} on '${BRG}' (see the log); IPv6 stays as the network assigns it" && changed=0 || true
+    if [[ -n "${IPV6_GATE:-}" ]]; then
+      msg_warn "IPv6 gateway ${IPV6_GATE} is not applied: Incus sets a gateway only for OCI containers"
+    fi
+  fi
+  return "$changed"
+}
+
 # Restart the container, tolerating optional boot-time configs (e.g.
 # linux.sysctl.kernel.keys.maxkeys) that some hosts/kernels reject for the
 # container's privilege level. Such configs pass 'config set' but abort the
@@ -364,7 +396,7 @@ incus_create_lxc_container() {
   [[ -n "${KERNEL_MODULES:-}" ]] &&
     launch_args+=("--config" "linux.kernel_modules=${KERNEL_MODULES}")
 
-  if [[ "${CT_TYPE:-1}" != "1" || "${ENABLE_FUSE:-no}" == "yes" || "${ENABLE_TUN:-no}" == "yes" ]]; then
+  if [[ "${CT_TYPE:-1}" != "1" ]]; then
     launch_args+=("--config" "security.privileged=true")
   fi
 
@@ -465,30 +497,7 @@ incus_create_lxc_container() {
   fi
 
   if [[ "$nic_supports_ip" -eq 1 ]]; then
-    if [[ -n "${NET:-}" && "${NET}" != "dhcp" ]]; then
-      _incus_device_set ipv4.address "${NET}" "Could not apply IPv4 (${NET})" && net_reconfigure=1 || true
-    fi
-    if [[ -n "${GATE:-}" ]]; then
-      _incus_device_set ipv4.gateway "${GATE}" "Could not apply gateway (${GATE})" && net_reconfigure=1 || true
-    fi
-    case "${IPV6_METHOD:-auto}" in
-    auto | dhcp)
-      # Leave unset — NIC/network default. Explicit ipv6.address=auto breaks some hosts.
-      ;;
-    static)
-      if [[ -n "${IPV6_ADDR:-}" && "${IPV6_ADDR}" != "auto" ]]; then
-        _incus_device_set ipv6.address "${IPV6_ADDR}" "Could not apply IPv6 (${IPV6_ADDR})" && net_reconfigure=1 || true
-      fi
-      [[ -n "${IPV6_GATE:-}" ]] && { _incus_device_set ipv6.gateway "${IPV6_GATE}" "Could not apply IPv6 gateway" && net_reconfigure=1 || true; }
-      ;;
-    none | disable)
-      # Incus only accepts ipv6.address=none on a NIC when the bridge has
-      # security.ipv6_filtering, so on a default incusbr0 this always failed
-      # and warned about something it does not actually control. verb_ip6() in
-      # tools.func does the real disabling from inside the container, so leave
-      # the device alone and save the restart.
-      ;;
-    esac
+    _incus_apply_addresses && net_reconfigure=1 || true
   else
     # An unmanaged bridge is the ordinary case here and not an error: the
     # container simply takes an address from the LAN's own DHCP. Worth saying
@@ -544,21 +553,25 @@ incus_set_container_hostname() {
   _incus_soft incus config set "${CT_NAME}" "user.hostname=${hn}" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
   # Prefer instance name for system hostname when UI used CT_ID as name
   local sys_hn="${CT_NAME}"
-  _incus_soft incus_ct_exec bash -c "
+  # sh: a fresh Alpine image has no bash yet.
+  if incus_ct_exec sh -c "
     echo '${sys_hn}' >/etc/hostname
     hostname '${sys_hn}' 2>/dev/null || true
     if command -v hostnamectl >/dev/null 2>&1; then
       hostnamectl set-hostname '${sys_hn}' 2>/dev/null || true
     fi
-    if [[ -f /etc/hosts ]]; then
+    if [ -f /etc/hosts ]; then
       if grep -qE '^127\\.0\\.1\\.1' /etc/hosts; then
-        sed -i 's/^127\\.0\\.1\\.1.*/127.0.1.1\\t${sys_hn}/' /etc/hosts
+        sed -i 's/^127\\.0\\.1\\.1.*/127.0.1.1 ${sys_hn}/' /etc/hosts
       else
-        echo -e '127.0.1.1\\t${sys_hn}' >>/etc/hosts
+        echo '127.0.1.1 ${sys_hn}' >>/etc/hosts
       fi
     fi
-  " >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
-  msg_ok "Hostname set to ${sys_hn}"
+  " >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1; then
+    msg_ok "Hostname set to ${sys_hn}"
+  else
+    msg_warn "Could not set the hostname inside ${CT_NAME} (see the log)"
+  fi
 }
 
 incus_is_gpu_app() {
@@ -824,17 +837,12 @@ incus_configure_device_passthrough() {
     fi
   fi
 
-  if [[ "${ENABLE_FUSE:-no}" == "yes" ]]; then
-    msg_custom "ℹ️" "${YW}" "FUSE enabled via privileged container (security.privileged=true)"
-  fi
-
-  if [[ "${ENABLE_TUN:-no}" == "yes" ]]; then
+  if [[ "${ENABLE_TUN:-no}" == "yes" ]] && ! incus_ct_exec test -c /dev/net/tun 2>/dev/null; then
     if incus config device add "${CT_NAME}" tun unix-char source=/dev/net/tun path=/dev/net/tun \
       >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1; then
       msg_ok "TUN device attached"
     else
       msg_warn "Could not add TUN device"
-      echo -e "${TAB}${INFO} TUN/VPN usually needs a ${GN}privileged${CL} container (security.privileged=true)"
       echo -e "${TAB}${INFO} Nesting/Docker apps: also enable nesting (security.nesting=true)."
     fi
   fi
@@ -847,7 +855,6 @@ incus_configure_device_passthrough() {
 }
 
 incus_wait_for_network() {
-  [[ "${var_os:-debian}" == "alpine" ]] && return 0
   msg_info "Waiting for network in LXC container"
 
   local net_type="" max_wait=40
@@ -1221,7 +1228,7 @@ incus_run_install_script_with_recovery() {
   [[ -n "$error_explanation" ]] && echo -e "${TAB}${RD}Error: ${error_explanation}${CL}" && echo ""
   if [[ $install_exit_code -eq 10 ]]; then
     echo -e "${TAB}${INFO} Privileged / nesting / device hint:"
-    echo -e "${TAB}${INFO}  • Privileged: ${GN}security.privileged=true${CL} (TUN, FUSE, USB, Docker-in-LXC)"
+    echo -e "${TAB}${INFO}  • Privileged: ${GN}security.privileged=true${CL} (USB, Docker-in-LXC)"
     echo -e "${TAB}${INFO}  • Nesting:     ${GN}security.nesting=true${CL} (Docker/Podman inside CT)"
     echo -e "${TAB}${INFO}  • Re-run Advanced settings and enable the matching options."
     echo ""
