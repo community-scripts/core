@@ -421,8 +421,8 @@ ensure_storage_selection_for_vars_file() {
   [[ -f "$vf" ]] || { mkdir -p "$(dirname "$vf")" 2>/dev/null || true; touch "$vf" 2>/dev/null || true; }
 
   local tpl ct
-  tpl=$(grep -E '^var_template_storage=' "$vf" 2>/dev/null | cut -d= -f2-)
-  ct=$(grep -E '^var_container_storage=' "$vf" 2>/dev/null | cut -d= -f2-)
+  tpl=$(_vars_file_value "$vf" var_template_storage)
+  ct=$(_vars_file_value "$vf" var_container_storage)
 
   if [[ -n "$tpl" && -n "$ct" ]] && incus storage info "$ct" &>/dev/null; then
     TEMPLATE_STORAGE="$tpl"
