@@ -396,7 +396,7 @@ incus_create_lxc_container() {
   [[ -n "${KERNEL_MODULES:-}" ]] &&
     launch_args+=("--config" "linux.kernel_modules=${KERNEL_MODULES}")
 
-  if [[ "${CT_TYPE:-1}" != "1" || "${ENABLE_FUSE:-no}" == "yes" || "${ENABLE_TUN:-no}" == "yes" ]]; then
+  if [[ "${CT_TYPE:-1}" != "1" ]]; then
     launch_args+=("--config" "security.privileged=true")
   fi
 
@@ -837,17 +837,12 @@ incus_configure_device_passthrough() {
     fi
   fi
 
-  if [[ "${ENABLE_FUSE:-no}" == "yes" ]]; then
-    msg_custom "ℹ️" "${YW}" "FUSE enabled via privileged container (security.privileged=true)"
-  fi
-
-  if [[ "${ENABLE_TUN:-no}" == "yes" ]]; then
+  if [[ "${ENABLE_TUN:-no}" == "yes" ]] && ! incus_ct_exec test -c /dev/net/tun 2>/dev/null; then
     if incus config device add "${CT_NAME}" tun unix-char source=/dev/net/tun path=/dev/net/tun \
       >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1; then
       msg_ok "TUN device attached"
     else
       msg_warn "Could not add TUN device"
-      echo -e "${TAB}${INFO} TUN/VPN usually needs a ${GN}privileged${CL} container (security.privileged=true)"
       echo -e "${TAB}${INFO} Nesting/Docker apps: also enable nesting (security.nesting=true)."
     fi
   fi
@@ -1229,7 +1224,7 @@ incus_run_install_script_with_recovery() {
   [[ -n "$error_explanation" ]] && echo -e "${TAB}${RD}Error: ${error_explanation}${CL}" && echo ""
   if [[ $install_exit_code -eq 10 ]]; then
     echo -e "${TAB}${INFO} Privileged / nesting / device hint:"
-    echo -e "${TAB}${INFO}  • Privileged: ${GN}security.privileged=true${CL} (TUN, FUSE, USB, Docker-in-LXC)"
+    echo -e "${TAB}${INFO}  • Privileged: ${GN}security.privileged=true${CL} (USB, Docker-in-LXC)"
     echo -e "${TAB}${INFO}  • Nesting:     ${GN}security.nesting=true${CL} (Docker/Podman inside CT)"
     echo -e "${TAB}${INFO}  • Re-run Advanced settings and enable the matching options."
     echo ""
