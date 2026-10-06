@@ -3138,6 +3138,8 @@ create_lxc_container() {
     elif ! CUSTOM_TEMPLATE_PATH=$(_lxc_catalog_path "$PCT_OSTYPE" "${PCT_OSVERSION:-}" "$ARCH" "$_lxc_catalog_index"); then
       CUSTOM_TEMPLATE_PATH=""
       msg_warn "linuxcontainers.org has no ${PCT_OSTYPE} ${PCT_OSVERSION:-latest} for ${ARCH}"
+    else
+      msg_ok "Using the linuxcontainers.org ${PCT_OSTYPE} ${PCT_OSVERSION:-} image"
     fi
     rm -f "$_lxc_catalog_index"
   fi
