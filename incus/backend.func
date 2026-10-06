@@ -856,7 +856,6 @@ incus_configure_device_passthrough() {
 }
 
 incus_wait_for_network() {
-  [[ "${var_os:-debian}" == "alpine" ]] && return 0
   msg_info "Waiting for network in LXC container"
 
   local net_type="" max_wait=40
