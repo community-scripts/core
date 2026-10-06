@@ -267,7 +267,7 @@ detect_os() {
     OS_FAMILY="suse"
     PKG_MANAGER="zypper"
     ;;
-  arch | archlinux)
+  arch | archlinux | archarm)
     OS_TYPE="arch"
     OS_FAMILY="arch"
     PKG_MANAGER="pacman"
@@ -1216,7 +1216,7 @@ setting_up_container() {
     # upgrade). The Arch base template ships without an initialized keyring.
     if [[ ! -f /etc/pacman.d/gnupg/pubring.gpg ]] || [[ ! -s /etc/pacman.d/gnupg/pubring.gpg ]]; then
       $STD pacman-key --init
-      $STD pacman-key --populate archlinux
+      $STD pacman-key --populate
     fi
   fi
 
