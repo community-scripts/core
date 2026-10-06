@@ -51,16 +51,8 @@ _incus_nic_supports_ip() {
   esac
 }
 
-# Static addresses the way Incus applies them to a system container. On a
-# managed network ipv4.address and ipv6.address are DHCP reservations and take
-# a plain address; a CIDR value and ipv4.gateway/ipv6.gateway exist only for
-# OCI containers. `config device set` accepts them anyway, and the container
-# then refuses to start. NET and GATE arrive in Proxmox form (10.0.0.5/24,
-# ",gw=10.0.0.1" or a plain address), so they are reduced here. The gateway is
-# whatever the network hands out; a different one is reported, not set.
-# IPv6 auto/dhcp is the network's default. "none" is done by verb_ip6() inside
-# the container: ipv6.address=none needs security.ipv6_filtering on the bridge.
-# Returns 0 when a device key was set.
+# A system container takes only a plain address (a DHCP reservation) and no
+# gateway; CIDR and ipv4/ipv6.gateway are OCI-only and stop it from starting.
 _incus_apply_addresses() {
   local changed=1 addr gw net_gw
   if [[ -n "${NET:-}" && "${NET}" != "dhcp" ]]; then
