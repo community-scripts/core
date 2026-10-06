@@ -53,6 +53,7 @@ _tm_find_errinfo
 _tm_payload
 _tm_pick_logfile
 _tm_send
+_vars_file_value
 _write_storage_to_vars
 advanced_settings
 apt_conffile_guard
