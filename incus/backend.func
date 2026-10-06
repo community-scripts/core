@@ -51,6 +51,38 @@ _incus_nic_supports_ip() {
   esac
 }
 
+# A system container takes only a plain address (a DHCP reservation) and no
+# gateway; CIDR and ipv4/ipv6.gateway are OCI-only and stop it from starting.
+_incus_apply_addresses() {
+  local changed=1 addr gw net_gw
+  if [[ -n "${NET:-}" && "${NET}" != "dhcp" ]]; then
+    addr="${NET%%/*}"
+    _incus_device_set ipv4.address "$addr" "Could not reserve ${addr} on '${BRG}' (see the log); the container keeps a DHCP address" && changed=0 || true
+  fi
+
+  gw="${GATE:-}"
+  gw="${gw#,gw=}"
+  if [[ -n "$gw" ]]; then
+    net_gw="$(incus network get "$BRG" ipv4.dhcp.gateway 2>/dev/null || true)"
+    if [[ -z "$net_gw" ]]; then
+      net_gw="$(incus network get "$BRG" ipv4.address 2>/dev/null || true)"
+      net_gw="${net_gw%%/*}"
+    fi
+    if [[ "$gw" != "$net_gw" ]]; then
+      msg_warn "Gateway ${gw} is not applied: Incus DHCP on '${BRG}' hands out ${net_gw:-its own}"
+    fi
+  fi
+
+  if [[ "${IPV6_METHOD:-}" == "static" && -n "${IPV6_ADDR:-}" && "${IPV6_ADDR}" != "auto" ]]; then
+    addr="${IPV6_ADDR%%/*}"
+    _incus_device_set ipv6.address "$addr" "Could not reserve ${addr} on '${BRG}' (see the log); IPv6 stays as the network assigns it" && changed=0 || true
+    if [[ -n "${IPV6_GATE:-}" ]]; then
+      msg_warn "IPv6 gateway ${IPV6_GATE} is not applied: Incus sets a gateway only for OCI containers"
+    fi
+  fi
+  return "$changed"
+}
+
 # Restart the container, tolerating optional boot-time configs (e.g.
 # linux.sysctl.kernel.keys.maxkeys) that some hosts/kernels reject for the
 # container's privilege level. Such configs pass 'config set' but abort the
@@ -465,30 +497,7 @@ incus_create_lxc_container() {
   fi
 
   if [[ "$nic_supports_ip" -eq 1 ]]; then
-    if [[ -n "${NET:-}" && "${NET}" != "dhcp" ]]; then
-      _incus_device_set ipv4.address "${NET}" "Could not apply IPv4 (${NET})" && net_reconfigure=1 || true
-    fi
-    if [[ -n "${GATE:-}" ]]; then
-      _incus_device_set ipv4.gateway "${GATE}" "Could not apply gateway (${GATE})" && net_reconfigure=1 || true
-    fi
-    case "${IPV6_METHOD:-auto}" in
-    auto | dhcp)
-      # Leave unset — NIC/network default. Explicit ipv6.address=auto breaks some hosts.
-      ;;
-    static)
-      if [[ -n "${IPV6_ADDR:-}" && "${IPV6_ADDR}" != "auto" ]]; then
-        _incus_device_set ipv6.address "${IPV6_ADDR}" "Could not apply IPv6 (${IPV6_ADDR})" && net_reconfigure=1 || true
-      fi
-      [[ -n "${IPV6_GATE:-}" ]] && { _incus_device_set ipv6.gateway "${IPV6_GATE}" "Could not apply IPv6 gateway" && net_reconfigure=1 || true; }
-      ;;
-    none | disable)
-      # Incus only accepts ipv6.address=none on a NIC when the bridge has
-      # security.ipv6_filtering, so on a default incusbr0 this always failed
-      # and warned about something it does not actually control. verb_ip6() in
-      # tools.func does the real disabling from inside the container, so leave
-      # the device alone and save the restart.
-      ;;
-    esac
+    _incus_apply_addresses && net_reconfigure=1 || true
   else
     # An unmanaged bridge is the ordinary case here and not an error: the
     # container simply takes an address from the LAN's own DHCP. Worth saying
