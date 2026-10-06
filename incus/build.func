@@ -339,6 +339,10 @@ validate_bridge() {
 
 validate_gateway_in_subnet() { return 0; }
 
+# incus_check (as pve_check) already stops without a storage pool, and Incus
+# has no template storage.
+storage_content_check() { return 0; }
+
 ensure_global_default_vars_file() {
   local dir vf
   dir="$(community_scripts_dir)"
