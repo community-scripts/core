@@ -344,7 +344,7 @@ install_script() {
       header_info
       CHOICE=""
       ;;
-    "$GENERATED_OPTION" | generated | GENERATED)
+    generated | GENERATED)
       header_info
       echo -e "${DEFAULT}${BOLD}${BL}Using Generated Settings on node $PVEHOST_NAME${CL}"
       VERBOSE="no"
