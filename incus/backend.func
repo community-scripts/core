@@ -1415,7 +1415,7 @@ _incus_build_install_env() {
   )
   # lxc-attach carries the app's var_* settings into a Proxmox container; incus exec does not.
   local v
-  for v in $(compgen -e var_); do env+=("$v=${!v}"); done
+  for v in $(compgen -e var_ || true); do env+=("$v=${!v}"); done
   if [[ -n "${HTTP_PROXY:-}" ]]; then
     env+=(HTTP_PROXY="$HTTP_PROXY" HTTPS_PROXY="$HTTP_PROXY" http_proxy="$HTTP_PROXY" https_proxy="$HTTP_PROXY"
       NO_PROXY="${HTTP_NO_PROXY:-}" no_proxy="${HTTP_NO_PROXY:-}")
