@@ -283,9 +283,6 @@ incus_check() {
   fi
 }
 
-# Incus handles cross-architecture natively (e.g. x86 host running ARM containers).
-# No arch_check needed - removed from Incus scripts.
-
 # ==============================================================================
 # SECTION 3: EXECUTION HELPERS
 # ==============================================================================

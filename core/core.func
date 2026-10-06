@@ -739,7 +739,11 @@ pmxcfs_check() {
 # ------------------------------------------------------------------------------
 arch_check() {
   local arch
-  arch="$(dpkg --print-architecture)"
+  arch="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+  case "$arch" in
+  x86_64) arch="amd64" ;;
+  aarch64) arch="arm64" ;;
+  esac
   if [[ "$arch" != "amd64" && "$arch" != "arm64" ]]; then
     msg_error "This script requires amd64 or arm64 (detected: $arch)."
     sleep 2
