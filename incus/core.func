@@ -283,9 +283,6 @@ incus_check() {
   fi
 }
 
-# Incus handles cross-architecture natively (e.g. x86 host running ARM containers).
-# No arch_check needed - removed from Incus scripts.
-
 # ==============================================================================
 # SECTION 3: EXECUTION HELPERS
 # ==============================================================================
@@ -1039,6 +1036,26 @@ incus_get_image_alias() {
     case "$version" in
     3.19 | 3.20 | 3.21 | 3.22 | 3.23) echo "${version}" ;;
     *) echo "3.21" ;;
+    esac
+    ;;
+  # The ct scripts carry Proxmox template versions; these are the image names.
+  archlinux) echo "current" ;;
+  centos)
+    case "$version" in
+    9 | 9-Stream) echo "9-Stream" ;;
+    *) echo "10-Stream" ;;
+    esac
+    ;;
+  devuan)
+    case "$version" in
+    5 | 5.0 | daedalus) echo "daedalus" ;;
+    *) echo "excalibur" ;;
+    esac
+    ;;
+  gentoo)
+    case "$version" in
+    systemd) echo "systemd" ;;
+    *) echo "openrc" ;;
     esac
     ;;
   *)
