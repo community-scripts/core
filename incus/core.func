@@ -1041,6 +1041,26 @@ incus_get_image_alias() {
     *) echo "3.21" ;;
     esac
     ;;
+  # The ct scripts carry Proxmox template versions; these are the image names.
+  archlinux) echo "current" ;;
+  centos)
+    case "$version" in
+    9 | 9-Stream) echo "9-Stream" ;;
+    *) echo "10-Stream" ;;
+    esac
+    ;;
+  devuan)
+    case "$version" in
+    5 | 5.0 | daedalus) echo "daedalus" ;;
+    *) echo "excalibur" ;;
+    esac
+    ;;
+  gentoo)
+    case "$version" in
+    systemd) echo "systemd" ;;
+    *) echo "openrc" ;;
+    esac
+    ;;
   *)
     echo "${version}"
     ;;
