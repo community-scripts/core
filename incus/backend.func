@@ -955,7 +955,7 @@ incus_set_root_password() {
   local pw_raw="${PW#--password }"
   [[ -z "$pw_raw" ]] && return 0
   msg_info "Setting root password"
-  incus_ct_exec bash -c "echo 'root:${pw_raw}' | chpasswd" &>/dev/null && msg_ok "Set root password" || msg_warn "Could not set root password"
+  printf 'root:%s\n' "$pw_raw" | incus exec "${CT_NAME}" -- chpasswd &>/dev/null && msg_ok "Set root password" || msg_warn "Could not set root password"
 }
 
 incus_customize_container() {
@@ -1375,40 +1375,54 @@ incus_run_install_script_with_recovery() {
   exit "$install_exit_code"
 }
 
+# incus exec does not carry the caller's environment like lxc-attach does, so
+# everything the install side reads is passed here, quoted with %q.
 _incus_build_install_env() {
-  cat <<EOF
-export FUNCTIONS_FILE_PATH=\$(cat /tmp/incus-functions)
-export DIAGNOSTICS='${DIAGNOSTICS:-yes}'
-export RANDOM_UUID='${RANDOM_UUID}'
-export EXECUTION_ID='${EXECUTION_ID}'
-export SESSION_ID='${SESSION_ID}'
-export VERBOSE='${VERBOSE:-no}'
-export STD='$([ "${VERBOSE:-no}" = "yes" ] && echo "" || echo silent)'
-export APP='${APP}'
-export APPLICATION='${APP}'
-export NSAPP='${NSAPP}'
-export app='${NSAPP}'
-export PASSWORD='${PW:-}'
-export CTID='${CT_NAME}'
-export CTTYPE='${CT_TYPE:-1}'
-export PCT_OSTYPE='${var_os:-debian}'
-export PCT_OSVERSION='${var_version:-13}'
-export PCT_DISK_SIZE='${DISK_SIZE}'
-export tz='${timezone:-UTC}'
-export MODE='${METHOD:-default}'
-export ENABLE_FUSE='${ENABLE_FUSE:-no}'
-export ENABLE_TUN='${ENABLE_TUN:-no}'
-export ENABLE_GPU='${ENABLE_GPU:-no}'
-export IPV6_METHOD='${IPV6_METHOD:-auto}'
-export COMMUNITY_SCRIPTS_URL='${INCUS_COMMUNITY_SCRIPTS_URL}'
-export COMMUNITY_SCRIPTS_CORE_URL='${COMMUNITY_SCRIPTS_CORE_URL}'
-export INSTALL_LOG='/root/.install-${SESSION_ID}.log'
-export REPO_SOURCE='${REPO_SOURCE:-}'
-export REPO_SLUG='${REPO_SLUG:-}'
-export TELEMETRY_PLATFORM='incus'
-export CS_ANIMATION_OK='$([ -t 1 ] && echo 1 || echo 0)'
-export CS_STDIN_OK='$([ -t 0 ] && echo 1 || echo 0)'
-EOF
+  local -a env=(
+    DIAGNOSTICS="${DIAGNOSTICS:-yes}"
+    RANDOM_UUID="${RANDOM_UUID}"
+    EXECUTION_ID="${EXECUTION_ID}"
+    SESSION_ID="${SESSION_ID}"
+    VERBOSE="${VERBOSE:-no}"
+    STD="$([ "${VERBOSE:-no}" = "yes" ] && echo "" || echo silent)"
+    APP="${APP}"
+    APPLICATION="${APP}"
+    NSAPP="${NSAPP}"
+    app="${NSAPP}"
+    PASSWORD="${PW:-}"
+    CTID="${CT_NAME}"
+    CTTYPE="${CT_TYPE:-1}"
+    PCT_OSTYPE="${var_os:-debian}"
+    PCT_OSVERSION="${var_version:-13}"
+    PCT_DISK_SIZE="${DISK_SIZE}"
+    tz="${timezone:-UTC}"
+    MODE="${METHOD:-default}"
+    ENABLE_FUSE="${ENABLE_FUSE:-no}"
+    ENABLE_TUN="${ENABLE_TUN:-no}"
+    ENABLE_GPU="${ENABLE_GPU:-no}"
+    IPV6_METHOD="${IPV6_METHOD:-auto}"
+    SSH_ROOT="${SSH:-no}"
+    CACHER="${APT_CACHER:-}"
+    CACHER_IP="${APT_CACHER_IP:-}"
+    dev_mode="${dev_mode:-}"
+    COMMUNITY_SCRIPTS_URL="${INCUS_COMMUNITY_SCRIPTS_URL}"
+    COMMUNITY_SCRIPTS_CORE_URL="${COMMUNITY_SCRIPTS_CORE_URL}"
+    INSTALL_LOG="/root/.install-${SESSION_ID}.log"
+    REPO_SOURCE="${REPO_SOURCE:-}"
+    REPO_SLUG="${REPO_SLUG:-}"
+    TELEMETRY_PLATFORM="incus"
+    CS_ANIMATION_OK="$([ -t 1 ] && echo 1 || echo 0)"
+    CS_STDIN_OK="$([ -t 0 ] && echo 1 || echo 0)"
+  )
+  if [[ -n "${HTTP_PROXY:-}" ]]; then
+    env+=(HTTP_PROXY="$HTTP_PROXY" HTTPS_PROXY="$HTTP_PROXY" http_proxy="$HTTP_PROXY" https_proxy="$HTTP_PROXY"
+      NO_PROXY="${HTTP_NO_PROXY:-}" no_proxy="${HTTP_NO_PROXY:-}")
+  fi
+  echo 'export FUNCTIONS_FILE_PATH=$(cat /tmp/incus-functions)'
+  local kv
+  for kv in "${env[@]}"; do
+    printf 'export %s=%q\n' "${kv%%=*}" "${kv#*=}"
+  done
 }
 
 # bash shows a `read -p` prompt only on a terminal, so without a pty the question was invisible.
