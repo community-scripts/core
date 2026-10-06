@@ -1405,8 +1405,15 @@ setup_nodejs() {
 
   # npm 11+ skips install hooks not covered by allowScripts and still exits 0,
   # so apps with native addons install with nothing built.
-  if [[ "$(npm -v 2>/dev/null | cut -d. -f1)" -ge 11 ]]; then
+  local npm_major
+  npm_major="$(npm -v 2>/dev/null | cut -d. -f1)"
+  if [[ "$npm_major" -ge 11 ]]; then
     $STD npm config set dangerously-allow-all-scripts true --location=global 2>/dev/null || true
+  fi
+  # npm 12 refuses git and tarball-URL dependencies by default (EALLOWGIT/EALLOWREMOTE).
+  if [[ "$npm_major" -ge 12 ]]; then
+    $STD npm config set allow-git all --location=global 2>/dev/null || true
+    $STD npm config set allow-remote all --location=global 2>/dev/null || true
   fi
 
   # Set a safe default heap limit for Node.js builds if not explicitly provided.
