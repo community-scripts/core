@@ -544,7 +544,7 @@ incus_set_container_hostname() {
   _incus_soft incus config set "${CT_NAME}" "user.hostname=${hn}" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
   # Prefer instance name for system hostname when UI used CT_ID as name
   local sys_hn="${CT_NAME}"
-  # sh, not bash: a fresh Alpine image has only busybox at this point.
+  # sh: a fresh Alpine image has no bash yet.
   if incus_ct_exec sh -c "
     echo '${sys_hn}' >/etc/hostname
     hostname '${sys_hn}' 2>/dev/null || true
