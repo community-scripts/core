@@ -1051,6 +1051,10 @@ INNEREOF" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || { msg_error "Failed to push f
   # spinner line. A static line, and the script owns the terminal from here.
   msg_custom "🚀" "${GN}" "Starting application installation"
   local _install_script _run_env lxc_exit=0 install_exit_code=0
+  # Checked here: inside $(...) below, stdout is the capture pipe, never the terminal.
+  local _incus_tty_out=0 _incus_tty_in=0
+  [[ -t 1 ]] && _incus_tty_out=1
+  [[ -t 0 ]] && _incus_tty_in=1
   _install_script="$(_cs_fetch_text "install/${var_install}.sh")"
   _run_env="$(_incus_build_install_env)"
   _run_env+=$'\nsource /dev/stdin <<<"$(cat /tmp/incus-functions)"'
@@ -1399,8 +1403,8 @@ _incus_build_install_env() {
     REPO_SOURCE="${REPO_SOURCE:-}"
     REPO_SLUG="${REPO_SLUG:-}"
     TELEMETRY_PLATFORM="incus"
-    CS_ANIMATION_OK="$([ -t 1 ] && echo 1 || echo 0)"
-    CS_STDIN_OK="$([ -t 0 ] && echo 1 || echo 0)"
+    CS_ANIMATION_OK="${_incus_tty_out:-0}"
+    CS_STDIN_OK="${_incus_tty_in:-0}"
   )
   if [[ -n "${HTTP_PROXY:-}" ]]; then
     env+=(HTTP_PROXY="$HTTP_PROXY" HTTPS_PROXY="$HTTP_PROXY" http_proxy="$HTTP_PROXY" https_proxy="$HTTP_PROXY"
