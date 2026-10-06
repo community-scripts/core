@@ -338,6 +338,9 @@ validate_bridge() {
 
 validate_gateway_in_subnet() { return 0; }
 
+# Proxmox-only pre-check; Incus validates its pool when the container is created.
+storage_content_check() { return 0; }
+
 ensure_global_default_vars_file() {
   local dir vf
   dir="$(community_scripts_dir)"
