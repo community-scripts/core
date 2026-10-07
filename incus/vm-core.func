@@ -1586,10 +1586,51 @@ vm_enable_consoles() {
      fi'
 
   _vm_customize "grub console" "$image" --run-command \
-    'if [ -f /etc/default/grub ]; then
-       sed -i "s/console=ttyS0[^ \"]*/console=tty1 &/" /etc/default/grub
-       grep -q "console=tty1" /etc/default/grub || sed -i "s/\(GRUB_CMDLINE_LINUX_DEFAULT=\"\)/\1console=tty1 /" /etc/default/grub
-       command -v update-grub >/dev/null 2>&1 && update-grub
+    'set -e
+     if command -v grubby >/dev/null 2>&1; then
+       kernel_info=$(grubby --info=DEFAULT)
+       if ! printf "%s\n" "$kernel_info" | grep -q "^args=\""; then
+         echo "error: grubby returned no default kernel arguments" >&2
+         exit 1
+       fi
+       all_kernel_info=$(grubby --info=ALL)
+       if ! printf "%s\n" "$all_kernel_info" | grep -q "^args=\""; then
+         echo "error: grubby returned no installed kernel arguments" >&2
+         exit 1
+       fi
+       remove_args=$(printf "%s\n" "$all_kernel_info" |
+         grep "^args=" | grep -o "console=[^ \"]*" |
+         sed "s/.*/console/" | tr "\n" " ")
+       console_args=$(printf "%s\n" "$kernel_info" |
+         grep "^args=" | grep -o "console=[^ \"]*" |
+         grep -vE "^console=tty[0-9]+(,|$)" | tr "\n" " ")
+       # Older grubby versions add before removing when both flags share a call.
+       if [ -n "$remove_args" ]; then
+         grubby --update-kernel=ALL --remove-args="$remove_args"
+       fi
+       grubby --update-kernel=ALL --args="console=tty1 ${console_args:-console=ttyS0,115200}"
+     elif [ -f /etc/default/grub ]; then
+       cmdline=GRUB_CMDLINE_LINUX
+       if ! grep -q "^${cmdline}=\"" /etc/default/grub; then
+         cmdline=GRUB_CMDLINE_LINUX_DEFAULT
+       fi
+       if ! grep -q "^${cmdline}=\"" /etc/default/grub; then
+         echo "error: No quoted GRUB kernel command line found" >&2
+         exit 1
+       fi
+       if ! grep "^${cmdline}=" /etc/default/grub | grep -Eq "console=tty1([[:space:],\"]|$)"; then
+         sed -i "s/^${cmdline}=\"/${cmdline}=\"console=tty1 /" /etc/default/grub
+       fi
+       if command -v update-grub >/dev/null 2>&1; then
+         update-grub
+       elif command -v grub2-mkconfig >/dev/null 2>&1; then
+         grub2-mkconfig -o /boot/grub2/grub.cfg
+       elif command -v grub-mkconfig >/dev/null 2>&1; then
+         grub-mkconfig -o /boot/grub/grub.cfg
+       else
+         echo "error: No supported GRUB configuration tool found" >&2
+         exit 1
+       fi
      fi'
   return 0
 }
