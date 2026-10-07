@@ -1255,6 +1255,8 @@ _setup_npm() {
 
   if ! $STD npm install -g "npm@${target}" 2>/dev/null; then
     msg_warn "npm stayed at ${before}"
+    # Handled here; left set, a later unrelated error is reported as this command.
+    unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG
     return 0
   fi
 
@@ -1271,6 +1273,13 @@ setup_nodejs() {
   local wants_corepack=0
   local node_setup_ok_msg=""
   local NPM_SETUP_VERSION=""
+
+  # npm dies with uv_cwd when the caller's directory was deleted, e.g. a build dir.
+  mkdir -p /opt
+  cd /opt || {
+    msg_error "Failed to set safe working directory before npm install"
+    return 127
+  }
 
   # Corepack must run fully non-interactive, or it blocks on "about to download
   # X. Continue? [Y/n]" -- here and in the calling script's later corepack calls,
@@ -1406,7 +1415,7 @@ setup_nodejs() {
   # npm 11+ skips install hooks not covered by allowScripts and still exits 0,
   # so apps with native addons install with nothing built.
   local npm_major
-  npm_major="$(npm -v 2>/dev/null | cut -d. -f1)"
+  npm_major="$(npm -v 2>/dev/null | cut -d. -f1)" || npm_major=""
   if [[ "$npm_major" -ge 11 ]]; then
     $STD npm config set dangerously-allow-all-scripts true --location=global 2>/dev/null || true
   fi
@@ -1443,15 +1452,6 @@ setup_nodejs() {
 
     export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--max-old-space-size=${node_heap_mb}"
   fi
-
-  # Ensure valid working directory for npm (avoids uv_cwd error)
-  if [[ ! -d /opt ]]; then
-    mkdir -p /opt
-  fi
-  cd /opt || {
-    msg_error "Failed to set safe working directory before npm install"
-    return 127
-  }
 
   # Install global Node modules
   if [[ -n "$NODE_MODULE" ]] || ((node_major >= 25)); then
