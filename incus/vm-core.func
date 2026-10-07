@@ -866,6 +866,11 @@ vm_select_storage() {
   vm_apply_storage_layout "$STORAGE_TYPE"
 }
 
+vm_select_iso_storage() {
+  msg_error "Proxmox ISO installer scripts require pvesm and qm; ISO storage selection is not supported on Incus."
+  return 119
+}
+
 # The Proxmox counterpart picks a disk format from the storage type because qm
 # importdisk has to be told one. Incus decides the on-pool layout itself and
 # never exposes it, so the only thing left to decide is the format the image

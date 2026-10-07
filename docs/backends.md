@@ -101,6 +101,27 @@ in what they can actually do:
   unset variable, and say once through `msg_warn` that they did nothing. They
   do not pretend to have succeeded.
 
+### Proxmox installer ISO storage
+
+Installer VMs call `vm_select_iso_storage "<filename.iso>" [hostname]` before
+downloading the ISO or creating the VM. It selects an enabled, active storage
+supporting `iso` content, independently of the VM disk storage (`STORAGE`).
+One candidate is selected automatically; multiple candidates open a storage
+dialog. Set `VM_ISO_STORAGE` (or preselect `ISO_STORAGE`) to skip that dialog.
+Unattended runs with multiple candidates must set `VM_ISO_STORAGE`.
+
+The helper sets `ISO_STORAGE`, `ISO_VOLUME` (`<storage>:iso/<filename>`) and
+`ISO_PATH`, resolved through `pvesm path`. Pass `ISO_PATH` to `vm_fetch_image`
+and `ISO_VOLUME` to `qm ... -cdrom`; do not assume `local` supports ISO content
+or that its directory is `/var/lib/vz/template/iso`. No storage configuration
+is changed. Missing or invalid ISO storage is reported before VM creation.
+On Incus this helper explicitly fails: these installer scripts require
+Proxmox's `pvesm` and `qm`.
+
+Run the host-independent regression tests with `bash tests/vm-iso-storage.sh`.
+
+### Backend-specific VM creation
+
 The one thing that is genuinely not portable is the creation itself. Every
 script in `ProxmoxVE`/`DevScripts` `vm/` runs `qm create`, `pvesm alloc`,
 `qm importdisk` and `qm set` inline, and there is no `qm` on an Incus host.

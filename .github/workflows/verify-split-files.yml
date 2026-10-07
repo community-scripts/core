@@ -22,6 +22,8 @@ on:
       - "vm/**"
       - "pve/**"
       - "incus/**"
+      - "tests/vm-iso-storage.sh"
+      - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
     paths:
@@ -34,6 +36,8 @@ on:
       - "vm/**"
       - "pve/**"
       - "incus/**"
+      - "tests/vm-iso-storage.sh"
+      - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
 env:
@@ -53,6 +57,9 @@ jobs:
             bash -n "$f" || { echo "::error file=$f::syntax error"; fail=1; }
           done < <(find $ENGINE_DIRS -name '*.func' -type f)
           exit $fail
+
+      - name: ISO storage regression tests
+        run: bash tests/vm-iso-storage.sh
 
       - name: Prefetch lists cover every engine file
         run: |
