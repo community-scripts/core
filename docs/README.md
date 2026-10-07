@@ -36,11 +36,22 @@ the frontend and services. [`images/logo-81x112.png`](../images/logo-81x112.png)
 contains the same square mark on a transparent 81x112 canvas, preserving its
 aspect ratio and the existing README, LXC and VM description URLs and dimensions.
 
+New Proxmox LXC and VM descriptions use
+[`images/logo-description.png`](../images/logo-description.png): the transparent
+CS mark above the Community-Scripts wordmark, displayed at 192x112 CSS pixels.
+Its 576x336 PNG provides 3x resolution for HiDPI displays.
+[`images/logo-description.svg`](../images/logo-description.svg) is the vector
+source, with the frontend's Manrope Bold wordmark converted to paths so no font
+download or installed font is required. A fine charcoal outline preserves
+contrast on light backgrounds without adding a tile.
+Render the SVG at 3x its declared dimensions when updating the PNG.
+
 The previous marks are archived as
 [`images/old_logo.png`](../images/old_logo.png) and
 [`images/old_logo-81x112.png`](../images/old_logo-81x112.png). Keep the active
 filenames stable so existing descriptions pick up the new branding without
-being regenerated after these assets are published.
+being regenerated after these assets are published. Existing descriptions keep
+their original image URL; regenerate a description to use the new wordmark.
 
 ## How it fits together
 
