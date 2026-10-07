@@ -29,6 +29,19 @@ follows from there.
 | [`tools/`](../tools/) | `run.sh`, the fork and branch runner | [loading.md](loading.md#running-against-a-fork) |
 | [`images/`](../images/) | Logos used in container MOTD and VM output | — |
 
+### Brand images
+
+[`images/logo.png`](../images/logo.png) is the 512px CS Amber mark shared with
+the frontend and services. [`images/logo-81x112.png`](../images/logo-81x112.png)
+contains the same square mark on a transparent 81x112 canvas, preserving its
+aspect ratio and the existing README, LXC and VM description URLs and dimensions.
+
+The previous marks are archived as
+[`images/old_logo.png`](../images/old_logo.png) and
+[`images/old_logo-81x112.png`](../images/old_logo-81x112.png). Keep the active
+filenames stable so existing descriptions pick up the new branding without
+being regenerated after these assets are published.
+
 ## How it fits together
 
 [loading.md](loading.md) is the one to read first if you are changing anything
