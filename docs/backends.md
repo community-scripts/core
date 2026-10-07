@@ -101,6 +101,28 @@ in what they can actually do:
   unset variable, and say once through `msg_warn` that they did nothing. They
   do not pretend to have succeeded.
 
+### Cloud image consoles
+
+`vm_enable_consoles` enables both the graphical login on `tty1` and the serial
+login on `ttyS0`. Fedora/BLS images use `grubby` to update installed kernel
+entries, keeping existing non-graphical console arguments and their baud rates.
+Images using `/etc/default/grub` use `update-grub`, `grub2-mkconfig`, or
+`grub-mkconfig`, depending on which tool is installed. Regeneration failures
+remain visible through the image-preparation warnings. A non-GRUB image without
+that configuration is left unchanged.
+
+Kernel, SELinux policy-load and audit messages can appear over an interactive
+console because the kernel sends output to its configured `console=` devices.
+This is especially visible during package updates and policy reloads; a
+policy-load message is not itself an access denial. Console setup does not
+disable SELinux, auditing, or lower kernel log verbosity.
+For a temporary quieter console, `sudo dmesg -n 5` suppresses kernel notices,
+informational and debug messages on the console while keeping warnings/errors
+and the kernel log itself. It resets at reboot and does not suppress all
+userspace console output.
+
+Run the host-independent bootloader tests with `bash tests/vm-consoles.sh`.
+
 ### Proxmox installer ISO storage
 
 Installer VMs call `vm_select_iso_storage "<filename.iso>" [hostname]` before
