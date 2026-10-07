@@ -45,6 +45,8 @@ _incus_vm_source "core/core.func"
 # Value checks that do not depend on the platform — the Proxmox VE VM path
 # loads the same file, so an MTU means the same thing on both.
 _incus_vm_source "host/validate.func"
+# Helpers that do not touch qm or incus, shared with pve/vm-core.func.
+_incus_vm_source "vm/common.func"
 _incus_vm_source "incus/core.func"
 load_incus_functions
 incus_install_compat_aliases
@@ -871,6 +873,19 @@ vm_select_iso_storage() {
   return 119
 }
 
+# qm-specific steps of the Proxmox VM scripts. incus_vm_create imports, starts
+# and waits for the agent itself, so there is nothing to translate them into;
+# they fail loudly instead of pretending to have worked.
+_incus_vm_qm_only() {
+  msg_error "$1 drives qm and is only available on Proxmox VE; use incus_vm_create on Incus."
+  return 119
+}
+vm_import_disk() { _incus_vm_qm_only vm_import_disk; }
+vm_start_vm() { _incus_vm_qm_only vm_start_vm; }
+vm_wait_guest_agent() { _incus_vm_qm_only vm_wait_guest_agent; }
+vm_guest_exec() { _incus_vm_qm_only vm_guest_exec; }
+vm_wait_for_ip() { _incus_vm_qm_only vm_wait_for_ip; }
+
 # The Proxmox counterpart picks a disk format from the storage type because qm
 # importdisk has to be told one. Incus decides the on-pool layout itself and
 # never exposes it, so the only thing left to decide is the format the image
@@ -1252,26 +1267,21 @@ check_hostname_conflict() {
 # which guest agent is worth installing.
 
 vm_image_checksum() {
-  local url="${1:?url}" tool sums style want
+  local url="${1:?url}" name sums
 
+  name="${url%%\?*}"
+  name="${name##*/}"
   case "$url" in
-  *cloud.debian.org/*) tool=sha512sum; sums="${url%/*}/SHA512SUMS"; style=sums ;;
-  *cloud-images.ubuntu.com/*) tool=sha256sum; sums="${url%/*}/SHA256SUMS"; style=sums ;;
-  *download.truenas.com/*) tool=sha256sum; sums="${url}.sha256"; style=bare ;;
+  *cloud.debian.org/*) sums="${url%/*}/SHA512SUMS" ;;
+  *cloud-images.ubuntu.com/*) sums="${url%/*}/SHA256SUMS" ;;
+  *download.truenas.com/*) sums="${url}.sha256" ;;
+  *downloads.openwrt.org/*) sums="${url%/*}/sha256sums" ;;
+  *download.freebsd.org/*/VM-IMAGES/*) sums="${url%/*}/CHECKSUM.SHA256" ;;
+  *mirror.turnkeylinux.org/*) sums="${url}.hash" ;;
   *) return 1 ;;
   esac
 
-  command -v "$tool" >/dev/null 2>&1 || return 1
-
-  if [[ "$style" == bare ]]; then
-    want=$(curl -fsSL --max-time 30 "$sums" 2>/dev/null | tr -d '[:space:]')
-  else
-    want=$(curl -fsSL --max-time 30 "$sums" 2>/dev/null |
-      awk -v f="$(basename "$url")" '$NF == f || $NF == "*" f {print $1; exit}')
-  fi
-
-  [[ "$want" =~ ^([0-9a-fA-F]{64}|[0-9a-fA-F]{128})$ ]] || return 1
-  printf '%s %s' "$tool" "$want"
+  _vm_checksum_from_sums "$sums" "$name"
 }
 
 _vm_image_ok() {
@@ -1312,12 +1322,13 @@ vm_image_cache_path() {
 
 # vm_fetch_image <url> <target> [--cache] [--verify-xz] [--min-bytes N]
 #                               [--exact-bytes N] [--sha256 H] [--sha1 H]
-#                               [--advisory-sha1 H] [--needs-bytes N]
+#                               [--checksum-url URL] [--advisory-sha1 H]
+#                               [--needs-bytes N]
 vm_fetch_image() {
   local url="${1:?url}" target="${2:?target}"
   shift 2
   local min_bytes=0 exact_bytes="" sha256="" sha1="" advisory_sha1="" needs_bytes=""
-  local cache=no xz=no
+  local checksum_url="" cache=no xz=no
   local got avail_mib need_mib have part sha_tool="" sha_want="" discovered
 
   while [[ $# -gt 0 ]]; do
@@ -1328,6 +1339,7 @@ vm_fetch_image() {
     --exact-bytes) exact_bytes="$2"; shift 2 ;;
     --sha256) sha256="$2"; shift 2 ;;
     --sha1) sha1="$2"; shift 2 ;;
+    --checksum-url) checksum_url="$2"; shift 2 ;;
     --advisory-sha1) advisory_sha1="$2"; shift 2 ;;
     --needs-bytes) needs_bytes="$2"; shift 2 ;;
     *) msg_error "vm_fetch_image: unknown option $1"; return 2 ;;
@@ -1335,9 +1347,15 @@ vm_fetch_image() {
   done
 
   if [[ -n "$sha256" ]]; then
-    sha_tool=sha256sum sha_want="$sha256"
+    sha_tool=sha256sum sha_want="${sha256,,}"
   elif [[ -n "$sha1" ]]; then
     sha_tool=sha1sum sha_want="$sha1"
+  elif [[ -n "$checksum_url" ]]; then
+    if discovered=$(_vm_checksum_from_sums "$checksum_url" "$(basename "$target")"); then
+      read -r sha_tool sha_want <<<"$discovered"
+    else
+      msg_warn "No checksum for $(basename "$target") in ${checksum_url}; checking the size only"
+    fi
   elif discovered=$(vm_image_checksum "$url"); then
     read -r sha_tool sha_want <<<"$discovered"
   fi

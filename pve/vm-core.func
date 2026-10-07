@@ -47,6 +47,19 @@ else
     wget -qO- "${_vm_validate_base}/host/validate.func")
 fi
 
+# Helpers that do not touch qm, shared with incus/vm-core.func.
+if declare -f _cs_source_func >/dev/null 2>&1; then
+  _cs_source_func "vm/common.func"
+elif [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -f "${COMMUNITY_SCRIPTS_CORE_DIR}/vm/common.func" ]]; then
+  # shellcheck disable=SC1091
+  source "${COMMUNITY_SCRIPTS_CORE_DIR}/vm/common.func"
+else
+  _vm_common_base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
+  # shellcheck disable=SC1090
+  source <(curl -fsSL "${_CS_CURL_RETRY[@]}" "${_vm_common_base}/vm/common.func" 2>/dev/null ||
+    wget -qO- "${_vm_common_base}/vm/common.func")
+fi
+
 SPINNER_PID=""
 SPINNER_ACTIVE=0
 SPINNER_MSG=""
@@ -1598,26 +1611,21 @@ vm_prompt_start_vm() {
 #                               [--exact-bytes N] [--sha256 H] [--sha1 H]
 #                               [--advisory-sha1 H] [--needs-bytes N]
 vm_image_checksum() {
-  local url="${1:?url}" tool sums style want
+  local url="${1:?url}" name sums
 
+  name="${url%%\?*}"
+  name="${name##*/}"
   case "$url" in
-  *cloud.debian.org/*) tool=sha512sum; sums="${url%/*}/SHA512SUMS"; style=sums ;;
-  *cloud-images.ubuntu.com/*) tool=sha256sum; sums="${url%/*}/SHA256SUMS"; style=sums ;;
-  *download.truenas.com/*) tool=sha256sum; sums="${url}.sha256"; style=bare ;;
+  *cloud.debian.org/*) sums="${url%/*}/SHA512SUMS" ;;
+  *cloud-images.ubuntu.com/*) sums="${url%/*}/SHA256SUMS" ;;
+  *download.truenas.com/*) sums="${url}.sha256" ;;
+  *downloads.openwrt.org/*) sums="${url%/*}/sha256sums" ;;
+  *download.freebsd.org/*/VM-IMAGES/*) sums="${url%/*}/CHECKSUM.SHA256" ;;
+  *mirror.turnkeylinux.org/*) sums="${url}.hash" ;;
   *) return 1 ;;
   esac
 
-  command -v "$tool" >/dev/null 2>&1 || return 1
-
-  if [[ "$style" == bare ]]; then
-    want=$(curl -fsSL --max-time 30 "$sums" 2>/dev/null | tr -d '[:space:]')
-  else
-    want=$(curl -fsSL --max-time 30 "$sums" 2>/dev/null |
-      awk -v f="$(basename "$url")" '$NF == f || $NF == "*" f {print $1; exit}')
-  fi
-
-  [[ "$want" =~ ^([0-9a-fA-F]{64}|[0-9a-fA-F]{128})$ ]] || return 1
-  printf '%s %s' "$tool" "$want"
+  _vm_checksum_from_sums "$sums" "$name"
 }
 
 _vm_image_ok() {
@@ -1678,7 +1686,7 @@ vm_fetch_image() {
   local url="${1:?url}" target="${2:?target}"
   shift 2
   local min_bytes=0 exact_bytes="" sha256="" sha1="" advisory_sha1="" needs_bytes=""
-  local cache=no xz=no
+  local checksum_url="" cache=no xz=no
   local got avail_mib need_mib have part sha_tool="" sha_want="" discovered
 
   while [[ $# -gt 0 ]]; do
@@ -1689,6 +1697,7 @@ vm_fetch_image() {
     --exact-bytes) exact_bytes="$2"; shift 2 ;;
     --sha256) sha256="$2"; shift 2 ;;
     --sha1) sha1="$2"; shift 2 ;;
+    --checksum-url) checksum_url="$2"; shift 2 ;;
     --advisory-sha1) advisory_sha1="$2"; shift 2 ;;
     --needs-bytes) needs_bytes="$2"; shift 2 ;;
     *) msg_error "vm_fetch_image: unknown option $1"; return 2 ;;
@@ -1696,9 +1705,17 @@ vm_fetch_image() {
   done
 
   if [[ -n "$sha256" ]]; then
-    sha_tool=sha256sum sha_want="$sha256"
+    sha_tool=sha256sum sha_want="${sha256,,}"
   elif [[ -n "$sha1" ]]; then
     sha_tool=sha1sum sha_want="$sha1"
+  elif [[ -n "$checksum_url" ]]; then
+    # Looked up by the file's own name: download URLs such as SourceForge's
+    # .../file.iso/download do not end in it.
+    if discovered=$(_vm_checksum_from_sums "$checksum_url" "$(basename "$target")"); then
+      read -r sha_tool sha_want <<<"$discovered"
+    else
+      msg_warn "No checksum for $(basename "$target") in ${checksum_url}; checking the size only"
+    fi
   elif discovered=$(vm_image_checksum "$url"); then
     read -r sha_tool sha_want <<<"$discovered"
   fi
@@ -2322,6 +2339,127 @@ vm_resize_disk() {
   else
     msg_warn "Could not resize ${disk} to ${size} - it is likely already that size or larger"
   fi
+}
+
+# ------------------------------------------------------------------------------
+# vm_import_disk <vmid> <image> <storage> [format]
+#
+# Imports an image and sets VM_IMPORTED_DISK to the volume Proxmox actually
+# created. Scripts predicted that name, parsed qm's output three different
+# ways, or took the last `pvesm list` entry, which sorts disk-10 before disk-9.
+# The volume is read from qm's report, else from the unusedN entry the import
+# added. The format defaults to DISK_IMPORT_FORMAT from vm_select_storage.
+# ------------------------------------------------------------------------------
+vm_import_disk() {
+  local vmid="${1:?vmid}" file="${2:?image}" storage="${3:?storage}" format="${4:-${DISK_IMPORT_FORMAT:-}}"
+  local out before volume
+  local -a cmd=(qm importdisk) opts=()
+
+  VM_IMPORTED_DISK=""
+  qm disk import --help >/dev/null 2>&1 && cmd=(qm disk import)
+  [[ -n "$format" ]] && opts=(--format "$format")
+  before="$(qm config "$vmid" 2>/dev/null | sed -n 's/^unused[0-9]*: //p')" || before=""
+
+  msg_info "Importing $(basename "$file") to ${storage}"
+  if ! out="$("${cmd[@]}" "$vmid" "$file" "$storage" "${opts[@]}" 2>&1)"; then
+    msg_error "Importing $(basename "$file") into VM ${vmid} failed"
+    printf '%s\n' "$out" | tail -n 5 >&2
+    return 1
+  fi
+
+  volume="$(printf '%s\n' "$out" | sed -n "s/.*successfully imported disk '\([^']*\)'.*/\1/p" | tail -n 1)"
+  if [[ -z "$volume" ]]; then
+    volume="$(qm config "$vmid" 2>/dev/null | sed -n 's/^unused[0-9]*: //p' |
+      grep -vxF -f <(printf '%s\n' "$before") | tail -n 1)" || volume=""
+  fi
+  volume="${volume//[$'\r\"\'']/}"
+
+  if [[ -z "$volume" ]]; then
+    msg_error "Imported $(basename "$file"), but could not tell which volume Proxmox created"
+    printf '%s\n' "$out" | tail -n 5 >&2
+    return 1
+  fi
+
+  VM_IMPORTED_DISK="$volume"
+  msg_ok "Imported disk ${CL}${BL}${VM_IMPORTED_DISK}${CL}"
+}
+
+# ------------------------------------------------------------------------------
+# vm_start_vm [label]
+#
+# Starts the VM when START_VM is yes. A failed start after vm_mark_created is a
+# post-create error: the VM is kept.
+# ------------------------------------------------------------------------------
+vm_start_vm() {
+  local label="${1:-${APP:-VM}}"
+  [[ "${START_VM:-yes}" == "yes" ]] || return 0
+  msg_info "Starting ${label}"
+  ${STD:-} qm start "$VMID"
+  msg_ok "Started ${label}"
+}
+
+# ------------------------------------------------------------------------------
+# vm_wait_guest_agent <vmid> [timeout seconds]
+# vm_guest_exec <vmid> <timeout seconds> [--] <command> [args]...
+#
+# The guest agent answers without SSH keys or a known address. vm_guest_exec
+# prints the command's stdout and returns its exit code; 124 means it was still
+# running at the timeout.
+# ------------------------------------------------------------------------------
+vm_wait_guest_agent() {
+  local vmid="${1:?vmid}" timeout="${2:-120}" waited=0
+  while ((waited < timeout)); do
+    qm guest cmd "$vmid" ping >/dev/null 2>&1 && return 0
+    sleep 3
+    waited=$((waited + 3))
+  done
+  return 1
+}
+
+vm_guest_exec() {
+  local vmid="${1:?vmid}" timeout="${2:?timeout}" json rc
+  shift 2
+  [[ "${1:-}" == "--" ]] && shift
+  if (($# == 0)); then
+    msg_error "vm_guest_exec: no command given"
+    return 2
+  fi
+
+  # qm reports the guest's exit status in the JSON, not in its own.
+  json="$(qm guest exec "$vmid" --timeout "$timeout" -- "$@" 2>/dev/null)" || true
+  [[ -n "$json" ]] || return 1
+  rc="$(jq -r 'if .exited == 1 then (.exitcode // 1) else 124 end' <<<"$json" 2>/dev/null)" || return 1
+  [[ "$rc" =~ ^[0-9]+$ ]] || return 1
+  jq -r '."out-data" // empty' <<<"$json" 2>/dev/null || true
+  return "$rc"
+}
+
+# ------------------------------------------------------------------------------
+# vm_wait_for_ip [timeout seconds]
+#
+# Sets VM_IP to the address on the VM's own NIC (matched by MAC), so a Docker
+# or Podman bridge inside the guest is not reported as the VM's address.
+# Returns non-zero with a warning when the VM was not started or no address
+# appeared; callers continue either way.
+# ------------------------------------------------------------------------------
+vm_wait_for_ip() {
+  local timeout="${1:-${VM_IP_TIMEOUT:-120}}"
+  VM_IP=""
+  [[ "${START_VM:-yes}" == "yes" ]] || return 1
+  vm_require_tools jq || return 1
+  if ! load_cloud_init_functions; then
+    msg_warn "The IP lookup helpers are unavailable; read the address from the Proxmox summary"
+    return 1
+  fi
+
+  msg_info "Waiting for the VM's IP address (up to ${timeout}s)"
+  VM_IP="$(get_vm_ip "$VMID" "$timeout" "${MAC:-}")" || VM_IP=""
+  if [[ -n "$VM_IP" ]]; then
+    msg_ok "VM IP address ${CL}${BL}${VM_IP}${CL}"
+    return 0
+  fi
+  msg_warn "No IP address yet -- the guest agent may still be starting; check the Proxmox summary or console"
+  return 1
 }
 
 check_hostname_conflict() {

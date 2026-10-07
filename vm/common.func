@@ -1,0 +1,412 @@
+#!/usr/bin/env bash
+# Copyright (c) 2021-2026 community-scripts ORG
+# License: MIT | https://raw.githubusercontent.com/community-scripts/core/main/LICENSE
+
+# ==============================================================================
+# VM/COMMON.FUNC - BACKEND-INDEPENDENT VM SCRIPT HELPERS
+# ==============================================================================
+#
+# Sourced by pve/vm-core.func and incus/vm-core.func, so a VM script finds the
+# same helpers on either host. Nothing in here calls qm or incus: the parts of
+# a VM script that are not about the hypervisor -- which tools the host needs,
+# which release to download and how to verify it, what the guest does on its
+# first boot, how the run ends -- were copied from script to script and had
+# drifted apart.
+#
+#   vm_require_tools        Install missing host tools up front, or stop
+#   vm_release_asset        Release asset (URL, version, sha256) from a forge
+#   vm_latest_from_index    Newest entry of an HTML download index
+#   vm_firstboot_unit       Stage a run-once systemd unit into an image
+#   vm_wait_http            Wait until a web UI answers
+#   vm_print_summary        Standard closing summary
+#   vm_next_steps           Numbered follow-up instructions
+#   vm_finish               Report success and end the run
+# ==============================================================================
+
+[[ -n "${_VM_COMMON_LOADED:-}" ]] && return 0
+_VM_COMMON_LOADED=1
+
+# ------------------------------------------------------------------------------
+# vm_require_tools <command>...
+#
+# Commands the script will need later, checked before anything is created. A
+# missing xz used to surface after the VM existed, half configured.
+# ------------------------------------------------------------------------------
+_vm_tool_package() {
+  case "$1" in
+  jq | curl | pv | unzip | zstd | bzip2 | gzip | openssl | wget | rsync) echo "$1" ;;
+  gunzip) echo gzip ;;
+  xz) echo xz-utils ;;
+  7z) echo 7zip ;;
+  virt-customize | virt-resize | virt-filesystems | guestfish) echo libguestfs-tools ;;
+  *) return 1 ;;
+  esac
+}
+
+vm_require_tools() {
+  local tool pkg
+  local -a missing=() pkgs=() unknown=()
+
+  for tool in "$@"; do
+    command -v "$tool" >/dev/null 2>&1 && continue
+    missing+=("$tool")
+    if pkg="$(_vm_tool_package "$tool")"; then
+      [[ " ${pkgs[*]} " == *" ${pkg} "* ]] || pkgs+=("$pkg")
+    else
+      unknown+=("$tool")
+    fi
+  done
+
+  ((${#missing[@]})) || return 0
+
+  if ((${#unknown[@]})); then
+    msg_error "Required tools are missing and cannot be installed automatically: ${unknown[*]}"
+    return 1
+  fi
+  if ! command -v apt-get >/dev/null 2>&1; then
+    msg_error "Required tools are missing: ${missing[*]} -- install ${pkgs[*]}"
+    return 1
+  fi
+
+  msg_info "Installing ${pkgs[*]}"
+  ${STD:-} apt-get update || true
+  if ! ${STD:-} apt-get install -y "${pkgs[@]}"; then
+    msg_error "Could not install ${pkgs[*]} (needed for ${missing[*]})"
+    return 1
+  fi
+  for tool in "${missing[@]}"; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      msg_error "${tool} is still missing after installing ${pkgs[*]}"
+      return 1
+    fi
+  done
+  msg_ok "Installed ${pkgs[*]}"
+}
+
+# ------------------------------------------------------------------------------
+# _vm_checksum_from_sums <sums url> <file name>
+#
+# "<tool> <hash>" for one file from a published checksum list. Reads the three
+# layouts vendors actually use: GNU ("hash  file", "hash *file"), BSD
+# ("SHA256 (file) = hash") and a bare hash. The algorithm follows from the hash
+# length. Lines that merely mention the file -- TurnKey's signed .hash files
+# contain "$ sha256sum file" -- are skipped because their first field is not hex.
+# ------------------------------------------------------------------------------
+_vm_checksum_from_sums() {
+  local sums_url="${1:?sums url}" file="${2:?file name}" body want stripped tool
+
+  body="$(curl -fsSL --max-time 30 "$sums_url" 2>/dev/null)" || return 1
+  stripped="${body//[[:space:]]/}"
+
+  if [[ "$stripped" =~ ^([0-9a-fA-F]{40}|[0-9a-fA-F]{64}|[0-9a-fA-F]{128})$ ]]; then
+    want="$stripped"
+  else
+    want="$(printf '%s\n' "$body" | awk -v f="$file" '
+      { sub(/\r$/, "") }
+      $1 ~ /^SHA(1|256|512)$/ && $2 == "(" f ")" && $3 == "=" { print $4; exit }
+      NF == 2 && $1 ~ /^[0-9a-fA-F]+$/ && ($2 == f || $2 == "*" f) { print $1; exit }
+    ')"
+  fi
+
+  case ${#want} in
+  40) tool=sha1sum ;;
+  64) tool=sha256sum ;;
+  128) tool=sha512sum ;;
+  *) return 1 ;;
+  esac
+  [[ "$want" =~ ^[0-9a-fA-F]+$ ]] || return 1
+  command -v "$tool" >/dev/null 2>&1 || return 1
+  printf '%s %s' "$tool" "${want,,}"
+}
+
+# ------------------------------------------------------------------------------
+# vm_release_asset <github|gitlab|codeberg> <owner/repo> <asset regex> [tag]
+#
+# Resolves one release asset through lib/forge.func, which already handles
+# tokens, rate limits, the API-less fallback and prereleases. Sets
+# VM_RELEASE_TAG, VM_RELEASE_VERSION (tag without a leading v),
+# VM_RELEASE_ASSET, VM_RELEASE_URL and, when the forge publishes one (GitHub
+# asset digests), VM_RELEASE_SHA256 -- pass it to vm_fetch_image --sha256.
+# ------------------------------------------------------------------------------
+_vm_load_forge() {
+  declare -f _forge_release_json >/dev/null 2>&1 && return 0
+  local rel="lib/forge.func"
+  local base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
+
+  if [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -f "${COMMUNITY_SCRIPTS_CORE_DIR}/${rel}" ]]; then
+    # shellcheck disable=SC1090
+    source "${COMMUNITY_SCRIPTS_CORE_DIR}/${rel}"
+  elif declare -f _cs_source_func >/dev/null 2>&1; then
+    _cs_source_func "$rel" 2>/dev/null || true
+  else
+    # shellcheck disable=SC1090
+    source <(curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 10 "${base}/${rel}" 2>/dev/null) 2>/dev/null || true
+  fi
+  declare -f _forge_release_json >/dev/null 2>&1
+}
+
+vm_release_asset() {
+  local forge="${1:?forge}" repo="${2:?owner/repo}" pattern="${3:?asset pattern}" version="${4:-latest}"
+  local json asset digest rc=0
+
+  VM_RELEASE_TAG="" VM_RELEASE_VERSION="" VM_RELEASE_ASSET="" VM_RELEASE_URL="" VM_RELEASE_SHA256=""
+
+  vm_require_tools jq || return 1
+  if ! _vm_load_forge; then
+    msg_error "The release helpers (lib/forge.func) could not be loaded"
+    return 1
+  fi
+
+  json="$(mktemp)" || return 1
+  _forge_release_json "$forge" "$repo" "$version" "" "$json" || rc=$?
+  # forge.func keeps the raw payload for hwaccel.func; nothing here reads it.
+  if [[ -n "${TOOLS_GH_REL_JSON:-}" ]]; then
+    rm -f "$TOOLS_GH_REL_JSON"
+    TOOLS_GH_REL_JSON=""
+  fi
+  if ((rc != 0)); then
+    rm -f "$json"
+    msg_error "Could not read the ${version} release of ${repo}"
+    return 1
+  fi
+
+  VM_RELEASE_TAG="$(jq -r '.tag_name // empty' "$json" 2>/dev/null)" || VM_RELEASE_TAG=""
+  # GitLab hangs its files off .assets.links, GitHub and Codeberg off .assets.
+  asset="$(jq -c --arg re "$pattern" '
+    (if (.assets | type) == "object"
+     then ((.assets.links // []) | map({name, url: (.direct_asset_url // .url), digest: null}))
+     else ((.assets // []) | map({name, url: .browser_download_url, digest: (.digest // null)}))
+     end)
+    | map(select(.name | test($re))) | first // empty' "$json" 2>/dev/null)" || asset=""
+  rm -f "$json"
+
+  if [[ -z "$VM_RELEASE_TAG" || -z "$asset" ]]; then
+    msg_error "${repo} ${VM_RELEASE_TAG:-release} has no asset matching ${pattern}"
+    return 1
+  fi
+
+  VM_RELEASE_ASSET="$(jq -r '.name' <<<"$asset")"
+  VM_RELEASE_URL="$(jq -r '.url' <<<"$asset")"
+  digest="$(jq -r '.digest // empty' <<<"$asset")"
+  [[ "$digest" =~ ^sha256:([0-9a-fA-F]{64})$ ]] && VM_RELEASE_SHA256="${BASH_REMATCH[1],,}"
+  VM_RELEASE_VERSION="${VM_RELEASE_TAG#[vV]}"
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# vm_latest_from_index <index url> <pcre> [--sort-by <pcre>] [--probe <url>]...
+#
+# The newest match of <pcre> (grep -oP, so \K works) on an HTML download page.
+# Ordered by version, or by the part of each match that --sort-by selects when
+# the version does not order the builds (BlissOS reuses versions across build
+# dates). Each --probe is a URL template with {} for the match; the first match
+# whose template answers is taken, newest first, so a release directory that
+# exists before its files does not win. Sets VM_INDEX_LATEST and, with
+# --probe, VM_INDEX_URL. Never falls back to a hardcoded release.
+# ------------------------------------------------------------------------------
+vm_latest_from_index() {
+  local url="${1:?index url}" pattern="${2:?pattern}"
+  shift 2
+  local sort_by="" page candidate template probe_url
+  local -a templates=() candidates=()
+
+  while (($#)); do
+    case "$1" in
+    --sort-by) sort_by="${2:?sort pattern}"; shift 2 ;;
+    --probe) templates+=("${2:?url template}"); shift 2 ;;
+    *) msg_error "vm_latest_from_index: unknown option $1"; return 2 ;;
+    esac
+  done
+
+  VM_INDEX_LATEST="" VM_INDEX_URL=""
+
+  if ! page="$(curl -fsSL --max-time 30 --retry 3 --retry-delay 2 "$url" 2>/dev/null)"; then
+    msg_error "Could not read ${url}"
+    return 1
+  fi
+
+  if [[ -n "$sort_by" ]]; then
+    mapfile -t candidates < <(
+      { grep -oP -- "$pattern" <<<"$page" || true; } | sort -u |
+        while IFS= read -r candidate; do
+          printf '%s\t%s\n' "$({ grep -oP -m1 -- "$sort_by" <<<"$candidate" || true; } | head -n1)" "$candidate"
+        done | sort -t $'\t' -k1,1Vr | cut -f2-
+    )
+  else
+    mapfile -t candidates < <({ grep -oP -- "$pattern" <<<"$page" || true; } | sort -Vru)
+  fi
+
+  if ((${#candidates[@]} == 0)); then
+    msg_error "Nothing at ${url} matches ${pattern}"
+    return 1
+  fi
+
+  if ((${#templates[@]} == 0)); then
+    VM_INDEX_LATEST="${candidates[0]}"
+    return 0
+  fi
+
+  for candidate in "${candidates[@]}"; do
+    for template in "${templates[@]}"; do
+      probe_url="${template//\{\}/$candidate}"
+      if curl -fsIL --max-time 20 -o /dev/null "$probe_url" 2>/dev/null; then
+        VM_INDEX_LATEST="$candidate"
+        VM_INDEX_URL="$probe_url"
+        return 0
+      fi
+    done
+  done
+
+  msg_error "None of the ${#candidates[@]} entries at ${url} has a downloadable file"
+  return 1
+}
+
+# ------------------------------------------------------------------------------
+# vm_firstboot_unit <image> <name> <script> [--description <text>]
+#                   [--after <unit>]... [--requires-path <path>]
+#                   [--cloud-init yes|no]
+#
+# Uploads <script> as /usr/local/sbin/<name> and enables <name>.service, a
+# oneshot that runs once: a marker under /var/lib/community-scripts is written
+# only after the script succeeded, so a failed run is retried on the next boot
+# and VM_FIRSTBOOT_MARKER tells the caller what to test for.
+#
+# With Cloud-Init the unit is pulled in by cloud-init.target and ordered after
+# cloud-final.service, so users, keys and network exist first. Wanting
+# multi-user.target there instead creates an ordering cycle, because
+# cloud-final itself runs after multi-user.target. Without Cloud-Init the unit
+# is wanted by multi-user.target. Every --after unit is also wanted.
+#
+# Returns non-zero when the image could not be changed; the caller decides
+# whether a VM without its first-boot step is still worth creating.
+# ------------------------------------------------------------------------------
+vm_firstboot_unit() {
+  local image="${1:?image}" name="${2:?unit name}" script="${3:?script file}"
+  shift 3
+  local description="" requires_path="" cloud_init="${USE_CLOUD_INIT:-no}"
+  local -a after=()
+
+  while (($#)); do
+    case "$1" in
+    --description) description="${2:?description}"; shift 2 ;;
+    --after) after+=("${2:?unit}"); shift 2 ;;
+    --requires-path) requires_path="${2:?path}"; shift 2 ;;
+    --cloud-init) cloud_init="${2:?yes|no}"; shift 2 ;;
+    *) msg_error "vm_firstboot_unit: unknown option $1"; return 2 ;;
+    esac
+  done
+
+  if [[ ! "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    msg_error "vm_firstboot_unit: invalid unit name '${name}'"
+    return 2
+  fi
+  if [[ ! -r "$script" ]]; then
+    msg_error "vm_firstboot_unit: cannot read ${script}"
+    return 1
+  fi
+
+  local marker="/var/lib/community-scripts/${name}.done"
+  local deps="network-online.target" wanted_by="multi-user.target" unit before
+  if [[ "$cloud_init" == "yes" ]]; then
+    deps+=" cloud-final.service"
+    wanted_by="cloud-init.target"
+  fi
+  ((${#after[@]})) && deps+=" ${after[*]}"
+
+  unit="$(mktemp)" || return 1
+  {
+    printf '[Unit]\n'
+    printf 'Description=%s\n' "${description:-Community-Scripts first boot: ${name}}"
+    printf 'After=%s\n' "$deps"
+    printf 'Wants=%s\n' "$deps"
+    printf 'ConditionPathExists=!%s\n' "$marker"
+    [[ -n "$requires_path" ]] && printf 'ConditionPathExists=%s\n' "$requires_path"
+    printf '\n[Service]\n'
+    printf 'Type=oneshot\n'
+    printf 'ExecStart=/usr/local/sbin/%s\n' "$name"
+    printf "ExecStartPost=/bin/sh -c 'mkdir -p /var/lib/community-scripts && touch %s'\n" "$marker"
+    printf 'RemainAfterExit=yes\n'
+    printf 'TimeoutStartSec=infinity\n'
+    printf 'StandardOutput=journal+console\n'
+    printf 'StandardError=journal+console\n'
+    printf '\n[Install]\n'
+    printf 'WantedBy=%s\n' "$wanted_by"
+  } >"$unit"
+
+  before=${#_VM_PREPARE_FAILED[@]}
+  _vm_customize "first-boot ${name}" "$image" \
+    --mkdir /usr/local/sbin \
+    --upload "${script}:/usr/local/sbin/${name}" \
+    --chmod "0755:/usr/local/sbin/${name}" \
+    --upload "${unit}:/etc/systemd/system/${name}.service" \
+    --run-command "systemctl enable ${name}.service"
+  rm -f "$unit"
+
+  ((${#_VM_PREPARE_FAILED[@]} > before)) && return 1
+  VM_FIRSTBOOT_MARKER="$marker"
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# vm_wait_http <url> [timeout seconds] [--insecure]
+#
+# 0 once the URL answers like a running web UI: any 2xx or 3xx, or 401/403 from
+# a login wall. 5xx is a proxy whose backend is still starting.
+# ------------------------------------------------------------------------------
+vm_wait_http() {
+  local url="${1:?url}" timeout="${2:-120}" waited=0 code
+  local -a opts=(-sS -o /dev/null -w '%{http_code}' --max-time 5)
+  [[ "${3:-}" == "--insecure" ]] && opts+=(-k)
+
+  while ((waited < timeout)); do
+    code="$(curl "${opts[@]}" "$url" 2>/dev/null)" || code="000"
+    [[ "$code" =~ ^([23][0-9][0-9]|401|403)$ ]] && return 0
+    sleep 5
+    waited=$((waited + 5))
+  done
+  return 1
+}
+
+# ------------------------------------------------------------------------------
+# vm_print_summary ["Label=value"]...
+# vm_next_steps <step>...
+# vm_finish [message]
+#
+# The closing block every VM script printed in its own layout. Empty values are
+# skipped, so a VM that was not started simply has no IP row.
+# ------------------------------------------------------------------------------
+_vm_summary_row() {
+  [[ -n "${2:-}" ]] && echo -e "${TAB:-  }${DGN:-}${1}: ${BGN:-}${2}${CL:-}"
+  return 0
+}
+
+vm_print_summary() {
+  local item state="running"
+  [[ "${START_VM:-yes}" == "yes" ]] || state="stopped -- start it from the Proxmox UI"
+
+  echo -e "\n${INFO:-}${BOLD:-}${GN:-}${APP:-VM} Summary:${CL:-}"
+  _vm_summary_row "VM ID" "${VMID:-}"
+  _vm_summary_row "Hostname" "${HN:-}"
+  _vm_summary_row "Resources" "${CORE_COUNT:+${CORE_COUNT} vCPU, }${RAM_SIZE:+${RAM_SIZE} MiB RAM, }${DISK_SIZE:+${DISK_SIZE} disk}"
+  _vm_summary_row "State" "$state"
+  _vm_summary_row "IP Address" "${VM_IP:-}"
+  for item in "$@"; do
+    _vm_summary_row "${item%%=*}" "${item#*=}"
+  done
+}
+
+vm_next_steps() {
+  local step i=1
+  (($#)) || return 0
+  echo -e "\n${INFO:-}${BOLD:-}${YW:-}Next Steps:${CL:-}"
+  for step in "$@"; do
+    echo -e "${TAB:-  }${i}. ${step}"
+    i=$((i + 1))
+  done
+}
+
+vm_finish() {
+  declare -f post_update_to_api >/dev/null 2>&1 && post_update_to_api "done" "none"
+  echo
+  msg_ok "${1:-Completed successfully!}\n"
+}

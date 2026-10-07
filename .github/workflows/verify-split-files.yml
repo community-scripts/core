@@ -24,6 +24,7 @@ on:
       - "incus/**"
       - "tests/vm-iso-storage.sh"
       - "tests/vm-consoles.sh"
+      - "tests/vm-helpers.sh"
       - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
@@ -39,6 +40,7 @@ on:
       - "incus/**"
       - "tests/vm-iso-storage.sh"
       - "tests/vm-consoles.sh"
+      - "tests/vm-helpers.sh"
       - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
@@ -65,6 +67,9 @@ jobs:
 
       - name: VM console regression tests
         run: bash tests/vm-consoles.sh
+
+      - name: VM helper regression tests
+        run: bash tests/vm-helpers.sh
 
       - name: Prefetch lists cover every engine file
         run: |
