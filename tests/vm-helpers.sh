@@ -446,6 +446,15 @@ assert_contains "$UNIT" "WantedBy=cloud-init.target"
 unset USE_CLOUD_INIT
 ok "vm_firstboot_unit follows USE_CLOUD_INIT by default"
 
+_VM_PREPARE_FAILED=()
+CUSTOMIZE_FAIL=no
+vm_customize "Docker" "$IMAGE" --run-command true || fail "a successful step returns 0"
+CUSTOMIZE_FAIL=yes
+if vm_customize "Docker" "$IMAGE" --run-command false; then fail "a failed step must return non-zero"; fi
+CUSTOMIZE_FAIL=no
+_VM_PREPARE_FAILED=()
+ok "vm_customize returns the step's failure"
+
 rc=0
 vm_firstboot_unit "$IMAGE" "Bad Name" "$TEST_DIR/setup.sh" || rc=$?
 assert_eq "$rc" 2 "invalid unit name"

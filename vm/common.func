@@ -14,6 +14,7 @@
 # drifted apart.
 #
 #   vm_require_tools        Install missing host tools up front, or stop
+#   vm_customize            virt-customize step that reports and returns failure
 #   vm_release_asset        Release asset (URL, version, sha256) from a forge
 #   vm_latest_from_index    Newest entry of an HTML download index
 #   vm_firstboot_unit       Stage a run-once systemd unit into an image
@@ -81,6 +82,20 @@ vm_require_tools() {
     fi
   done
   msg_ok "Installed ${pkgs[*]}"
+}
+
+# ------------------------------------------------------------------------------
+# vm_customize <label> <image> <virt-customize args>...
+#
+# One named virt-customize step for a script's own image changes. Failures are
+# warned about with the reason libguestfs gave, like the shared preparation
+# steps, but also returned, so a step the VM cannot work without can stop the
+# run: `vm_customize "Docker" "$image" --run-command "..." || exit 1`.
+# ------------------------------------------------------------------------------
+vm_customize() {
+  local before=${#_VM_PREPARE_FAILED[@]}
+  _vm_customize "$@"
+  ((${#_VM_PREPARE_FAILED[@]} == before))
 }
 
 # ------------------------------------------------------------------------------
