@@ -380,6 +380,8 @@ assert_eq "$(vm_keyboard_default)" "de" "VM_KEYBOARD wins over the datacenter"
 _vm_apply_keyboard
 assert_contains "$LOG" "qm set 100 --keyboard de"
 VM_KEYBOARD=""
+if ! kb="$(set -eo pipefail; vm_keyboard_default)"; then fail "the lookup must not fail without a datacenter.cfg"; fi
+[[ -e /etc/pve/datacenter.cfg ]] || assert_eq "$kb" "" "no datacenter.cfg yields no layout"
 VM_TIMEZONE=Europe/Berlin
 assert_eq "$(vm_timezone_default)" "Europe/Berlin" "VM_TIMEZONE"
 VM_TIMEZONE=Mars/Olympus
