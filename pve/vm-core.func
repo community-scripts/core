@@ -2394,7 +2394,7 @@ vm_select_storage() {
     while [ -z "${STORAGE:+x}" ]; do
       # Without an exit-code check STORAGE stayed empty and this spun forever.
       if vm_dialog radiolist "Storage Pools" \
-        "Which storage pool would you like to use for ${hostname}?\nTo make a selection, use the Spacebar.\n" \
+        "Which storage pool should hold the disks of ${hostname}?\nTo make a selection, use the Spacebar.\n" \
         16 "$menu_width" 6 \
         "${storage_menu[@]}"; then
         STORAGE="$VM_DIALOG_RESULT"
@@ -2434,6 +2434,14 @@ vm_select_iso_storage() {
     msg_error "No active, enabled storage supports ISO images on this host."
     msg_error "Enable ISO image content on a suitable file-based storage in Proxmox VE."
     return 119
+  fi
+
+  # The pool already chosen for the disks also takes the ISO when it can, so
+  # the question is only asked where it has to be.
+  if [[ -z "$selected" && -n "${STORAGE:-}" ]]; then
+    for ((i = 0; i < ${#storage_menu[@]}; i += 3)); do
+      [[ "$STORAGE" == "${storage_menu[i]}" ]] && selected="$STORAGE"
+    done
   fi
 
   if [[ -z "$selected" ]]; then
