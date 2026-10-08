@@ -80,6 +80,14 @@ local_storage() {
   assert_equal "$ISO_PATH" "$MOCK_PATH"
 }
 
+disk_pool_reused() {
+  MOCK_STATUS+=$'\nlocal dir active 1000 100 900 10'
+  STORAGE="local"
+  MOCK_DIALOG_RC=2
+  vm_select_iso_storage "archlinux-x86_64.iso" || exit 1
+  assert_equal "$ISO_STORAGE" "local"
+}
+
 multiple_storage() {
   MOCK_STATUS+=$'\nsecond-store dir active 1000 100 900 10'
   MOCK_CHOICE="second-store"
@@ -179,7 +187,7 @@ incus_unsupported() {
   expect_failure "archlinux-x86_64.iso" "not supported on Incus"
 }
 
-for test in single_storage local_storage multiple_storage explicit_storage \
+for test in single_storage local_storage disk_pool_reused multiple_storage explicit_storage \
   preselected_storage unattended_single unattended_multiple inactive_storage \
   no_storage invalid_preset inactive_preset status_error path_error relative_path \
   empty_path multiline_path invalid_filename missing_filename invalid_selection \
