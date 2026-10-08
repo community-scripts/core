@@ -140,7 +140,8 @@ is changed. Missing or invalid ISO storage is reported before VM creation.
 On Incus this helper explicitly fails: these installer scripts require
 Proxmox's `pvesm` and `qm`.
 
-Run the host-independent regression tests with `bash tests/vm-iso-storage.sh`.
+Run the host-independent regression tests with `bash tests/vm-iso-storage.sh`
+and, for the shared VM helpers, `bash tests/vm-helpers.sh`.
 
 ### Backend-specific VM creation
 

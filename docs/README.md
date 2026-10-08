@@ -104,6 +104,7 @@ an update before it starts.
 | [`api/sysinfo.func`](../api/sysinfo.func) | Host and container facts, origin detection |
 | [`api/telemetry.func`](../api/telemetry.func) | Payload assembly and delivery |
 | [`vm/cloud-init.func`](../vm/cloud-init.func) | Cloud-init configuration for VMs |
+| [`vm/common.func`](../vm/common.func) | Backend-independent VM script helpers (tools, releases, checksums, first boot, summary) |
 | [`pve/backend.func`](../pve/backend.func) | Container creation via `pct` |
 | [`pve/vm-core.func`](../pve/vm-core.func) | VM creation via `qm` |
 | [`pve/vm-app.func`](../pve/vm-app.func) | Running LXC applications inside a VM |
