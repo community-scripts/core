@@ -369,6 +369,24 @@ assert_contains "$ERRORS" "already in use"
 QM_EXISTS="" METHOD=default VMID=100
 ok "vm_claim_vmid re-checks the ID right before qm create"
 
+# ── keyboard and timezone ───────────────────────────────────────────────────
+assert_eq "$(_vm_guest_keymap de)" "de - de-latin1" "German"
+assert_eq "$(_vm_guest_keymap en-gb)" "gb - uk" "UK"
+assert_eq "$(_vm_guest_keymap fr-ch)" "ch fr fr_CH-latin1" "Swiss French has a variant"
+if _vm_guest_keymap klingon >/dev/null; then fail "an unknown layout must not map"; fi
+reset_logs
+VM_KEYBOARD=de VMID=100
+assert_eq "$(vm_keyboard_default)" "de" "VM_KEYBOARD wins over the datacenter"
+_vm_apply_keyboard
+assert_contains "$LOG" "qm set 100 --keyboard de"
+VM_KEYBOARD=""
+VM_TIMEZONE=Europe/Berlin
+assert_eq "$(vm_timezone_default)" "Europe/Berlin" "VM_TIMEZONE"
+VM_TIMEZONE=Mars/Olympus
+assert_eq "$(vm_timezone_default)" "" "an unknown zone is dropped"
+unset VM_TIMEZONE
+ok "keyboard layout maps to the guest and timezone defaults are validated"
+
 # ── release and index discovery ─────────────────────────────────────────────
 FORGE_JSON=""
 _forge_release_json() {

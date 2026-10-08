@@ -905,6 +905,7 @@ vm_echo_default_settings() {
   echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}${MAC}${CL}"
   echo -e "${VLANTAG}${BOLD}${DGN}VLAN: ${BGN}${VLAN:-Default}${CL}"
   echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}${MTU:-Default}${CL}"
+  echo -e "${DEFAULT}${BOLD}${DGN}Keyboard Layout: ${BGN}$(kb="$(vm_keyboard_default)"; echo "${kb:-Proxmox default}")${CL}"
   echo -e "${GATEWAY}${BOLD}${DGN}Start VM when completed: ${BGN}${START_VM}${CL}"
   # Shown on the default path too, so VERBOSE=yes is visible.
   echo -e "${SEARCH}${BOLD}${DGN}Verbose Mode: ${BGN}${VERBOSE:-no}${CL}"
@@ -1557,6 +1558,121 @@ vm_prompt_vlan() {
   done
 }
 
+# vm_keyboard_default
+# VM_KEYBOARD, else the datacenter's keyboard setting (Proxmox layout codes:
+# de, en-us, fr-ch, ...). Applied to the VM and to prepared images alike: the
+# Y/Z swap in noVNC comes from the two not matching.
+vm_keyboard_default() {
+  if [[ -n "${VM_KEYBOARD:-}" ]]; then
+    printf '%s' "$VM_KEYBOARD"
+  else
+    sed -n 's/^keyboard: *//p' /etc/pve/datacenter.cfg 2>/dev/null | head -n1 | tr -d '[:space:]'
+  fi
+}
+
+_VM_KEYBOARDS="de de-ch da en-gb en-us es fi fr fr-be fr-ca fr-ch hu is it ja lt mk nl no pl pt pt-br sl sv tr"
+
+_vm_keyboard_label() {
+  case "$1" in
+  de) echo "German" ;;
+  de-ch) echo "German (Switzerland)" ;;
+  da) echo "Danish" ;;
+  en-gb) echo "English (UK)" ;;
+  en-us) echo "English (US)" ;;
+  es) echo "Spanish" ;;
+  fi) echo "Finnish" ;;
+  fr) echo "French" ;;
+  fr-be) echo "French (Belgium)" ;;
+  fr-ca) echo "French (Canada)" ;;
+  fr-ch) echo "French (Switzerland)" ;;
+  hu) echo "Hungarian" ;;
+  is) echo "Icelandic" ;;
+  it) echo "Italian" ;;
+  ja) echo "Japanese" ;;
+  lt) echo "Lithuanian" ;;
+  mk) echo "Macedonian" ;;
+  nl) echo "Dutch" ;;
+  no) echo "Norwegian" ;;
+  pl) echo "Polish" ;;
+  pt) echo "Portuguese" ;;
+  pt-br) echo "Portuguese (Brazil)" ;;
+  sl) echo "Slovenian" ;;
+  sv) echo "Swedish" ;;
+  tr) echo "Turkish" ;;
+  *) echo "$1" ;;
+  esac
+}
+
+# _vm_guest_keymap <proxmox code>
+# Prints "<xkb layout> <xkb variant or -> <console keymap>" for the guest.
+_vm_guest_keymap() {
+  case "$1" in
+  de) echo "de - de-latin1" ;;
+  de-ch) echo "ch - sg-latin1" ;;
+  da) echo "dk - dk" ;;
+  en-gb) echo "gb - uk" ;;
+  en-us) echo "us - us" ;;
+  es) echo "es - es" ;;
+  fi) echo "fi - fi" ;;
+  fr) echo "fr - fr" ;;
+  fr-be) echo "be - be-latin1" ;;
+  fr-ca) echo "ca - cf" ;;
+  fr-ch) echo "ch fr fr_CH-latin1" ;;
+  hu) echo "hu - hu" ;;
+  is) echo "is - is-latin1" ;;
+  it) echo "it - it" ;;
+  ja) echo "jp - jp106" ;;
+  lt) echo "lt - lt" ;;
+  mk) echo "mk - mk" ;;
+  nl) echo "nl - nl" ;;
+  no) echo "no - no" ;;
+  pl) echo "pl - pl" ;;
+  pt) echo "pt - pt-latin1" ;;
+  pt-br) echo "br - br-abnt2" ;;
+  sl) echo "si - slovene" ;;
+  sv) echo "se - sv-latin1" ;;
+  tr) echo "tr - trq" ;;
+  *) return 1 ;;
+  esac
+}
+
+_vm_apply_keyboard() {
+  local kb
+  kb="$(vm_keyboard_default)"
+  [[ -n "$kb" ]] || return 0
+  qm set "$VMID" --keyboard "$kb" >/dev/null 2>&1 ||
+    msg_warn "Could not set the keyboard layout ${kb} on VM ${VMID}"
+  return 0
+}
+
+# vm_prompt_keyboard [default]
+vm_prompt_keyboard() {
+  local default="${1:-$(vm_keyboard_default)}" code state
+  local -a items=()
+  [[ " $_VM_KEYBOARDS " == *" $default "* ]] || default="en-us"
+  for code in $_VM_KEYBOARDS; do
+    state=OFF
+    [[ "$code" == "$default" ]] && state=ON
+    items+=("$code" "$(_vm_keyboard_label "$code")" "$state")
+  done
+  if vm_dialog radiolist "KEYBOARD LAYOUT" "Layout for the noVNC console and the guest" --cancel-button Exit-Script 22 60 14 "${items[@]}"; then
+    VM_KEYBOARD="$VM_DIALOG_RESULT"
+    echo -e "${DEFAULT}${BOLD}${DGN}Keyboard Layout: ${BGN}${VM_KEYBOARD}${CL}"
+  else
+    exit_script
+  fi
+}
+
+# vm_timezone_default
+# VM_TIMEZONE, else the host's zone; empty when neither names a known zone.
+vm_timezone_default() {
+  local tz="${VM_TIMEZONE:-}"
+  [[ -n "$tz" ]] || tz="$(cat /etc/timezone 2>/dev/null)"
+  [[ -n "$tz" ]] || tz="$(timedatectl show -p Timezone --value 2>/dev/null)"
+  [[ -n "$tz" && -f "/usr/share/zoneinfo/$tz" ]] && printf '%s' "$tz"
+  return 0
+}
+
 vm_prompt_mtu() {
   local default_mtu="${1:-}"
   local input_mtu
@@ -2009,6 +2125,20 @@ vm_prepare_cloud_image() {
     '[ -f /etc/ssh/sshd_config ] || exit 0
      sed -i "s/^#*PermitRootLogin.*/PermitRootLogin yes/;s/^#*PasswordAuthentication.*/PasswordAuthentication yes/" /etc/ssh/sshd_config'
 
+  local tz kb layout variant keymap
+  tz="$(vm_timezone_default)"
+  [[ -n "$tz" ]] && _vm_customize "timezone ${tz}" "$image" --timezone "$tz"
+  kb="$(vm_keyboard_default)"
+  if [[ -n "$kb" ]] && read -r layout variant keymap < <(_vm_guest_keymap "$kb"); then
+    [[ "$variant" == "-" ]] && variant=""
+    _vm_customize "keyboard ${kb}" "$image" --run-command "
+      mkdir -p /etc/default
+      [ -f /etc/default/keyboard ] && sed -i '/^XKBLAYOUT=/d;/^XKBVARIANT=/d' /etc/default/keyboard
+      printf 'XKBLAYOUT=\"%s\"\nXKBVARIANT=\"%s\"\n' '${layout}' '${variant}' >>/etc/default/keyboard
+      [ -f /etc/vconsole.conf ] && sed -i '/^KEYMAP=/d' /etc/vconsole.conf
+      printf 'KEYMAP=%s\n' '${keymap}' >>/etc/vconsole.conf"
+  fi
+
   vm_enable_consoles "$image"
   vm_install_guest_agent "$image" || true
   _VM_PREPARE_COLLECTING=0
@@ -2171,6 +2301,7 @@ vm_boot_order() {
 vm_mark_created() {
   VM_CREATED=1
   trap 'vm_post_create_error $LINENO "$BASH_COMMAND"' ERR
+  _vm_apply_keyboard
 }
 
 vm_post_create_error() {

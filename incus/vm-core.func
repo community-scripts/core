@@ -886,6 +886,8 @@ vm_guest_exec() { _incus_vm_qm_only vm_guest_exec; }
 vm_wait_for_ip() { _incus_vm_qm_only vm_wait_for_ip; }
 # Incus VMs are named, so there is no numeric ID to claim.
 vm_claim_vmid() { :; }
+# Incus has no VNC keyboard setting; the console's layout is the client's.
+vm_prompt_keyboard() { :; }
 
 # The Proxmox counterpart picks a disk format from the storage type because qm
 # importdisk has to be told one. Incus decides the on-pool layout itself and
