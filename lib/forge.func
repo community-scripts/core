@@ -1473,7 +1473,7 @@ _forge_release_json() {
   fi
 
   local -a timeouts=(60 120 240)
-  local raw attempt=1 delay=2 code ok=false
+  local raw attempt=1 delay=2 code ok=false curl_rc
   raw="$(mktemp /tmp/tools-forge-rel-XXXXXX)" || return 73
 
   local -a headers=()
@@ -1485,13 +1485,18 @@ _forge_release_json() {
   [[ -n "$auth" ]] && headers+=(-H "$auth")
 
   while ((attempt <= ${#timeouts[@]})); do
+    curl_rc=0
     code="$(curl -sSL -w "%{http_code}" -o "$raw" \
       --max-time "${timeouts[$((attempt - 1))]}" \
-      "${headers[@]}" "$api_url" 2>/dev/null)" || true
+      "${headers[@]}" "$api_url" 2>/dev/null)" || curl_rc=$?
 
     if [[ "$code" == "200" ]]; then
-      ok=true
-      break
+      # A body cut short still reports 200, and jq then finds no release at all.
+      if ((curl_rc == 0)) && jq -e 'type == "array" or type == "object"' "$raw" >/dev/null 2>&1; then
+        ok=true
+        break
+      fi
+      code="000"
     fi
 
     if [[ "$forge" == "github" && "$code" == "401" ]]; then
