@@ -216,9 +216,13 @@ qm() {
     ;;
   "guest exec") printf '%s\n' "$GUEST_EXEC_JSON" ;;
   "start "*) return "${QM_START_RC:-0}" ;;
+  "status "*) [[ -n "${QM_EXISTS:-}" ]] ;;
   *) return 0 ;;
   esac
 }
+pct() { return 1; }
+lvs() { :; }
+pvesh() { printf '%s\n' "${NEXTID:-105}"; }
 
 import_case() {
   rm -f "$QM_IMPORTED_FLAG"
@@ -326,6 +330,27 @@ vm_start_vm
 [[ ! -s "$LOG" ]] || fail "START_VM=no must not start the VM"
 START_VM=yes
 ok "vm_start_vm honours START_VM"
+
+# ── vm_claim_vmid ───────────────────────────────────────────────────────────
+reset_logs
+VMID=104 METHOD=default STORAGE=local-lvm DISK_REF="" DISK_EXT=""
+vm_define_disk_references 2
+QM_EXISTS=""
+vm_claim_vmid || fail "a free ID is kept"
+assert_eq "$VMID" 104 "free ID kept"
+QM_EXISTS=yes NEXTID=105
+vm_claim_vmid || fail "a taken ID moves on"
+assert_eq "$VMID" 105 "next free ID"
+assert_eq "$DISK0" "vm-105-disk-0" "disk names follow the new ID"
+assert_eq "$DISK1_REF" "local-lvm:vm-105-disk-1" "disk references follow the new ID"
+assert_contains "$WARNINGS" "taken by another run"
+VMID=104 METHOD=advanced
+rc=0
+(vm_claim_vmid) 2>/dev/null || rc=$?
+assert_eq "$rc" 205 "an ID chosen in advanced settings stops the run"
+assert_contains "$ERRORS" "already in use"
+QM_EXISTS="" METHOD=default VMID=100
+ok "vm_claim_vmid re-checks the ID right before qm create"
 
 # ── release and index discovery ─────────────────────────────────────────────
 FORGE_JSON=""

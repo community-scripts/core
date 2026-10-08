@@ -708,6 +708,27 @@ get_valid_nextid() {
   echo "$try_id"
 }
 
+# vm_claim_vmid
+# VMID was picked before the download, and a parallel run may have taken it
+# since. An auto-picked ID moves to the next free one, with the disk names
+# from vm_define_disk_references following; an ID typed in advanced settings
+# stops the run.
+vm_claim_vmid() {
+  if ! qm status "$VMID" &>/dev/null && ! pct status "$VMID" &>/dev/null; then
+    return 0
+  fi
+  if [[ "${METHOD:-default}" == "advanced" ]]; then
+    msg_error "VM ID ${VMID} is already in use"
+    exit 205
+  fi
+  local old="$VMID"
+  VMID="$(get_valid_nextid)"
+  export VMID
+  msg_warn "VM ID ${old} was taken by another run; using ${VMID}"
+  [[ -n "${_VM_DISK_REFS:-}" ]] && vm_define_disk_references "$_VM_DISK_REFS"
+  return 0
+}
+
 cleanup_vmid() {
   if [[ -z "${VMID:-}" ]]; then
     return
@@ -2318,6 +2339,7 @@ vm_select_iso_storage() {
 vm_define_disk_references() {
   local disk_count="${1:-2}"
   local i disk_name
+  _VM_DISK_REFS="$disk_count"
 
   for ((i = 0; i < disk_count; i++)); do
     disk_name="vm-${VMID}-disk-${i}${DISK_EXT:-}"

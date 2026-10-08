@@ -71,6 +71,7 @@ layouts are understood and the algorithm follows from the hash length.
 | Function | Contract |
 | --- | --- |
 | `vm_import_disk <vmid> <image> <storage> [format]` | `qm disk import` (or `qm importdisk` on older hosts) with `DISK_IMPORT_FORMAT`; sets `VM_IMPORTED_DISK` to the volume Proxmox reported or the `unusedN` entry the import added. Never guesses a name. |
+| `vm_claim_vmid` | Call right before `qm create`: re-checks `VMID`, which was picked before the download. An auto-picked ID another run took moves to the next free one and the disk names follow; an ID chosen in advanced settings stops with exit 205. |
 | `vm_start_vm [label]` | Starts the VM when `START_VM=yes`. |
 | `vm_wait_guest_agent <vmid> [timeout]` | Waits until the guest agent answers. |
 | `vm_guest_exec <vmid> <timeout> [--] <cmd>...` | Runs a command through the guest agent; prints its stdout and returns its exit code (124: still running). |
