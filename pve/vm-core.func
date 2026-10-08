@@ -2341,15 +2341,12 @@ vm_resize_disk() {
   fi
 }
 
-# ------------------------------------------------------------------------------
 # vm_import_disk <vmid> <image> <storage> [format]
-#
-# Imports an image and sets VM_IMPORTED_DISK to the volume Proxmox actually
-# created. Scripts predicted that name, parsed qm's output three different
-# ways, or took the last `pvesm list` entry, which sorts disk-10 before disk-9.
-# The volume is read from qm's report, else from the unusedN entry the import
-# added. The format defaults to DISK_IMPORT_FORMAT from vm_select_storage.
-# ------------------------------------------------------------------------------
+# Sets VM_IMPORTED_DISK to the volume Proxmox created: from qm's own report
+# ("Successfully imported disk as 'unused0:<volume>'"), else from the unusedN
+# entry the import added. Scripts used to guess the name or take the last
+# `pvesm list` line, which sorts disk-10 before disk-9. The format defaults to
+# DISK_IMPORT_FORMAT from vm_select_storage.
 vm_import_disk() {
   local vmid="${1:?vmid}" file="${2:?image}" storage="${3:?storage}" format="${4:-${DISK_IMPORT_FORMAT:-}}"
   local out before volume
@@ -2367,7 +2364,8 @@ vm_import_disk() {
     return 1
   fi
 
-  volume="$(printf '%s\n' "$out" | sed -n "s/.*successfully imported disk '\([^']*\)'.*/\1/p" | tail -n 1)"
+  volume="$(printf '%s\n' "$out" | sed -n "s/.*[Ss]uccessfully imported disk\( as\)\? '\([^']*\)'.*/\2/p" | tail -n 1)"
+  volume="${volume#unused[0-9]*:}"
   if [[ -z "$volume" ]]; then
     volume="$(qm config "$vmid" 2>/dev/null | sed -n 's/^unused[0-9]*: //p' |
       grep -vxF -f <(printf '%s\n' "$before") | tail -n 1)" || volume=""
@@ -2384,12 +2382,8 @@ vm_import_disk() {
   msg_ok "Imported disk ${CL}${BL}${VM_IMPORTED_DISK}${CL}"
 }
 
-# ------------------------------------------------------------------------------
 # vm_start_vm [label]
-#
-# Starts the VM when START_VM is yes. A failed start after vm_mark_created is a
-# post-create error: the VM is kept.
-# ------------------------------------------------------------------------------
+# Starts the VM when START_VM is yes; a failed start keeps the created VM.
 vm_start_vm() {
   local label="${1:-${APP:-VM}}"
   [[ "${START_VM:-yes}" == "yes" ]] || return 0
@@ -2398,14 +2392,10 @@ vm_start_vm() {
   msg_ok "Started ${label}"
 }
 
-# ------------------------------------------------------------------------------
 # vm_wait_guest_agent <vmid> [timeout seconds]
 # vm_guest_exec <vmid> <timeout seconds> [--] <command> [args]...
-#
-# The guest agent answers without SSH keys or a known address. vm_guest_exec
-# prints the command's stdout and returns its exit code; 124 means it was still
-# running at the timeout.
-# ------------------------------------------------------------------------------
+# vm_guest_exec prints the command's stdout and returns its exit code, 124 when
+# it was still running at the timeout.
 vm_wait_guest_agent() {
   local vmid="${1:?vmid}" timeout="${2:-120}" waited=0
   while ((waited < timeout)); do
@@ -2434,14 +2424,10 @@ vm_guest_exec() {
   return "$rc"
 }
 
-# ------------------------------------------------------------------------------
 # vm_wait_for_ip [timeout seconds]
-#
-# Sets VM_IP to the address on the VM's own NIC (matched by MAC), so a Docker
-# or Podman bridge inside the guest is not reported as the VM's address.
-# Returns non-zero with a warning when the VM was not started or no address
-# appeared; callers continue either way.
-# ------------------------------------------------------------------------------
+# Sets VM_IP from the NIC matching MAC, so a Docker or Podman bridge in the
+# guest is never reported as the VM's address. Warns and returns non-zero when
+# the VM was not started or no address appeared.
 vm_wait_for_ip() {
   local timeout="${1:-${VM_IP_TIMEOUT:-120}}"
   VM_IP=""

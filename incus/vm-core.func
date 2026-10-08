@@ -873,9 +873,8 @@ vm_select_iso_storage() {
   return 119
 }
 
-# qm-specific steps of the Proxmox VM scripts. incus_vm_create imports, starts
-# and waits for the agent itself, so there is nothing to translate them into;
-# they fail loudly instead of pretending to have worked.
+# The qm-driven steps have no Incus counterpart: incus_vm_create imports,
+# starts and waits for the agent itself.
 _incus_vm_qm_only() {
   msg_error "$1 drives qm and is only available on Proxmox VE; use incus_vm_create on Incus."
   return 119

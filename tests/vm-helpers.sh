@@ -32,7 +32,8 @@ msg_warn() { printf '%s\n' "$*" >>"$WARNINGS"; }
 _ci_msg_info() { :; }
 _ci_msg_ok() { :; }
 _ci_msg_warn() { printf '%s\n' "$*" >>"$WARNINGS"; }
-sleep() { :; }
+# No real waiting; SECONDS still moves so deadline loops end.
+sleep() { SECONDS=$((SECONDS + ${1%%.*})); }
 
 reset_logs() { : >"$LOG"; : >"$ERRORS"; : >"$WARNINGS"; }
 
@@ -228,9 +229,9 @@ import_case() {
 import_case
 DISK_IMPORT_FORMAT=raw
 QM_IMPORT_OUT="transferred 1.0 GiB of 1.0 GiB (100.00%)
-unused0: successfully imported disk 'local-lvm:vm-100-disk-1'"
+Successfully imported disk as 'unused0:local-lvm:vm-100-disk-1'"
 vm_import_disk 100 "$IMAGE" local-lvm || fail "modern import"
-assert_eq "$VM_IMPORTED_DISK" "local-lvm:vm-100-disk-1" "volume from qm's report"
+assert_eq "$VM_IMPORTED_DISK" "local-lvm:vm-100-disk-1" "volume from qm's report, without the unused0: prefix"
 assert_contains "$LOG" "qm disk import 100 $IMAGE local-lvm --format raw"
 ok "vm_import_disk uses qm disk import and the reported volume"
 

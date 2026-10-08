@@ -5,13 +5,9 @@
 # ==============================================================================
 # VM/COMMON.FUNC - BACKEND-INDEPENDENT VM SCRIPT HELPERS
 # ==============================================================================
-#
-# Sourced by pve/vm-core.func and incus/vm-core.func, so a VM script finds the
-# same helpers on either host. Nothing in here calls qm or incus: the parts of
-# a VM script that are not about the hypervisor -- which tools the host needs,
-# which release to download and how to verify it, what the guest does on its
-# first boot, how the run ends -- were copied from script to script and had
-# drifted apart.
+# Loaded by pve/vm-core.func and incus/vm-core.func. Nothing here calls qm or
+# incus: host tools, release lookups, checksums, first boot and the closing
+# block, which every VM script used to carry in its own copy.
 #
 #   vm_require_tools        Install missing host tools up front, or stop
 #   vm_customize            virt-customize step that reports and returns failure
@@ -27,12 +23,8 @@
 [[ -n "${_VM_COMMON_LOADED:-}" ]] && return 0
 _VM_COMMON_LOADED=1
 
-# ------------------------------------------------------------------------------
 # vm_require_tools <command>...
-#
-# Commands the script will need later, checked before anything is created. A
-# missing xz used to surface after the VM existed, half configured.
-# ------------------------------------------------------------------------------
+# Checked before anything is created, so a missing tool cannot surface halfway.
 _vm_tool_package() {
   case "$1" in
   jq | curl | pv | unzip | zstd | bzip2 | gzip | openssl | wget | rsync) echo "$1" ;;
@@ -84,29 +76,20 @@ vm_require_tools() {
   msg_ok "Installed ${pkgs[*]}"
 }
 
-# ------------------------------------------------------------------------------
 # vm_customize <label> <image> <virt-customize args>...
-#
-# One named virt-customize step for a script's own image changes. Failures are
-# warned about with the reason libguestfs gave, like the shared preparation
-# steps, but also returned, so a step the VM cannot work without can stop the
-# run: `vm_customize "Docker" "$image" --run-command "..." || exit 1`.
-# ------------------------------------------------------------------------------
+# Like the shared image steps it warns with libguestfs' reason, but it also
+# returns the failure: `vm_customize "Docker" "$image" --run-command ... || exit 1`.
 vm_customize() {
   local before=${#_VM_PREPARE_FAILED[@]}
   _vm_customize "$@"
   ((${#_VM_PREPARE_FAILED[@]} == before))
 }
 
-# ------------------------------------------------------------------------------
 # _vm_checksum_from_sums <sums url> <file name>
-#
-# "<tool> <hash>" for one file from a published checksum list. Reads the three
-# layouts vendors actually use: GNU ("hash  file", "hash *file"), BSD
-# ("SHA256 (file) = hash") and a bare hash. The algorithm follows from the hash
-# length. Lines that merely mention the file -- TurnKey's signed .hash files
-# contain "$ sha256sum file" -- are skipped because their first field is not hex.
-# ------------------------------------------------------------------------------
+# Prints "<tool> <hash>" for one file. Reads GNU ("hash  file", "hash *file"),
+# BSD ("SHA256 (file) = hash") and bare-hash lists; the algorithm follows from
+# the hash length. TurnKey's "$ sha256sum file" lines have no hex first field
+# and are skipped.
 _vm_checksum_from_sums() {
   local sums_url="${1:?sums url}" file="${2:?file name}" body want stripped tool
 
@@ -134,15 +117,11 @@ _vm_checksum_from_sums() {
   printf '%s %s' "$tool" "${want,,}"
 }
 
-# ------------------------------------------------------------------------------
 # vm_release_asset <github|gitlab|codeberg> <owner/repo> <asset regex> [tag]
-#
-# Resolves one release asset through lib/forge.func, which already handles
-# tokens, rate limits, the API-less fallback and prereleases. Sets
-# VM_RELEASE_TAG, VM_RELEASE_VERSION (tag without a leading v),
-# VM_RELEASE_ASSET, VM_RELEASE_URL and, when the forge publishes one (GitHub
-# asset digests), VM_RELEASE_SHA256 -- pass it to vm_fetch_image --sha256.
-# ------------------------------------------------------------------------------
+# Resolves through lib/forge.func (tokens, rate limits, API-less fallback).
+# Sets VM_RELEASE_TAG, VM_RELEASE_VERSION (tag without a leading v),
+# VM_RELEASE_ASSET, VM_RELEASE_URL and, from GitHub asset digests,
+# VM_RELEASE_SHA256 for vm_fetch_image --sha256.
 _vm_load_forge() {
   declare -f _forge_release_json >/dev/null 2>&1 && return 0
   local rel="lib/forge.func"
@@ -208,17 +187,11 @@ vm_release_asset() {
   return 0
 }
 
-# ------------------------------------------------------------------------------
 # vm_latest_from_index <index url> <pcre> [--sort-by <pcre>] [--probe <url>]...
-#
-# The newest match of <pcre> (grep -oP, so \K works) on an HTML download page.
-# Ordered by version, or by the part of each match that --sort-by selects when
-# the version does not order the builds (BlissOS reuses versions across build
-# dates). Each --probe is a URL template with {} for the match; the first match
-# whose template answers is taken, newest first, so a release directory that
-# exists before its files does not win. Sets VM_INDEX_LATEST and, with
-# --probe, VM_INDEX_URL. Never falls back to a hardcoded release.
-# ------------------------------------------------------------------------------
+# Newest match of <pcre> (grep -oP) on a download page, ordered by version or
+# by what --sort-by selects from each match. With --probe ({} = match) the
+# newest entry whose template answers wins, so an empty release directory is
+# skipped. Sets VM_INDEX_LATEST and, with --probe, VM_INDEX_URL.
 vm_latest_from_index() {
   local url="${1:?index url}" pattern="${2:?pattern}"
   shift 2
@@ -276,25 +249,14 @@ vm_latest_from_index() {
   return 1
 }
 
-# ------------------------------------------------------------------------------
 # vm_firstboot_unit <image> <name> <script> [--description <text>]
-#                   [--after <unit>]... [--requires-path <path>]
-#                   [--cloud-init yes|no]
-#
-# Uploads <script> as /usr/local/sbin/<name> and enables <name>.service, a
-# oneshot that runs once: a marker under /var/lib/community-scripts is written
-# only after the script succeeded, so a failed run is retried on the next boot
-# and VM_FIRSTBOOT_MARKER tells the caller what to test for.
-#
-# With Cloud-Init the unit is pulled in by cloud-init.target and ordered after
-# cloud-final.service, so users, keys and network exist first. Wanting
-# multi-user.target there instead creates an ordering cycle, because
-# cloud-final itself runs after multi-user.target. Without Cloud-Init the unit
-# is wanted by multi-user.target. Every --after unit is also wanted.
-#
-# Returns non-zero when the image could not be changed; the caller decides
-# whether a VM without its first-boot step is still worth creating.
-# ------------------------------------------------------------------------------
+#                   [--after <unit>]... [--requires-path <path>] [--cloud-init yes|no]
+# Uploads <script> as /usr/local/sbin/<name> and enables a oneshot <name>.service
+# that runs once: its marker (VM_FIRSTBOOT_MARKER) is written only after
+# success, so a failed run is retried on the next boot. With Cloud-Init the
+# unit hangs off cloud-init.target after cloud-final.service; wanting
+# multi-user.target there would be an ordering cycle, since cloud-final itself
+# runs after multi-user.target.
 vm_firstboot_unit() {
   local image="${1:?image}" name="${2:?unit name}" script="${3:?script file}"
   shift 3
@@ -362,34 +324,27 @@ vm_firstboot_unit() {
   return 0
 }
 
-# ------------------------------------------------------------------------------
 # vm_wait_http <url> [timeout seconds] [--insecure]
-#
-# 0 once the URL answers like a running web UI: any 2xx or 3xx, or 401/403 from
-# a login wall. 5xx is a proxy whose backend is still starting.
-# ------------------------------------------------------------------------------
+# 0 once the URL answers like a web UI: 2xx, 3xx, or 401/403 from a login wall.
 vm_wait_http() {
-  local url="${1:?url}" timeout="${2:-120}" waited=0 code
+  local url="${1:?url}" timeout="${2:-120}" code
+  local deadline=$((SECONDS + timeout))
   local -a opts=(-sS -o /dev/null -w '%{http_code}' --max-time 5)
   [[ "${3:-}" == "--insecure" ]] && opts+=(-k)
 
-  while ((waited < timeout)); do
+  while ((SECONDS < deadline)); do
     code="$(curl "${opts[@]}" "$url" 2>/dev/null)" || code="000"
     [[ "$code" =~ ^([23][0-9][0-9]|401|403)$ ]] && return 0
     sleep 5
-    waited=$((waited + 5))
   done
   return 1
 }
 
-# ------------------------------------------------------------------------------
 # vm_print_summary ["Label=value"]...
 # vm_next_steps <step>...
 # vm_finish [message]
-#
-# The closing block every VM script printed in its own layout. Empty values are
-# skipped, so a VM that was not started simply has no IP row.
-# ------------------------------------------------------------------------------
+# The closing block. Empty values are skipped, so a VM that was not started
+# simply has no IP row.
 _vm_summary_row() {
   [[ -n "${2:-}" ]] && echo -e "${TAB:-  }${DGN:-}${1}: ${BGN:-}${2}${CL:-}"
   return 0
@@ -397,7 +352,7 @@ _vm_summary_row() {
 
 vm_print_summary() {
   local item state="running"
-  [[ "${START_VM:-yes}" == "yes" ]] || state="stopped -- start it from the Proxmox UI"
+  [[ "${START_VM:-yes}" == "yes" ]] || state="stopped -- start it when you are ready"
 
   echo -e "\n${INFO:-}${BOLD:-}${GN:-}${APP:-VM} Summary:${CL:-}"
   _vm_summary_row "VM ID" "${VMID:-}"
