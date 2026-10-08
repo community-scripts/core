@@ -1678,7 +1678,9 @@ vm_image_cache_path() {
 
 # A cached image that no longer matches usually means the upstream was rebuilt,
 # not that anything is wrong. Offer the choice instead of silently re-downloading
-# several hundred MB. Unattended or without a terminal, take the new one.
+# several hundred MB. Unattended or without a terminal, take the new one. A
+# "Keep cached" answer is remembered in <file>.keep with the upstream checksum
+# it was given against, so the question returns only when the upstream changes.
 _vm_cache_choice() {
   local file="$1" url="$2" local_size local_date remote_size remote_date head
 
@@ -1742,13 +1744,23 @@ vm_fetch_image() {
   fi
 
   if [[ "$cache" == yes && -e "$target" ]]; then
+    local keep="${target}.keep"
     if _vm_image_ok "$target" "$exact_bytes" "$min_bytes" "$sha_tool" "$sha_want" "$xz"; then
+      rm -f "$keep"
       msg_ok "Using cached ${CL}${BL}$(basename "$target")${CL}"
+      return 0
+    fi
+    if [[ -n "$sha_want" && -f "$keep" && "$(<"$keep")" == "${sha_tool}:${sha_want}" ]]; then
+      msg_ok "Using cached ${CL}${BL}$(basename "$target")${CL} (kept; the upstream has not changed)"
       return 0
     fi
     if _vm_cache_choice "$target" "$url"; then
       msg_warn "Replacing the cached $(basename "$target")"
-      rm -f "$target"
+      rm -f "$target" "$keep"
+    elif [[ -n "$sha_want" ]]; then
+      printf '%s' "${sha_tool}:${sha_want}" >"$keep"
+      msg_ok "Using cached ${CL}${BL}$(basename "$target")${CL} (kept until the upstream changes)"
+      return 0
     else
       msg_ok "Using cached ${CL}${BL}$(basename "$target")${CL}"
       return 0

@@ -182,6 +182,23 @@ vm_fetch_image "https://dl.test/openwrt.img.gz" "$TEST_DIR/cache/nosums.img" --c
 assert_contains "$WARNINGS" "checking the size only"
 ok "digest case is ignored; missing checksum list warns and continues"
 
+CHOICE_CALLS="$TEST_DIR/choice-calls"
+: >"$CHOICE_CALLS"
+_vm_cache_choice() { echo keep >>"$CHOICE_CALLS"; return 1; }
+KEPT="$TEST_DIR/cache/kept.img"
+mkdir -p "$TEST_DIR/cache" && printf 'old build\n' >"$KEPT"
+vm_fetch_image "https://dl.test/openwrt.img.gz" "$KEPT" --cache --sha256 "$IMAGE_SHA256" || fail "keep cached"
+[[ -f "$KEPT.keep" ]] || fail "a kept cache gets a marker"
+vm_fetch_image "https://dl.test/openwrt.img.gz" "$KEPT" --cache --sha256 "$IMAGE_SHA256" || fail "kept cache reused"
+assert_eq "$(grep -c keep "$CHOICE_CALLS")" 1 "asked once while the upstream is unchanged"
+vm_fetch_image "https://dl.test/openwrt.img.gz" "$KEPT" --cache --sha256 "$(printf '%064d' 1)" || fail "keep again after a change"
+assert_eq "$(grep -c keep "$CHOICE_CALLS")" 2 "asked again once the upstream changed"
+_vm_cache_choice() { return 0; }
+vm_fetch_image "https://dl.test/openwrt.img.gz" "$KEPT" --cache --sha256 "$IMAGE_SHA256" || fail "replace cached"
+[[ ! -f "$KEPT.keep" ]] || fail "the marker goes with the replaced file"
+assert_eq "$(sha256sum "$KEPT" | cut -d' ' -f1)" "$IMAGE_SHA256" "fresh download in place"
+ok "a kept cache is reused until the upstream checksum changes"
+
 # ── vm_import_disk ──────────────────────────────────────────────────────────
 VMID=100
 QM_MODERN=yes
