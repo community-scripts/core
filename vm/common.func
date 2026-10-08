@@ -300,6 +300,7 @@ vm_firstboot_unit() {
     [[ -n "$requires_path" ]] && printf 'ConditionPathExists=%s\n' "$requires_path"
     printf '\n[Service]\n'
     printf 'Type=oneshot\n'
+    printf 'Environment=DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1\n'
     printf 'ExecStart=/usr/local/sbin/%s\n' "$name"
     printf "ExecStartPost=/bin/sh -c 'mkdir -p /var/lib/community-scripts && touch %s'\n" "$marker"
     printf 'RemainAfterExit=yes\n'
