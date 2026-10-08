@@ -928,6 +928,8 @@ log_section() {
 # - Temporarily disables error trap to capture exit code correctly
 # ------------------------------------------------------------------------------
 silent() {
+  # A failure the caller handled (a retry loop) must not be reported for a later, unrelated error.
+  unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG
   local cmd="$*"
   local caller_line="${BASH_LINENO[0]:-unknown}"
   local logfile="$(get_active_logfile)"
