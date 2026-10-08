@@ -1565,8 +1565,8 @@ vm_prompt_vlan() {
 vm_keyboard_default() {
   if [[ -n "${VM_KEYBOARD:-}" ]]; then
     printf '%s' "$VM_KEYBOARD"
-  else
-    sed -n 's/^keyboard: *//p' /etc/pve/datacenter.cfg 2>/dev/null | head -n1 | tr -d '[:space:]'
+  elif [[ -r /etc/pve/datacenter.cfg ]]; then
+    sed -n 's/^keyboard: *//p' /etc/pve/datacenter.cfg | head -n1 | tr -d '[:space:]'
   fi
 }
 
