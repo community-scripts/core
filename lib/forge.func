@@ -1656,6 +1656,14 @@ check_for_release() {
     fi
   fi
 
+  # The deploy path takes the release the maintainer marked as latest. Sorting
+  # the list here instead offered unflagged betas with higher numbers, which the
+  # deploy then refused as "already installed" on every run.
+  if [[ -z "$releases_json" && -z "$pinned_version_in" && -z "$tag_prefix" && "${GH_INCLUDE_PRERELEASE:-0}" != "1" ]] &&
+    _forge_designated_release "$forge" "$base" "$repo_path" "$json_file"; then
+    releases_json="[$(<"$json_file")]"
+  fi
+
   if [[ -z "$releases_json" ]]; then
     local list
     list="$(_forge_descriptor "$forge" list)"
