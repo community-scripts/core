@@ -104,8 +104,18 @@ _incus_restart_ct() {
   [[ "$(incus_instance_field "${CT_NAME}" s)" == "RUNNING" ]]
 }
 
+# An alias resolves whether or not the image exists for this host's
+# architecture; the launch then fails with "architecture isn't supported".
+_incus_image_fits_host() {
+  local arch
+  arch=$(incus image info "$1" 2>/dev/null | awk '/^Architecture:/ {print $2; exit}' || true)
+  [[ -n "$arch" ]] || return 2
+  [[ "$arch" == "$(uname -m)" ]]
+}
+
 _incus_resolve_launch_image() {
   # Tries images:OS/VER (+ /cloud, codename alias, local cache). Sets INCUS_LAUNCH_IMAGE.
+  # Returns 2 when the image exists, but not for this architecture.
   local os="${IMAGE_OS:-debian}" ver="${IMAGE_VERSION:-13}" alias=""
   os="${os,,}"
   alias="$(incus_get_image_alias "$os" "$ver" 2>/dev/null || true)"
@@ -129,28 +139,34 @@ _incus_resolve_launch_image() {
   for cand in "${candidates[@]}"; do
     if [[ -n "$local_aliases" ]] &&
       grep -qxF "${cand#images:}" <<<"$local_aliases" &&
-      incus image info "${cand#images:}" &>/dev/null; then
+      _incus_image_fits_host "${cand#images:}"; then
       INCUS_LAUNCH_IMAGE="${cand#images:}"
       return 0
     fi
   done
 
+  local fit other_arch=0
   for cand in "${candidates[@]}"; do
-    if incus image info "$cand" &>/dev/null; then
+    fit=0
+    _incus_image_fits_host "$cand" || fit=$?
+    if ((fit == 0)); then
       INCUS_LAUNCH_IMAGE="$cand"
       return 0
     fi
+    ((fit == 1)) && other_arch=1
   done
 
   # Not on the image server under any name we know: take its newest version.
   local newest
-  newest=$(incus image alias list images: "${os}/" -f csv 2>/dev/null | cut -d, -f1 |
-    awk -F/ 'NF == 2 && $2 ~ /^[0-9][0-9.]*$/ {print $2}' | sort -uV | tail -n1 || true)
-  if [[ -n "$newest" ]] && incus image info "images:${os}/${newest}" &>/dev/null; then
-    msg_warn "${os} ${ver} is not on the image server; using ${os} ${newest}"
-    INCUS_LAUNCH_IMAGE="images:${os}/${newest}"
-    return 0
-  fi
+  for newest in $(incus image alias list images: "${os}/" -f csv 2>/dev/null | cut -d, -f1 |
+    awk -F/ 'NF == 2 && $2 ~ /^[0-9][0-9.]*$/ {print $2}' | sort -urV || true); do
+    if _incus_image_fits_host "images:${os}/${newest}"; then
+      msg_warn "${os} ${ver} is not on the image server; using ${os} ${newest}"
+      INCUS_LAUNCH_IMAGE="images:${os}/${newest}"
+      return 0
+    fi
+  done
+  ((other_arch)) && return 2
 
   # Last resort: try remote launch of primary (incus may pull on demand)
   INCUS_LAUNCH_IMAGE="images:${os}/${ver}"
@@ -365,7 +381,12 @@ incus_create_lxc_container() {
 
   msg_info "Resolving container image"
   local image_name=""
-  if _incus_resolve_launch_image; then
+  local resolve_rc=0
+  _incus_resolve_launch_image || resolve_rc=$?
+  if ((resolve_rc == 2)); then
+    msg_error "${IMAGE_OS} ${IMAGE_VERSION} has no $(uname -m) image on the image server"
+    exit 106
+  elif ((resolve_rc == 0)); then
     image_name="${INCUS_LAUNCH_IMAGE}"
     msg_ok "Image ${BL}${image_name}${CL}"
   else
@@ -430,12 +451,13 @@ incus_create_lxc_container() {
 
   if ! incus launch "${image_name}" "${CT_NAME}" "${launch_args[@]}" >>"$LOGFILE" 2>&1; then
     # Retry alternate candidates once if primary pull failed
-    local retry_img="" launched=0
+    local retry_img="" launched=0 tried=" ${image_name} "
     for retry_img in "images:${IMAGE_OS}/${IMAGE_VERSION}/cloud" \
       "images:${IMAGE_OS}/$(incus_get_image_alias "${IMAGE_OS}" "${IMAGE_VERSION}" 2>/dev/null || true)" \
       "images:${IMAGE_OS}/$(incus_get_image_alias "${IMAGE_OS}" "${IMAGE_VERSION}" 2>/dev/null || true)/cloud"; do
-      [[ -z "$retry_img" || "$retry_img" == "$image_name" || "$retry_img" == */ ]] && continue
-      msg_warn "Launch failed with ${image_name} — retrying ${retry_img}"
+      [[ -z "$retry_img" || "$retry_img" == */ || "$tried" == *" ${retry_img} "* ]] && continue
+      tried+="${retry_img} "
+      msg_warn "Launch failed, retrying with ${retry_img}"
       if incus launch "${retry_img}" "${CT_NAME}" "${launch_args[@]}" >>"$LOGFILE" 2>&1; then
         image_name="$retry_img"
         launched=1
@@ -1026,26 +1048,6 @@ EOF"
   msg_ok "Customized LXC Container"
 }
 
-incus_setup_motd_pve_style() {
-  msg_info "Setting up MOTD"
-  local motd_file
-  motd_file=$(mktemp)
-  cat >"$motd_file" <<MOTDEOF
-#!/bin/bash
-# Community Scripts MOTD
-if [[ -f /etc/os-release ]]; then . /etc/os-release; fi
-echo ''
-echo '  🚀 ${APP} LXC'
-echo "  🖥️  OS: \${PRETTY_NAME:-Linux}"
-echo "  📡 IP: \$(hostname -I 2>/dev/null | awk '{print \$1}')"
-echo ''
-MOTDEOF
-  incus file push "$motd_file" "${CT_NAME}/etc/profile.d/99-community-scripts-motd.sh" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
-  incus_ct_exec chmod +x /etc/profile.d/99-community-scripts-motd.sh >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
-  rm -f "$motd_file"
-  msg_ok "MOTD configured"
-}
-
 _incus_push_functions_and_run_install() {
   # Sets INCUS_LAST_INSTALL_EXIT (do not capture stdout — msg_* writes there).
   INCUS_LAST_INSTALL_EXIT=0
@@ -1066,6 +1068,8 @@ INNEREOF" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || { msg_error "Failed to push f
   # prompts - the spinner kept redrawing over them, which is why Immich's
   # machine-learning menu could not be read and the keystroke landed in the
   # spinner line. A static line, and the script owns the terminal from here.
+  # Emptied first, or msg_custom would resume a block the host left open.
+  _MSG_BLOCKS=()
   msg_custom "🚀" "${GN}" "Starting application installation"
   local _install_script _run_env lxc_exit=0 install_exit_code=0
   # Checked here: inside $(...) below, stdout is the capture pipe, never the terminal.
@@ -1489,7 +1493,6 @@ incus_build_container() {
   incus_fix_debian13_root_ownership
   incus_customize_container
   install_ssh_keys_into_ct
-  incus_setup_motd_pve_style
   incus_run_install_script_with_recovery
 }
 
