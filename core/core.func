@@ -2275,7 +2275,14 @@ cleanup_lxc() {
     # problem worth reporting.
     $STD apk cache clean 2>/dev/null || true
     rm -rf /var/cache/apk/*
-  else
+  elif command -v dnf &>/dev/null; then
+    $STD dnf -y autoremove 2>/dev/null || msg_warn "dnf autoremove failed (non-critical)"
+    $STD dnf clean all 2>/dev/null || msg_warn "dnf clean failed (non-critical)"
+  elif command -v zypper &>/dev/null; then
+    $STD zypper clean 2>/dev/null || msg_warn "zypper clean failed (non-critical)"
+  elif command -v pacman &>/dev/null; then
+    $STD pacman -Sc --noconfirm 2>/dev/null || msg_warn "pacman clean failed (non-critical)"
+  elif command -v apt &>/dev/null; then
     $STD apt -y autoremove 2>/dev/null || msg_warn "apt autoremove failed (non-critical)"
     $STD apt -y autoclean 2>/dev/null || msg_warn "apt autoclean failed (non-critical)"
     $STD apt -y clean 2>/dev/null || msg_warn "apt clean failed (non-critical)"
