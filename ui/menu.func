@@ -432,8 +432,8 @@ settings_menu() {
 # - Warns if under-provisioned and asks user to continue or abort
 # ------------------------------------------------------------------------------
 check_container_resources() {
-  current_ram=$(free -m | awk 'NR==2{print $2}')
-  current_cpu=$(nproc)
+  current_ram=$(awk '/^MemTotal:/ {printf "%d", $2 / 1024}' /proc/meminfo)
+  current_cpu=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)
 
   if [[ "$current_ram" -lt "$var_ram" ]] || [[ "$current_cpu" -lt "$var_cpu" ]]; then
     echo -e "\n${INFO}${HOLD} ${GN}Required: ${var_cpu} CPU, ${var_ram}MB RAM ${CL}| ${RD}Current: ${current_cpu} CPU, ${current_ram}MB RAM${CL}"

@@ -194,6 +194,11 @@ ensure_profile_loaded() {
   # false conditional makes `source` return that status, which as the final
   # command of an && list is not exempt from errexit -- that took whole updates
   # with it.
+  # RHEL's lang.sh reads LC_ALL unguarded; under nounset that ends the shell
+  # before `|| true` gets a say.
+  local nounset=0
+  [[ $- == *u* ]] && nounset=1
+  set +u
   if [[ -d /etc/profile.d ]]; then
     for script in /etc/profile.d/*.sh; do
       [[ -r "$script" ]] || continue
@@ -207,6 +212,7 @@ ensure_profile_loaded() {
   if [[ -r "${HOME:-/root}/.profile" ]]; then
     source "${HOME:-/root}/.profile" >/dev/null 2>&1 || true
   fi
+  ((nounset)) && set -u
 
   # Also ensure /usr/local/bin is in PATH (common install location)
   if [[ ":$PATH:" != *":/usr/local/bin:"* ]]; then
