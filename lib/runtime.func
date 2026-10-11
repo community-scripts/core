@@ -2508,13 +2508,65 @@ setup_rust() {
 # uv refuses to run when a project pins a required-version it does not match,
 # in either direction. Only the exact form is read; a range falls through to
 # whatever the caller would have installed anyway.
+# required-version from pyproject.toml or uv.toml. An exact pin ("==0.12.3")
+# is returned as is; a range (">=0.12.15,<0.13") resolves to the newest
+# published uv inside it, so a project that caps uv keeps getting the
+# upgrades it accepts instead of the latest release it rejects.
 _uv_required_version() {
-  local dir="${1:?dir}" f v
+  local dir="${1:?dir}" f spec exact='^(==)?([0-9][0-9A-Za-z.+-]*)$'
   for f in "$dir/pyproject.toml" "$dir/uv.toml"; do
     [[ -f "$f" ]] || continue
-    v="$(grep -m1 -E '^[[:space:]]*required-version[[:space:]]*=' "$f" 2>/dev/null |
-      sed -E 's/.*=[[:space:]]*"[[:space:]]*==[[:space:]]*([0-9][0-9A-Za-z.+-]*)"[[:space:]]*$/\1/')"
-    if [[ "$v" =~ ^[0-9] ]]; then
+    spec="$(grep -m1 -E '^[[:space:]]*required-version[[:space:]]*=' "$f" 2>/dev/null |
+      sed -nE 's/^[^=]*=[[:space:]]*"([^"]*)".*/\1/p' | tr -d '[:space:]')"
+    [[ -n "$spec" ]] || continue
+    if [[ "$spec" =~ $exact ]]; then
+      echo "${BASH_REMATCH[2]}"
+      return 0
+    fi
+    _uv_pick_version "$spec" < <(_uv_release_list)
+    return
+  done
+  return 1
+}
+
+_uv_release_list() {
+  local tmp
+  tmp=$(mktemp) || return 1
+  if ! github_api_call "https://api.github.com/repos/astral-sh/uv/releases?per_page=100" "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  jq -r '.[].tag_name' "$tmp" | sed 's/^v//' | sort -rV
+  rm -f "$tmp"
+}
+
+_uv_ver_ge() { [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" == "$1" ]]; }
+
+# Newest version on stdin (one per line, newest first) that satisfies every
+# comma-separated clause in $1: ==, !=, <, <=, >, >=, ~=.
+_uv_pick_version() {
+  local spec="$1" v c op want ok
+  local version='^[0-9]+(\.[0-9]+)*$' clause='^(==|!=|<=|>=|<|>|~=)(.+)$'
+  local -a clauses
+  IFS=',' read -ra clauses <<<"$spec"
+  while IFS= read -r v; do
+    [[ "$v" =~ $version ]] || continue
+    ok=1
+    for c in "${clauses[@]}"; do
+      [[ "$c" =~ $clause ]] || { ok=0; break; }
+      op="${BASH_REMATCH[1]}" want="${BASH_REMATCH[2]}"
+      case "$op" in
+      '==') [[ "$v" == "$want" ]] || ok=0 ;;
+      '!=') [[ "$v" != "$want" ]] || ok=0 ;;
+      '>=') _uv_ver_ge "$v" "$want" || ok=0 ;;
+      '>') [[ "$v" != "$want" ]] && _uv_ver_ge "$v" "$want" || ok=0 ;;
+      '<=') _uv_ver_ge "$want" "$v" || ok=0 ;;
+      '<') [[ "$v" != "$want" ]] && _uv_ver_ge "$want" "$v" || ok=0 ;;
+      '~=') _uv_ver_ge "$v" "$want" && [[ "$v" == "${want%.*}".* ]] || ok=0 ;;
+      esac
+      ((ok)) || break
+    done
+    if ((ok)); then
       echo "$v"
       return 0
     fi

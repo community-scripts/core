@@ -25,6 +25,7 @@ on:
       - "tests/vm-iso-storage.sh"
       - "tests/vm-consoles.sh"
       - "tests/vm-helpers.sh"
+      - "tests/uv-required-version.sh"
       - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
@@ -41,6 +42,7 @@ on:
       - "tests/vm-iso-storage.sh"
       - "tests/vm-consoles.sh"
       - "tests/vm-helpers.sh"
+      - "tests/uv-required-version.sh"
       - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
@@ -70,6 +72,9 @@ jobs:
 
       - name: VM helper regression tests
         run: bash tests/vm-helpers.sh
+
+      - name: uv pin regression tests
+        run: bash tests/uv-required-version.sh
 
       - name: Prefetch lists cover every engine file
         run: |
