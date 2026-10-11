@@ -858,7 +858,8 @@ incus_configure_device_passthrough() {
   fi
 
   if [[ "${ENABLE_FUSE:-no}" == "yes" ]] && ! incus_ct_exec test -c /dev/fuse 2>/dev/null; then
-    if incus config device add "${CT_NAME}" fuse unix-char source=/dev/fuse path=/dev/fuse       >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1; then
+    if incus config device add "${CT_NAME}" fuse unix-char source=/dev/fuse path=/dev/fuse \
+      >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1; then
       msg_ok "FUSE device attached"
     else
       msg_warn "Could not add FUSE device"
