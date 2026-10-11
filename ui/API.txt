@@ -78,6 +78,7 @@ color
 color_spinner
 configure_http_proxy
 configure_ssh_settings
+confirm_external_installer
 confirm_not_pve_host
 cs_testing_state
 default_var_settings
