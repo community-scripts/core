@@ -857,6 +857,14 @@ incus_configure_device_passthrough() {
     fi
   fi
 
+  if [[ "${ENABLE_FUSE:-no}" == "yes" ]] && ! incus_ct_exec test -c /dev/fuse 2>/dev/null; then
+    if incus config device add "${CT_NAME}" fuse unix-char source=/dev/fuse path=/dev/fuse       >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1; then
+      msg_ok "FUSE device attached"
+    else
+      msg_warn "Could not add FUSE device"
+    fi
+  fi
+
   if [[ -e /dev/apex_0 ]]; then
     msg_custom "🔌" "${BL}" "Detected Coral TPU - configuring passthrough"
     _incus_soft incus config device add "${CT_NAME}" apex0 unix-char source=/dev/apex_0 path=/dev/apex_0 >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
