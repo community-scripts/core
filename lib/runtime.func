@@ -223,7 +223,7 @@ ensure_docker() {
 
 # ------------------------------------------------------------------------------
 # Opt-in runc wrapper that shows the LXC container's resource limits to nested
-# Docker containers. Caveats and opt-out: docs/lib.md#docker-inside-lxc.
+# Docker containers. Caveats and per-container bypass: docs/lib.md#docker-inside-lxc.
 # ------------------------------------------------------------------------------
 _docker_setup_lxcfs_visibility() {
   local enabled="${DOCKER_LXCFS_VISIBILITY:-${var_docker_lxcfs:-no}}"
@@ -233,7 +233,10 @@ _docker_setup_lxcfs_visibility() {
   esac
 
   # Only meaningful inside an LXC container whose /proc is served by lxcfs
-  grep -qs 'fuse\.lxcfs' /proc/mounts || return 0
+  if ! grep -qs 'fuse\.lxcfs' /proc/mounts; then
+    msg_warn "lxcfs not mounted - skipping LXC resource visibility for Docker"
+    return 0
+  fi
 
   if ! command -v runc >/dev/null 2>&1; then
     msg_warn "runc not found - skipping LXC resource visibility for Docker"
@@ -330,10 +333,15 @@ RUNC_LXCFS
     "runtimes": ((.runtimes // {}) + {"lxcfs": {"path": "/usr/local/bin/runc-lxcfs"}})
   }' /etc/docker/daemon.json >"$tmpfile" && [ -s "$tmpfile" ]; then
     mv "$tmpfile" /etc/docker/daemon.json
+    # An already-running dockerd (update path) picks up default-runtime on SIGHUP.
+    if systemctl is-active -q docker 2>/dev/null; then
+      $STD systemctl reload docker || msg_warn "Could not reload Docker - restart it to apply LXC resource visibility"
+    fi
     msg_ok "Configured LXC resource visibility for Docker"
   else
     rm -f "$tmpfile"
-    rm -f /usr/local/bin/runc-lxcfs
+    # A previous run's daemon.json still points at the wrapper; keep it.
+    [[ -n "$current_runtime" ]] || rm -f /usr/local/bin/runc-lxcfs
     msg_warn "Could not update /etc/docker/daemon.json - LXC resource visibility not enabled"
   fi
 }

@@ -70,13 +70,15 @@ also applies the CT's limit to its cgroup, which musl and Node's
 inherited, and `/sys/devices/system/cpu/online` is bound for glibc's
 `_SC_NPROCESSORS_ONLN`.
 
-- It is a no-op outside LXC or where lxcfs is not mounted.
+- It is a no-op, with a warning, outside LXC or where lxcfs is not mounted.
 - It never replaces an existing `default-runtime` (e.g. `nvidia`). It never
   overrides an explicit `--memory` / `mem_limit`.
 - On an update it only runs when explicitly requested. Without the variable,
-  `daemon.json` is left as it is.
-- When anything fails (no `runc`, no `jq`, bad JSON), the wrapper falls through
-  to the real runc unmodified.
+  `daemon.json` is left as it is. With it, a running Docker is reloaded
+  (`SIGHUP`) so the new default runtime applies without a restart.
+- Setup leaves Docker untouched when `runc` or `jq` is missing or `daemon.json`
+  cannot be parsed. If the wrapper cannot patch a container's config, it hands
+  that config to runc unmodified.
 - Use `docker run --runtime=runc` (compose: `runtime: runc`) to bypass it for one
   container.
 - The limit is written at container creation. After `pct set` changes the CT's
