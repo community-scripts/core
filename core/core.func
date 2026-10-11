@@ -1837,6 +1837,34 @@ prompt_confirm() {
 }
 
 # ------------------------------------------------------------------------------
+# confirm_external_installer()
+#
+#   confirm_external_installer <source> <installer>
+#
+# - Warns that a third-party installer is about to run and asks to continue
+# - var_external_installer answers it, so unattended runs can say yes or no.
+#   prompt_confirm is no use here: it takes its default without asking in
+#   every non-advanced mode, and the default has to be no
+# - Exits 10 when declined
+# ------------------------------------------------------------------------------
+confirm_external_installer() {
+  local source="$1" installer="$2" answer="${var_external_installer:-}"
+  msg_warn "WARNING: This script will run an external installer from a third-party source (${source})."
+  msg_warn "The following code is NOT maintained or audited by our repository."
+  msg_warn "If you have any doubts or concerns, please review the installer code before proceeding:"
+  msg_custom "${TAB3}${GATEWAY}${BGN}${CL}" "\e[1;34m" "→  ${installer}"
+  echo
+  if [[ -z "$answer" ]] && ! read -r -p "${TAB3}Do you want to continue? [y/N]: " answer; then
+    msg_error "No terminal to confirm on. Set var_external_installer=yes to run it unattended."
+    exit 10
+  fi
+  if [[ ! "${answer,,}" =~ ^(y|yes|true)$ ]]; then
+    msg_error "Aborted by user. No changes have been made."
+    exit 10
+  fi
+}
+
+# ------------------------------------------------------------------------------
 # prompt_input()
 #
 # - Prompts user for text input with timeout and unattended support

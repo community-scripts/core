@@ -28,6 +28,7 @@ on:
       - "tests/mongodb-upgrade.sh"
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
+      - "tests/external-installer.sh"
       - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
@@ -47,6 +48,7 @@ on:
       - "tests/mongodb-upgrade.sh"
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
+      - "tests/external-installer.sh"
       - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
@@ -85,6 +87,9 @@ jobs:
 
       - name: Docker lxcfs visibility regression tests
         run: bash tests/docker-lxcfs.sh
+
+      - name: External installer confirmation tests
+        run: bash tests/external-installer.sh
 
       - name: Prefetch lists cover every engine file
         run: |
