@@ -27,6 +27,7 @@ on:
       - "tests/vm-helpers.sh"
       - "tests/mongodb-upgrade.sh"
       - "tests/uv-required-version.sh"
+      - "tests/docker-lxcfs.sh"
       - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
@@ -45,6 +46,7 @@ on:
       - "tests/vm-helpers.sh"
       - "tests/mongodb-upgrade.sh"
       - "tests/uv-required-version.sh"
+      - "tests/docker-lxcfs.sh"
       - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
@@ -80,6 +82,9 @@ jobs:
 
       - name: uv pin regression tests
         run: bash tests/uv-required-version.sh
+
+      - name: Docker lxcfs visibility regression tests
+        run: bash tests/docker-lxcfs.sh
 
       - name: Prefetch lists cover every engine file
         run: |
