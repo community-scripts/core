@@ -30,6 +30,8 @@ _gh_scan_older_releases
 _github_release_noapi
 _gl_scan_older_releases
 _install_uvx_wrapper
+_mongodb_in_place_precheck
+_mongodb_in_place_simulate
 _purge_is_safe
 _resolve_igc_tag
 _setup_amd_apu
@@ -113,6 +115,8 @@ is_service_running
 is_tool_installed
 is_ubuntu
 manage_tool_repository
+mongodb_get_fcv
+mongodb_set_fcv
 nginx_enable_site
 prepare_repository_setup
 prompt_for_github_token
