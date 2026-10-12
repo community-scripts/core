@@ -201,6 +201,9 @@ header_info() {
 
   if [ -n "$header_content" ]; then
     echo "$header_content"
+  else
+    echo "${_CS_FALLBACK_HEADER:-Community Scripts}"
+    echo "  ${APP:-}"
   fi
 }
 

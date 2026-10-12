@@ -1401,6 +1401,21 @@ exit_script() {
 # - Determines app type (ct/vm) from APP_TYPE variable
 # - Returns header content or empty string on failure
 # ------------------------------------------------------------------------------
+# Drawn until the generator has produced a script's own banner (figlet
+# slant, two lines so it fits 80 columns); the app name follows in plain text.
+_CS_FALLBACK_HEADER='   ______                                      _ __
+  / ____/___  ____ ___  ____ ___  __  ______  (_) /___  __
+ / /   / __ \/ __ `__ \/ __ `__ \/ / / / __ \/ / __/ / / /
+/ /___/ /_/ / / / / / / / / / / / /_/ / / / / / /_/ /_/ /
+\____/\____/_/ /_/ /_/_/ /_/ /_/\__,_/_/ /_/_/\__/\__, /
+                                                 /____/
+   _____           _       __
+  / ___/__________(_)___  / /______
+  \__ \/ ___/ ___/ / __ \/ __/ ___/
+ ___/ / /__/ /  / / /_/ / /_(__  )
+/____/\___/_/  /_/ .___/\__/____/
+                /_/'
+
 get_header() {
   # Slug must match what the generator writes: APP lowercased, spaces removed.
   local app_name=$(echo "${APP,,}" | tr -d ' ')
@@ -1483,6 +1498,9 @@ header_info() {
 
   if [ -n "$header_content" ]; then
     echo "$header_content"
+  else
+    echo "${_CS_FALLBACK_HEADER:-Community Scripts}"
+    echo "  ${APP:-}"
   fi
 }
 

@@ -553,7 +553,12 @@ header_info() {
     header_content=$(get_header "$app_name" 2>/dev/null || true)
   fi
   clear 2>/dev/null || true
-  [[ -n "$header_content" ]] && echo "$header_content"
+  if [[ -n "$header_content" ]]; then
+    echo "$header_content"
+  else
+    echo "${_CS_FALLBACK_HEADER:-Community Scripts}"
+    echo "  ${APP:-}"
+  fi
   return 0
 }
 
