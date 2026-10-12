@@ -1228,16 +1228,27 @@ _forge_descriptor() {
 # version: a patch backported to an older line is published after the newer
 # minor. Order by version instead. This only decides between tags of the same
 # shape; which release line is current is the forge's answer, not ours.
-_FORGE_JQ_VKEY='((.tag_name // "") | sub("^[vV]";"") | [scan("[0-9]+")] | map(tonumber))'
+#
+# The key used to be every digit run in the tag, so the label was lost:
+# 1.0.0-beta38 became 1.0.0.38 and beat 1.0.0-rc.1 (1.0.0.1), and an install
+# on beta38 never saw the rc. The numeric core is now padded to one width and
+# followed by a rank for the pre-release label (dev < alpha < beta < pre < rc
+# < none), then the digits that follow it. Any other suffix ranks as a final
+# release, so -ls45 or -1 revisions still order by their number.
+_FORGE_JQ_VKEY_DEF='def _forge_vkey:
+  sub("^[^0-9]*"; "")
+  | (capture("^(?<b>[0-9]+(?:[.][0-9]+)*)(?<r>.*)$") // {b: "", r: .}) as $m
+  | [$m.b | scan("[0-9]+") | tonumber] as $core
+  | ($m.r | ascii_downcase) as $rest
+  | ($rest | capture("^[-._+]?(?<l>dev|alpha|beta|preview|pre|rc)(?=[-._0-9]|$)") // {l: ""}).l as $label
+  | $core + [range($core | length; 6) | 0]
+  + [{"dev": 1, "alpha": 2, "beta": 3, "preview": 4, "pre": 4, "rc": 5}[$label] // 9]
+  + [$rest | scan("[0-9]+") | tonumber];'
+_FORGE_JQ_VKEY="(${_FORGE_JQ_VKEY_DEF} (.tag_name // \"\") | _forge_vkey)"
 
-# Highest of the versions on stdin.
+# Highest of the versions on stdin, on the same key as _FORGE_JQ_VKEY.
 _forge_highest_version() {
-  local line key
-  while IFS= read -r line; do
-    [[ -n "$line" ]] || continue
-    key="$(printf '%s' "$line" | grep -oE '[0-9]+' | tr '\n' '.')"
-    printf '%s\t%s\n' "${key:-0}" "$line"
-  done | sort -V -k1,1 | tail -n1 | cut -f2-
+  jq -Rrs "${_FORGE_JQ_VKEY_DEF} split(\"\n\") | map(select(length > 0)) | sort_by(_forge_vkey) | last // empty"
 }
 
 # Do both carry a separator between digits? 20260823 and nightly-20260511-414
