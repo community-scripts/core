@@ -29,6 +29,7 @@ on:
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
       - "tests/external-installer.sh"
+      - "tests/forge-version-key.sh"
       - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
@@ -49,6 +50,7 @@ on:
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
       - "tests/external-installer.sh"
+      - "tests/forge-version-key.sh"
       - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
@@ -90,6 +92,9 @@ jobs:
 
       - name: External installer confirmation tests
         run: bash tests/external-installer.sh
+
+      - name: Forge version key regression tests
+        run: bash tests/forge-version-key.sh
 
       - name: Prefetch lists cover every engine file
         run: |
