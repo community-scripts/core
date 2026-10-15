@@ -1660,21 +1660,23 @@ customize() {
       # above the login. --noissue keeps it from reprinting the issue on respawn.
       local _agetty_opts='--autologin root --noissue --keep-baud'
 
-      # Pin TERM=linux on the getty AND pass 'linux' as the agetty term type
-      # (positional order is port, baud list, term -- a stray '-' in the term
-      # slot left the type unknown, which is what triggers the probe).
-      # util-linux >= 2.40 agetty auto-probes the terminal with ESC[6n (CPR) when
-      # the term type is unknown; on the PVE noVNC console (tty1 = container-getty@1)
-      # the response leaks into the shell as "R;80R" garbage. A known TERM stops the
-      # probe. The console-getty-only mitigation in pve/backend.func missed tty1,
-      # which is exactly what noVNC/pct console attaches to.
+      # container-getty@ hands agetty its pty as stdin (TTYPath=/dev/pts/%I,
+      # since systemd 252), so the line is "-" exactly like the stock unit.
+      # Naming tty%I opened a device the unit did not own; on Kali (systemd
+      # 262) agetty failed, the unit died, and systemd's own size probe
+      # (ESC[6n on every start) was left echoing on the console as "24;80R".
+      # The override applies to every instance, so whichever pty the PVE
+      # console attaches to gets the autologin. TERM=linux keeps readline
+      # from probing as well.
       if [[ -f /usr/lib/systemd/system/container-getty@.service ]]; then
-        mkdir -p /etc/systemd/system/container-getty@1.service.d
-        cat >/etc/systemd/system/container-getty@1.service.d/override.conf <<EOF
+        rm -f /etc/systemd/system/container-getty@1.service.d/override.conf
+        rmdir /etc/systemd/system/container-getty@1.service.d 2>/dev/null || true
+        mkdir -p /etc/systemd/system/container-getty@.service.d
+        cat >/etc/systemd/system/container-getty@.service.d/override.conf <<EOF
 [Service]
 Environment=TERM=linux
 ExecStart=
-ExecStart=-/sbin/agetty ${_agetty_opts} tty%I 115200,38400,9600 linux
+ExecStart=-/sbin/agetty ${_agetty_opts} - 115200,38400,9600 linux
 EOF
       fi
 
@@ -1718,8 +1720,9 @@ EOF
       chmod +x /etc/profile.d/00-lxc-term-size.sh
 
       systemctl daemon-reload
-      # Restart only what's currently active to avoid spawning duplicate gettys
-      systemctl is-active container-getty@1.service &>/dev/null && systemctl restart container-getty@1.service &>/dev/null || true
+      # Each instance owns its own pty; a failed one (Kali) needs reset-failed first.
+      systemctl reset-failed 'container-getty@*.service' &>/dev/null || true
+      systemctl restart 'container-getty@*.service' &>/dev/null || true
       systemctl is-active console-getty.service &>/dev/null && systemctl restart console-getty.service &>/dev/null || true
       touch /root/.hushlogin
       ;;
