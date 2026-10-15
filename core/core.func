@@ -1871,13 +1871,18 @@ confirm_external_installer() {
   msg_warn "If you have any doubts or concerns, please review the installer code before proceeding:"
   msg_custom "${TAB3}${GATEWAY}${BGN}${CL}" "\e[1;34m" "→  ${installer}"
   echo
+  # 254 is the user declining; 10 would read as "needs privileged mode".
   if [[ -z "$answer" ]] && ! read -r -p "${TAB3}Do you want to continue? [y/N]: " answer; then
     msg_error "No terminal to confirm on. Set var_external_installer=yes to run it unattended."
-    exit 10
+    exit 254
   fi
   if [[ ! "${answer,,}" =~ ^(y|yes|true)$ ]]; then
-    msg_error "Aborted by user. No changes have been made."
-    exit 10
+    if [[ -n "${var_external_installer:-}" ]]; then
+      msg_error "var_external_installer=${var_external_installer} declines the upstream installer, and this script has no other way to install. Set it to yes, or leave it unset to be asked."
+    else
+      msg_error "Aborted by user. No changes have been made."
+    fi
+    exit 254
   fi
 }
 

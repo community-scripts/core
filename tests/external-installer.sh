@@ -36,13 +36,20 @@ run_eof() {
 check "var yes" 0 "$(run yes "")"
 check "var YES" 0 "$(run YES "")"
 check "var true" 0 "$(run true "")"
-check "var no" 10 "$(run no "y")"
-check "var wins over input" 10 "$(run no "yes")"
+check "var no" 254 "$(run no "y")"
+check "var wins over input" 254 "$(run no "yes")"
 check "typed y" 0 "$(run "" y)"
 check "typed Yes" 0 "$(run "" Yes)"
-check "typed n" 10 "$(run "" n)"
-check "just enter" 10 "$(run "" "")"
-check "no stdin" 10 "$(run_eof)"
+check "typed n" 254 "$(run "" n)"
+check "just enter" 254 "$(run "" "")"
+check "no stdin" 254 "$(run_eof)"
+
+# what the message says; $1 is var_external_installer, $2 what the user types
+said() {
+  (var_external_installer="$1" confirm_external_installer src url) <<<"$2" 2>&1 >/dev/null || true
+}
+check "declining via the variable names the variable" 1 "$(said no "" | grep -c 'var_external_installer=no')"
+check "declining at the prompt is a user abort" 1 "$(said "" n | grep -c 'Aborted by user')"
 
 printf '%s passed, %s failed\n' "$passed" "$failed"
 ((failed == 0))
