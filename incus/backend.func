@@ -240,7 +240,6 @@ incus_validate_storage_space() {
     msg_custom "ℹ️" "${YW}" "Grow: incus storage set ${pool} size=50GiB   |   Or pick another pool"
     return 0
   fi
-  msg_ok "Storage space validated (${pool}: ~${free_gb}GB free)"
 }
 
 resolve_storage_preselect() {
@@ -345,17 +344,15 @@ incus_create_lxc_container() {
 
   if resolve_storage_preselect container "${CONTAINER_STORAGE:-}"; then
     STORAGE_POOL="$STORAGE_RESULT"
-    msg_ok "Storage ${BL}${STORAGE_POOL}${CL} (${STORAGE_INFO}) [Container]"
   elif [[ -z "${CONTAINER_STORAGE:-}" ]]; then
     select_storage container && STORAGE_POOL="$CONTAINER_STORAGE"
-    msg_ok "Storage ${BL}${STORAGE_POOL}${CL} [Container]"
   else
     STORAGE_POOL="${CONTAINER_STORAGE}"
   fi
 
   msg_info "Validating storage '${STORAGE_POOL}'"
   incus storage info "$STORAGE_POOL" &>/dev/null || { msg_error "Storage pool '${STORAGE_POOL}' invalid"; exit 213; }
-  msg_ok "Storage '${STORAGE_POOL}' validated"
+  msg_ok "Storage '${STORAGE_POOL}' validated${STORAGE_INFO:+ - ${STORAGE_INFO}}"
 
   if ! incus network show "${BRG}" >/dev/null 2>&1; then
     msg_warn "Network '${BRG}' not found, auto-selecting fallback"
@@ -367,10 +364,10 @@ incus_create_lxc_container() {
   local image_name=""
   if _incus_resolve_launch_image; then
     image_name="${INCUS_LAUNCH_IMAGE}"
-    msg_ok "Image ${BL}${image_name}${CL}"
+    msg_ok "Image ${BL}${image_name}${CL} (cached)"
   else
     image_name="${INCUS_LAUNCH_IMAGE:-images:${IMAGE_OS}/${IMAGE_VERSION}}"
-    msg_custom "ℹ️" "${YW}" "Image not cached yet — will try pull: ${image_name}"
+    msg_custom "ℹ️" "${YW}" "Image ${image_name} not cached, pulling"
   fi
 
   msg_info "Creating LXC Container"
@@ -478,7 +475,7 @@ incus_create_lxc_container() {
     fi
   fi
 
-  msg_ok "LXC Container ${CT_NAME} was successfully created."
+  msg_ok "Container ${CT_NAME} created"
 
   msg_info "Waiting for container to initialize"
   local waited=0
@@ -487,7 +484,7 @@ incus_create_lxc_container() {
     waited=$((waited + 2))
     [[ "$waited" -ge 60 ]] && { msg_error "Container not ready"; exit 1; }
   done
-  msg_ok "Container ${CT_NAME} is ready"
+  msg_ok "Container started"
 
   incus_set_container_hostname
 
@@ -559,7 +556,6 @@ incus_set_container_hostname() {
   hn=$(echo "$hn" | tr '[:upper:]' '[:lower:]' | tr -d ' ' | tr '_' '-')
   [[ -z "$hn" ]] && return 0
 
-  msg_info "Setting hostname to ${hn}"
   _incus_soft incus config set "${CT_NAME}" "user.hostname=${hn}" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
   # Prefer instance name for system hostname when UI used CT_ID as name
   local sys_hn="${CT_NAME}"
@@ -578,7 +574,7 @@ incus_set_container_hostname() {
       fi
     fi
   " >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1; then
-    msg_ok "Hostname set to ${sys_hn}"
+    :
   else
     msg_warn "Could not set the hostname inside ${CT_NAME} (see the log)"
   fi
@@ -874,7 +870,7 @@ incus_configure_device_passthrough() {
 }
 
 incus_wait_for_network() {
-  msg_info "Waiting for network in LXC container"
+  msg_info "Waiting for the container network"
 
   local net_type="" max_wait=40
   net_type=$(incus network show "${BRG:-}" 2>/dev/null | awk '/^type:/ {print $2; exit}')
@@ -917,9 +913,8 @@ incus_wait_for_network() {
     msg_warn "Network configured (IP: $ip_in_lxc) but connectivity test failed"
     echo -e "${YW}Container may have limited internet access. Installation will continue...${CL}"
   else
-    msg_ok "Network in LXC is reachable (ping)"
+    msg_ok "Network reachable (${ip_in_lxc})"
   fi
-  msg_ok "IP set to ${ip_in_lxc}"
   export IP="$ip_in_lxc"
 }
 
@@ -973,7 +968,7 @@ incus_set_root_password() {
 }
 
 incus_customize_container() {
-  msg_info "Customizing LXC Container"
+  msg_info "Customizing container"
   ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
 
   if [[ "${var_os:-debian}" == "alpine" ]]; then
@@ -1032,7 +1027,7 @@ EOF"
   fi
 
   incus_set_root_password
-  msg_ok "Customized LXC Container"
+  msg_ok "Container customized"
 }
 
 incus_setup_motd_pve_style() {
@@ -1058,11 +1053,9 @@ MOTDEOF
 _incus_push_functions_and_run_install() {
   # Sets INCUS_LAST_INSTALL_EXIT (do not capture stdout — msg_* writes there).
   INCUS_LAST_INSTALL_EXIT=0
-  msg_info "Pushing functions to container"
   incus_ct_exec bash -c "cat > /tmp/incus-functions <<'INNEREOF'
 ${FUNCTIONS_FILE_PATH}
 INNEREOF" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || { msg_error "Failed to push functions"; exit 1; }
-  msg_ok "Functions pushed"
 
   if [[ "${DNS_RETRY_OVERRIDE:-}" == "true" ]]; then
     msg_info "Applying DNS override inside LXC"
@@ -1075,7 +1068,6 @@ INNEREOF" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || { msg_error "Failed to push f
   # prompts - the spinner kept redrawing over them, which is why Immich's
   # machine-learning menu could not be read and the keystroke landed in the
   # spinner line. A static line, and the script owns the terminal from here.
-  msg_custom "🚀" "${GN}" "Starting application installation"
   local _install_script _run_env lxc_exit=0 install_exit_code=0
   # Checked here: inside $(...) below, stdout is the capture pipe, never the terminal.
   local _incus_tty_out=0 _incus_tty_in=0
@@ -1174,7 +1166,6 @@ _incus_build_combined_log() {
 }
 
 incus_run_install_script_with_recovery() {
-  msg_info "Preparing installation"
   incus_log_section "Application Installation: ${APP}"
 
   declare -f start_install_timer &>/dev/null && start_install_timer || true
@@ -1186,7 +1177,6 @@ incus_run_install_script_with_recovery() {
   local install_exit_code="${INCUS_LAST_INSTALL_EXIT:-1}"
 
   if [[ "$install_exit_code" -eq 0 ]]; then
-    msg_ok "Installation completed"
     CONTAINER_INSTALLING=false
     INCUS_BUILD_OK=1
     export INCUS_BUILD_OK
@@ -1494,7 +1484,6 @@ incus_build_container() {
   _incus_prepare_install_exports
 
   if [[ -n "${CONTAINER_STORAGE:-$STORAGE_POOL}" ]]; then
-    msg_info "Validating storage space"
     incus_validate_storage_space "${CONTAINER_STORAGE:-$STORAGE_POOL}" "${DISK_SIZE}" || true
   fi
 
