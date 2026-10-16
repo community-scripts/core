@@ -1,6 +1,7 @@
 _build_current_app_vars_tmp
 _build_vars_diff
 _container_write_failure
+_cs_ask_update_mode
 _cs_clear
 _cs_conffile_list
 _cs_engine_ref_line

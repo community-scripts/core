@@ -835,11 +835,16 @@ incus_ensure_profile_loaded() {
   [[ -n "${_INCUS_PROFILE_LOADED:-}" ]] && return
   command -v incusd &>/dev/null && return
 
+  local nounset=0
+  [[ $- == *u* ]] && nounset=1
+  set +u
   if [[ -d /etc/profile.d ]]; then
     for script in /etc/profile.d/*.sh; do
-      [[ -r "$script" ]] && source "$script"
+      [[ -r "$script" ]] || continue
+      source "$script" >/dev/null 2>&1 || true
     done
   fi
+  ((nounset)) && set -u
 
   if [[ ":$PATH:" != *":/usr/local/bin:"* ]]; then
     export PATH="/usr/local/bin:$PATH"

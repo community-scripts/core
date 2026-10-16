@@ -432,8 +432,8 @@ settings_menu() {
 # - Warns if under-provisioned and asks user to continue or abort
 # ------------------------------------------------------------------------------
 check_container_resources() {
-  current_ram=$(free -m | awk 'NR==2{print $2}')
-  current_cpu=$(nproc)
+  current_ram=$(awk '/^MemTotal:/ {printf "%d", $2 / 1024}' /proc/meminfo)
+  current_cpu=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)
 
   if [[ "$current_ram" -lt "$var_ram" ]] || [[ "$current_cpu" -lt "$var_cpu" ]]; then
     echo -e "\n${INFO}${HOLD} ${GN}Required: ${var_cpu} CPU, ${var_ram}MB RAM ${CL}| ${RD}Current: ${current_cpu} CPU, ${current_ram}MB RAM${CL}"
@@ -1133,6 +1133,26 @@ _cs_run_update() {
   exit 0
 }
 
+# The whiptail update menu in plain text; sets VERBOSE or leaves on cancel.
+_cs_ask_update_mode() {
+  local choice=""
+  echo -e "${YW}Update ${APP:-this container}?${CL}"
+  echo -e "  ${GN}1)${CL} YES (silent mode)"
+  echo -e "  ${GN}2)${CL} YES (verbose mode)"
+  echo -e "  ${GN}3)${CL} NO (cancel update)"
+  read -r -t 60 -p "Select option [1-3] (default: 1): " choice || choice=""
+  case "$choice" in
+  2) VERBOSE="yes" ;;
+  3)
+    _cs_clear
+    exit_script
+    exit
+    ;;
+  *) VERBOSE="no" ;;
+  esac
+  set_std_mode
+}
+
 start() {
   # Through the resolver, not a bare curl: this way a local checkout and the
   # prefetched copy are used. Hardcoding the URL here meant tools.func and its
@@ -1161,10 +1181,14 @@ start() {
     VERBOSE="no"
     set_std_mode
     _cs_run_update
-  elif ! command -v whiptail &>/dev/null || ! [ -t 0 ] || [[ "$TERM" == "dumb" ]]; then
+  elif ! [ -t 0 ] || [[ "$TERM" == "dumb" ]]; then
     msg_custom "ℹ️" "${YW}" "No interactive terminal detected – defaulting to silent update mode"
     VERBOSE="no"
     set_std_mode
+    _cs_run_update
+  elif ! command -v whiptail &>/dev/null; then
+    # Oracle, Amazon and other dnf images ship no whiptail; ask in plain text.
+    _cs_ask_update_mode
     _cs_run_update
   else
     CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "${APP} LXC Update/Setting" --menu \

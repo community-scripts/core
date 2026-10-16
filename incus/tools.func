@@ -61,11 +61,17 @@ detect_os() {
   case "$OS_TYPE" in
   debian | ubuntu | devuan) OS_FAMILY="debian"; PKG_MANAGER="apt" ;;
   alpine) OS_FAMILY="alpine"; PKG_MANAGER="apk" ;;
-  fedora | rocky | rockylinux | alma | almalinux | centos | rhel | openeuler) OS_FAMILY="rhel"; PKG_MANAGER="dnf" ;;
+  fedora | rocky | rockylinux | alma | almalinux | centos | rhel | openeuler | oracle | ol | amzn | amazonlinux) OS_FAMILY="rhel"; PKG_MANAGER="dnf" ;;
   opensuse* | sles) OS_TYPE="opensuse"; OS_FAMILY="suse"; PKG_MANAGER="zypper" ;;
   arch | archlinux) OS_TYPE="arch"; OS_FAMILY="arch"; PKG_MANAGER="pacman" ;;
   gentoo) OS_FAMILY="gentoo"; PKG_MANAGER="emerge" ;;
-  *) OS_FAMILY="unknown"; PKG_MANAGER="apt" ;;
+  *)
+    OS_FAMILY="unknown"
+    PKG_MANAGER="apt"
+    for pm in apt-get dnf apk zypper pacman; do
+      command -v "$pm" &>/dev/null && PKG_MANAGER="${pm%-get}" && break
+    done
+    ;;
   esac
 
   if command -v systemctl &>/dev/null && [[ -d /run/systemd/system ]]; then
@@ -196,20 +202,70 @@ network_check() {
 
 update_os() {
   msg_info "Updating Container OS"
-  apt_update_safe
-  $STD apt upgrade -y
+  pkg_update
+  pkg_upgrade
   msg_ok "Updated Container OS"
 }
 
 # install.func parity (safe Incus subset)
-pkg_update() { $STD apt update; }
-pkg_upgrade() { $STD apt upgrade -y; }
-pkg_install() { $STD apt install -y "$@"; }
-pkg_remove() { $STD apt remove -y "$@"; }
+pkg_update() {
+  case "${PKG_MANAGER:-apt}" in
+  apt) apt_update_safe ;;
+  apk) $STD apk update ;;
+  dnf) $STD dnf -y makecache ;;
+  zypper) $STD zypper -n refresh ;;
+  pacman) $STD pacman -Sy --noconfirm ;;
+  *) : ;;
+  esac
+}
+pkg_upgrade() {
+  case "${PKG_MANAGER:-apt}" in
+  apt) $STD apt upgrade -y ;;
+  apk) $STD apk upgrade ;;
+  dnf) $STD dnf -y upgrade ;;
+  zypper) $STD zypper -n update ;;
+  pacman) $STD pacman -Su --noconfirm ;;
+  *) : ;;
+  esac
+}
+pkg_install() {
+  case "${PKG_MANAGER:-apt}" in
+  apt) $STD apt install -y "$@" ;;
+  apk) $STD apk add "$@" ;;
+  dnf) $STD dnf -y install "$@" ;;
+  zypper) $STD zypper -n install "$@" ;;
+  pacman) $STD pacman -S --noconfirm --needed "$@" ;;
+  emerge) $STD emerge "$@" ;;
+  *) msg_error "pkg_install: unsupported package manager '${PKG_MANAGER:-}'"; return 1 ;;
+  esac
+}
+pkg_remove() {
+  case "${PKG_MANAGER:-apt}" in
+  apt) $STD apt remove -y "$@" ;;
+  apk) $STD apk del "$@" ;;
+  dnf) $STD dnf -y remove "$@" ;;
+  zypper) $STD zypper -n remove "$@" ;;
+  pacman) $STD pacman -Rs --noconfirm "$@" ;;
+  emerge) $STD emerge --deselect "$@" ;;
+  *) : ;;
+  esac
+}
 pkg_clean() {
-  $STD apt -y autoremove 2>/dev/null || true
-  $STD apt -y autoclean 2>/dev/null || true
-  $STD apt -y clean 2>/dev/null || true
+  case "${PKG_MANAGER:-apt}" in
+  apt)
+    $STD apt -y autoremove 2>/dev/null || true
+    $STD apt -y autoclean 2>/dev/null || true
+    $STD apt -y clean 2>/dev/null || true
+    ;;
+  apk) $STD apk cache clean 2>/dev/null || true ;;
+  dnf)
+    $STD dnf -y autoremove 2>/dev/null || true
+    $STD dnf clean all 2>/dev/null || true
+    ;;
+  zypper) $STD zypper clean 2>/dev/null || true ;;
+  pacman) $STD pacman -Sc --noconfirm 2>/dev/null || true ;;
+  *) : ;;
+  esac
 }
 
 svc_enable() { systemctl enable -q "$@"; }
@@ -273,7 +329,7 @@ motd_ssh() {
   local ip
   ip=$(get_lxc_ip)
   cat <<EOF >/etc/motd
-  🚀 Incus Container: $(hostname)
+  🚀 Incus Container: $(uname -n)
   🖥️  OS: $(grep ^PRETTY_NAME /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
   📡 IP Address: ${ip}
 EOF
@@ -293,10 +349,13 @@ EOF
 }
 
 cleanup_lxc() {
-  $STD apt -y autoremove 2>/dev/null || true
-  $STD apt -y autoclean 2>/dev/null || true
-  rm -f /tmp/incus-functions 2>/dev/null || true
-  rm -f /tmp/incus-funcs.sh 2>/dev/null || true
+  if declare -f pkg_clean >/dev/null; then
+    pkg_clean
+  else
+    $STD apt -y autoremove 2>/dev/null || true
+    $STD apt -y autoclean 2>/dev/null || true
+  fi
+  rm -f /tmp/incus-functions /tmp/incus-funcs.sh 2>/dev/null || true
 }
 
 # check_container_storage / check_container_resources:
