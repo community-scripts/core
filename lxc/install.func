@@ -1883,13 +1883,3 @@ os_info() {
   echo "Pkg Manager:  $PKG_MANAGER"
   echo "Init System:  $INIT_SYSTEM"
 }
-
-# ------------------------------------------------------------------------------
-# cleanup_lxc()
-#
-# Overrides core.func version to support all OS types (not just Alpine/Debian)
-# Cleans package caches and removes unnecessary packages after installation
-# ------------------------------------------------------------------------------
-cleanup_lxc() {
-  pkg_clean
-}

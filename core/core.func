@@ -2307,7 +2307,8 @@ cs_testing_state() {
 # cleanup_lxc()
 #
 # - Cleans package manager and language caches (safe for installs AND updates)
-# - Supports Alpine (apk), Debian/Ubuntu (apt), Python, Node.js, Go, Rust, Ruby, PHP
+# - Supports Alpine (apk), Debian/Ubuntu (apt), other distros through install.func's
+#   pkg_clean, and Python, Node.js, Go, Rust, Ruby, PHP caches
 # - Uses fallback error handling to prevent cleanup failures from breaking installs
 # ------------------------------------------------------------------------------
 cleanup_lxc() {
@@ -2321,10 +2322,12 @@ cleanup_lxc() {
     # problem worth reporting.
     $STD apk cache clean 2>/dev/null || true
     rm -rf /var/cache/apk/*
-  else
+  elif command -v apt-get &>/dev/null; then
     $STD apt -y autoremove 2>/dev/null || msg_warn "apt autoremove failed (non-critical)"
     $STD apt -y autoclean 2>/dev/null || msg_warn "apt autoclean failed (non-critical)"
     $STD apt -y clean 2>/dev/null || msg_warn "apt clean failed (non-critical)"
+  elif declare -f pkg_clean >/dev/null 2>&1; then
+    pkg_clean 2>/dev/null || msg_warn "Package cache cleanup failed (non-critical)"
   fi
 
   find /tmp /var/tmp -type f -name 'tmp*' -delete 2>/dev/null || true

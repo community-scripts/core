@@ -764,6 +764,10 @@ on_exit() {
 
   # Here, because most ct scripts exit inside update_script.
   declare -f apt_conffile_report >/dev/null 2>&1 && apt_conffile_report
+  if [[ $exit_code -eq 0 && "${_CS_UPDATE_CLEANUP:-}" == "1" ]] && declare -f cleanup_lxc >/dev/null 2>&1; then
+    _CS_UPDATE_CLEANUP=0
+    cleanup_lxc || true
+  fi
 
   if _is_container_context; then
     if [[ $exit_code -ne 0 ]]; then
