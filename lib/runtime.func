@@ -2720,8 +2720,8 @@ setup_uv() {
   local UVX_BIN="/usr/local/bin/uvx"
   local TMP_DIR=$(mktemp -d)
 
-  # trap for TMP Cleanup
-  trap "rm -rf '$TMP_DIR'" EXIT
+  # RETURN, not EXIT: an EXIT trap here replaced catch_errors' on_exit for the rest of the script
+  trap 'rm -rf "$TMP_DIR"; trap - RETURN' RETURN
 
   # Architecture Detection
   local ARCH=$(uname -m)
