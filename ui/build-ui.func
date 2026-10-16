@@ -235,6 +235,7 @@ maxkeys_check() {
 # maintenance change only -- every function kept its name, body and behaviour.
 #
 #   validate.func  container id, hostname, network and IP range validators
+#   identity.func  opt-in PVE CTID bounds and address templates
 #   defaults.func  storage selection, .vars files, app defaults
 #   advanced.func  the advanced settings wizard
 #   menu.func      settings and diagnostics menus, install_script, start
@@ -243,6 +244,7 @@ maxkeys_check() {
 # Platform-independent value checks; the VM paths load the same file.
 _build_ui_source "host/validate.func"
 _build_ui_source "ui/validate.func"
+_build_ui_source "ui/identity.func"
 _build_ui_source "ui/defaults.func"
 _build_ui_source "ui/advanced.func"
 _build_ui_source "ui/menu.func"

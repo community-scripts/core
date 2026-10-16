@@ -243,6 +243,13 @@ validate_container_id() {
 # - Calls validate_container_id() to check availability
 # ------------------------------------------------------------------------------
 get_valid_container_id() {
+  if [[ -n "${var_ctid_min:-}${var_ctid_max:-}" ]]; then
+    _identity_select_id "${1:-}"
+    return $?
+  fi
+  if [[ -n "${_IDENTITY_BOUND_ID:-}" ]]; then
+    _identity_assert_id "${1:-$_IDENTITY_BOUND_ID}" || return 1
+  fi
   local suggested_id="${1:-$(pvesh get /cluster/nextid 2>/dev/null || echo 100)}"
 
   # A failed pvesh used to leave this empty, and $((empty + 1)) is 1 -- so the
@@ -263,6 +270,7 @@ get_valid_container_id() {
     fi
   done
 
+  _identity_assert_id "$suggested_id" || return 1
   echo "$suggested_id"
 }
 

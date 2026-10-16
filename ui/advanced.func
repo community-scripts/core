@@ -44,6 +44,7 @@ advanced_settings() {
   local _pw=""
   local _pw_display="Automatic Login"
   local _ct_id="$NEXTID"
+  if _identity_enabled; then _ct_id="$CT_ID"; fi
   local _hostname="$NSAPP"
   local _disk_size="${var_disk:-4}"
   local _core_count="${var_cpu:-1}"
@@ -65,6 +66,14 @@ advanced_settings() {
   local _ns="${var_ns:-}"
   local _mac="${var_mac:-}"
   local _vlan="${var_vlan:-}"
+  local -a _identity_ipv4_menu=() _identity_ipv6_menu=()
+  local _identity_static_ipv4="" _identity_static_ipv6="" _identity_mac=""
+  if _identity_enabled; then
+    _net="$NET"
+    _mac="${MAC#*,hwaddr=}"
+    _ipv6_method="$IPV6_METHOD"
+    _ipv6_addr="${IPV6_ADDR:-}"
+  fi
   local _tags="$TAGS"
   local _enable_fuse="${var_fuse:-no}"
   local _enable_tun="${var_tun:-no}"
@@ -253,11 +262,13 @@ advanced_settings() {
           fi
         fi
 
+        _identity_assert_id "$input_id" || exit 208
+
         # Check if ID is already in use
         if ! validate_container_id "$input_id"; then
           if whiptail --backtitle "Proxmox VE Helper Scripts" --title "ID Already In Use" \
             --yesno "Container/VM ID $input_id is already in use.\n\nWould you like to use the next available ID ($(get_valid_container_id "$input_id"))?" 10 58; then
-            _ct_id=$(get_valid_container_id "$input_id")
+            _ct_id=$(get_valid_container_id "$input_id") || exit 109
           else
             continue
           fi
@@ -410,9 +421,19 @@ advanced_settings() {
     # STEP 9: IPv4 Configuration
     # ═══════════════════════════════════════════════════════════════════════════
     9)
+      if _identity_enabled; then
+        _identity_static_ipv4=""
+        if [[ "$_net" == dhcp ]]; then
+          _identity_ipv4_menu=(--default-item dhcp)
+        else
+          _identity_ipv4_menu=(--default-item static)
+          _identity_static_ipv4="$_net"
+        fi
+      fi
       if result=$(whiptail --backtitle "Proxmox VE Helper Scripts [Step $STEP/$MAX_STEP]" \
         --title "IPv4 CONFIGURATION" \
         --ok-button "Next" --cancel-button "Back" \
+        "${_identity_ipv4_menu[@]}" \
         --menu "\nSelect IPv4 Address Assignment:" 16 65 3 \
         "dhcp" "Automatic (DHCP, recommended)" \
         "static" "Static (manual entry)" \
@@ -425,7 +446,7 @@ advanced_settings() {
           if static_ip=$(whiptail --backtitle "Proxmox VE Helper Scripts [Step $STEP/$MAX_STEP]" \
             --title "STATIC IPv4 ADDRESS" \
             --ok-button "Next" --cancel-button "Back" \
-            --inputbox "\nEnter Static IPv4 CIDR Address\n(e.g. 192.168.1.100/24)" 12 58 "" \
+            --inputbox "\nEnter Static IPv4 CIDR Address\n(e.g. 192.168.1.100/24)" 12 58 "$_identity_static_ipv4" \
             3>&1 1>&2 2>&3); then
             if validate_ip_address "$static_ip"; then
               # Get gateway
@@ -507,9 +528,15 @@ advanced_settings() {
     # STEP 10: IPv6 Configuration
     # ═══════════════════════════════════════════════════════════════════════════
     10)
+      if _identity_enabled; then
+        _identity_ipv6_menu=(--default-item "$_ipv6_method")
+        _identity_static_ipv6=""
+        [[ "$_ipv6_method" == static ]] && _identity_static_ipv6="$_ipv6_addr"
+      fi
       if result=$(whiptail --backtitle "Proxmox VE Helper Scripts [Step $STEP/$MAX_STEP]" \
         --title "IPv6 CONFIGURATION" \
         --ok-button "Next" --cancel-button "Back" \
+        "${_identity_ipv6_menu[@]}" \
         --menu "\nSelect IPv6 Address Management:" 16 70 5 \
         "auto" "SLAAC/AUTO (recommended) - Dynamic IPv6 from network" \
         "dhcp" "DHCPv6 - DHCP-assigned IPv6 address" \
@@ -518,15 +545,15 @@ advanced_settings() {
         "disable" "Fully Disabled - (breaks some services)" \
         3>&1 1>&2 2>&3); then
 
-        _ipv6_method="$result"
         case "$result" in
         static)
           local ipv6_addr
           if ipv6_addr=$(whiptail --backtitle "Proxmox VE Helper Scripts" \
             --title "STATIC IPv6 ADDRESS" \
-            --inputbox "\nEnter IPv6 CIDR address\n(e.g. 2001:db8::1/64)" 12 58 "" \
+            --inputbox "\nEnter IPv6 CIDR address\n(e.g. 2001:db8::1/64)" 12 58 "$_identity_static_ipv6" \
             3>&1 1>&2 2>&3); then
             if validate_ipv6_address "$ipv6_addr"; then
+              _ipv6_method=static
               _ipv6_addr="$ipv6_addr"
               # Optional gateway - loop until valid or empty
               local ipv6_gw_valid=false
@@ -557,17 +584,20 @@ advanced_settings() {
           fi
           ;;
         dhcp)
+          _ipv6_method=dhcp
           _ipv6_addr="dhcp"
           _ipv6_gate=""
           ((STEP++))
           ;;
 
         none)
+          _ipv6_method=none
           _ipv6_addr="none"
           _ipv6_gate=""
           ((STEP++))
           ;;
         *)
+          _ipv6_method="$result"
           _ipv6_addr=""
           _ipv6_gate=""
           ((STEP++))
@@ -642,10 +672,12 @@ advanced_settings() {
     # STEP 14: MAC Address
     # ═══════════════════════════════════════════════════════════════════════════
     14)
+      # Use the accepted value even when the user deliberately cleared it.
+      if _identity_enabled; then _identity_mac="$_mac"; fi
       if result=$(whiptail --backtitle "Proxmox VE Helper Scripts [Step $STEP/$MAX_STEP]" \
         --title "MAC ADDRESS" \
         --ok-button "Next" --cancel-button "Back" \
-        --inputbox "\nSet MAC Address\n(leave blank for auto-generated, format: XX:XX:XX:XX:XX:XX)" 12 62 "" \
+        --inputbox "\nSet MAC Address\n(leave blank for auto-generated, format: XX:XX:XX:XX:XX:XX)" 12 62 "$_identity_mac" \
         3>&1 1>&2 2>&3); then
         if validate_mac_address "$result"; then
           _mac="$result"
@@ -1181,6 +1213,7 @@ Advanced:
   # ═══════════════════════════════════════════════════════════════════════════
   CT_TYPE="$_ct_type"
   PW="$_pw"
+  _identity_assert_id "$_ct_id" || exit 208
   CT_ID="$_ct_id"
   HN="$_hostname"
   DISK_SIZE="$_disk_size"

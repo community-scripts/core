@@ -135,6 +135,7 @@ reclaim_tty() {
 # umask. Scoped to the call, so the operator's umask still governs everything
 # else we write on the host.
 _pct_create() {
+  _identity_assert_id "$1" || return 1
   local prev rc
   prev="$(umask)"
   umask 022
@@ -358,6 +359,7 @@ lxc_os_support_check() {
 build_container() {
   #  if [ "$VERBOSE" == "yes" ]; then set -x; fi
 
+  _identity_assert_id "$CT_ID" || exit 208
   lxc_os_support_check
 
   NET_STRING="-net0 name=eth0,bridge=${BRG:-vmbr0}"
@@ -1724,7 +1726,8 @@ PROFILE
         echo -e "${BFR}${CM}${GN}Container ${CTID} removed${CL}"
         echo ""
         local old_ctid="$CTID"
-        export CTID=$(get_valid_container_id "$CTID")
+        CTID=$(get_valid_container_id "$CTID") || exit 109
+        export CTID
         export VERBOSE="yes"
         export var_verbose="yes"
 
@@ -1826,7 +1829,8 @@ PROFILE
           local old_ctid="$CTID"
           local old_ram="$RAM_SIZE"
           local old_cpu="$CORE_COUNT"
-          export CTID=$(get_valid_container_id "$CTID")
+          CTID=$(get_valid_container_id "$CTID") || exit 109
+          export CTID
           export RAM_SIZE=$((RAM_SIZE * 2))
           export CORE_COUNT=$((CORE_COUNT * 2))
           export var_ram="$RAM_SIZE"
@@ -1857,7 +1861,8 @@ PROFILE
           echo ""
           local old_ctid="$CTID"
           local old_disk="$DISK_SIZE"
-          export CTID=$(get_valid_container_id "$CTID")
+          CTID=$(get_valid_container_id "$CTID") || exit 109
+          export CTID
           export DISK_SIZE=$((DISK_SIZE * 2))
           export var_disk="$DISK_SIZE"
           export VERBOSE="yes"
@@ -1885,7 +1890,8 @@ PROFILE
           echo -e "${BFR}${CM}${GN}Container ${CTID} removed${CL}"
           echo ""
           local old_ctid="$CTID"
-          export CTID=$(get_valid_container_id "$CTID")
+          CTID=$(get_valid_container_id "$CTID") || exit 109
+          export CTID
           export DNS_RETRY_OVERRIDE="true"
           export VERBOSE="yes"
           export var_verbose="yes"
@@ -2860,7 +2866,7 @@ create_lxc_container() {
   }
   if qm status "$CTID" &>/dev/null || pct status "$CTID" &>/dev/null; then
     msg_warn "Container/VM ID $CTID is already in use (detected late). Reassigning..."
-    CTID=$(get_valid_container_id "$((CTID + 1))")
+    CTID=$(get_valid_container_id "$((CTID + 1))") || exit 109
     export CTID
     msg_ok "Reassigned to container ID $CTID"
   fi
@@ -3419,7 +3425,7 @@ create_lxc_container() {
 
     if grep -qiE 'already exists|already in use' "$LOGFILE"; then
       local old_ctid="$CTID"
-      CTID=$(get_valid_container_id "$((CTID + 1))")
+      CTID=$(get_valid_container_id "$((CTID + 1))") || exit 109
       export CTID
       msg_warn "Container ID $old_ctid was claimed by another process. Retrying with ID $CTID"
       LOGFILE="/tmp/pct_create_${CTID}_$(date +%Y%m%d_%H%M%S)_${SESSION_ID}.log"

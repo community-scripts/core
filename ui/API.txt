@@ -36,6 +36,16 @@ _eh_tools_for
 _eh_warn
 _eh_write_debug_log
 _get_current_ip
+_identity_apply_templates
+_identity_assert_id
+_identity_decimal_id
+_identity_enabled
+_identity_error
+_identity_policy
+_identity_render
+_identity_select_id
+_identity_template_syntax
+_identity_validate_address
 _in_zone_tab
 _is_container_context
 _is_whitelisted_key
