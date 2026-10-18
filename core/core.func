@@ -2328,7 +2328,6 @@ cleanup_lxc() {
     rm -rf /var/cache/apk/*
   elif command -v apt-get &>/dev/null; then
     $STD apt -y autoremove 2>/dev/null || msg_warn "apt autoremove failed (non-critical)"
-    $STD apt -y autoclean 2>/dev/null || msg_warn "apt autoclean failed (non-critical)"
     $STD apt -y clean 2>/dev/null || msg_warn "apt clean failed (non-critical)"
   elif declare -f pkg_clean >/dev/null 2>&1; then
     pkg_clean 2>/dev/null || msg_warn "Package cache cleanup failed (non-critical)"

@@ -208,7 +208,6 @@ pkg_install() { $STD apt install -y "$@"; }
 pkg_remove() { $STD apt remove -y "$@"; }
 pkg_clean() {
   $STD apt -y autoremove 2>/dev/null || true
-  $STD apt -y autoclean 2>/dev/null || true
   $STD apt -y clean 2>/dev/null || true
 }
 
