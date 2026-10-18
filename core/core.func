@@ -928,6 +928,10 @@ silent() {
   # A failure the caller handled (a retry loop) must not be reported for a later, unrelated error.
   unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG
   local cmd="$*"
+  # apt warns about its CLI whenever stdout is not a terminal, and here it never is.
+  if [[ "${1:-}" == "apt" ]]; then
+    set -- apt -o Apt::Cmd::Disable-Script-Warning=true "${@:2}"
+  fi
   local caller_line="${BASH_LINENO[0]:-unknown}"
   local logfile="$(get_active_logfile)"
   local errinfo="${logfile}.errinfo"
