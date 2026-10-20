@@ -122,7 +122,12 @@ setup_hwaccel() {
     elif echo "$gpu_name" | grep -qiwE 'AMD|ATI|Radeon|Advanced Micro Devices'; then
       gpu_type="AMD"
     elif echo "$gpu_name" | grep -qi 'NVIDIA'; then
-      gpu_type="NVIDIA"
+      # lspci shows the host's bus; the card is only ours with its device nodes.
+      if compgen -G '/dev/nvidia[0-9]*' >/dev/null; then
+        gpu_type="NVIDIA"
+      else
+        msg_custom "ℹ️" "${YW}" "NVIDIA GPU on the host, but no /dev/nvidia* device in this container - skipping it (add the devices to the container config to use it)"
+      fi
     fi
 
     if [[ -n "$gpu_type" ]]; then
@@ -810,9 +815,9 @@ NVIDIA_PIN
           msg_warn "Same driver series, different release. CUDA workloads may still fail on this."
         fi
       else
-        msg_warn "Version-pinned install failed - trying unpinned"
+        msg_warn "Version-pinned install failed - keeping libcuda1 at ${available_version}, the rest unpinned"
         $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
-          libcuda1 libnvcuvid1 libnvidia-encode1 libnvidia-ml1 2>/dev/null || true
+          "libcuda1=${available_version}" libnvcuvid1 libnvidia-encode1 libnvidia-ml1 2>/dev/null || true
       fi
     else
       # Deliberately install nothing. The previous code fell back to whatever
@@ -927,16 +932,22 @@ NVIDIA_PIN
   local have_libcuda=0
   ldconfig -p 2>/dev/null | grep -q 'libcuda\.so\.1' && have_libcuda=1
 
-  if [[ $have_libcuda -eq 1 && ${#nvidia_nodes[@]} -gt 0 ]]; then
-    _cs_nvidia_usable=1
-    msg_ok "NVIDIA GPU configured (host driver ${nvidia_host_version}, ${#nvidia_nodes[@]} device nodes)"
-  elif [[ ${#nvidia_nodes[@]} -eq 0 ]]; then
+  local libcuda_version=""
+  libcuda_version="$(dpkg-query -W -f='${Version}' libcuda1 2>/dev/null || true)"
+
+  if [[ ${#nvidia_nodes[@]} -eq 0 ]]; then
     msg_error "NVIDIA GPU not usable: no /dev/nvidia* device nodes in this container"
     msg_warn "The userspace driver is in place, but the devices were never passed through."
     msg_warn "On the host, check the container config lists /dev/nvidia0, /dev/nvidiactl and /dev/nvidia-uvm."
-  else
+  elif [[ $have_libcuda -eq 0 ]]; then
     msg_error "NVIDIA GPU not usable: libcuda.so.1 is not available in this container"
     msg_warn "The host driver is ${nvidia_host_version}. CUDA workloads will fail until a matching userspace library is present."
+  elif [[ -n "$libcuda_version" && "${libcuda_version%%.*}" != "${nvidia_host_version%%.*}" ]]; then
+    msg_error "NVIDIA GPU not usable: libcuda ${libcuda_version} is not the host driver's ${nvidia_host_version%%.*} series"
+    msg_warn "The userspace library must match the host module. Install the ${nvidia_host_version%%.*} series on the host, or run NVIDIA's ${nvidia_host_version} .run installer with --no-kernel-module in the container."
+  else
+    _cs_nvidia_usable=1
+    msg_ok "NVIDIA GPU configured (host driver ${nvidia_host_version}, ${#nvidia_nodes[@]} device nodes)"
   fi
 
   # nvidia-smi separately: in NVIDIA's CUDA repos the package is an empty
