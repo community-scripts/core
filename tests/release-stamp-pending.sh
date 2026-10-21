@@ -4,7 +4,7 @@ set -uo pipefail
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 eval "$(sed -n '/^_FORGE_JQ_VKEY_DEF=/,/^_FORGE_JQ_VKEY=/p' "$CORE_DIR/lib/forge.func")"
 eval "$(awk '/^_forge_(descriptor|strip_v|is_current|highest_version|same_shape|stable_filter)[(][)] [{]/,/^}/' "$CORE_DIR/lib/forge.func")"
-eval "$(awk '/^check_for_release[(][)] [{]/,/^}/' "$CORE_DIR/lib/forge.func")"
+eval "$(awk '/^(check_for_release|_forge_previous_version)[(][)] [{]/,/^}/' "$CORE_DIR/lib/forge.func")"
 eval "$(awk '/^on_exit[(][)] [{]/,/^}/' "$CORE_DIR/core/error_handler.func")"
 
 TEST_DIR="$(mktemp -d)"
@@ -65,6 +65,21 @@ expect "old stamp: a normal update" 0 "$(check 2.15.1 no)"
 expect "no stamp at all: a normal install" 0 "$(check "" no)"
 expect "pinned and current: held back" 1 "$(check 2.16.0 no 2.16.0 "testing")"
 expect "pinned, current, marker: redone anyway" 0 "$(check 2.16.0 yes 2.16.0 "testing")"
+
+# The marker carries the version the run started from; the redo reports it
+: >"$LOG"
+echo 2.16.0 >"$HOME/.npm"
+printf '%s' 2.15.1 >"$HOME/.npm.pending"
+rc=0
+check_for_release github NPM owner/repo >/dev/null 2>&1 || rc=$?
+expect "a marker with the old version: redone" 0 "$rc"
+expect "the message names the version the run started from" 1 "$(grep -c '2.15.1 -> 2.16.0' "$LOG")"
+expect "CS_PREVIOUS_VERSION is the old version on the redo" 2.15.1 "$CS_PREVIOUS_VERSION"
+rm -f "$HOME/.npm.pending"
+check_for_release github NPM owner/repo >/dev/null 2>&1 || true
+expect "without a marker it is the stamp" 2.16.0 "$CS_PREVIOUS_VERSION"
+rm -f "$HOME/.npm"
+expect "a fresh install has no previous version" "" "$(_forge_previous_version "$HOME/.npm")"
 
 # on_exit: only a run that deployed and exits 0 removes the marker
 touch "$HOME/.npm.pending"
