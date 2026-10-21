@@ -769,6 +769,12 @@ on_exit() {
     cleanup_lxc || true
   fi
 
+  # fetch_and_deploy_release leaves a pending marker next to the stamp; only a
+  # run that deployed and exits 0 may remove it.
+  if [[ $exit_code -eq 0 && "${_CS_DEPLOYED:-}" == "1" ]]; then
+    rm -f "${HOME:-/root}"/.*.pending 2>/dev/null || true
+  fi
+
   if _is_container_context; then
     if [[ $exit_code -ne 0 ]]; then
       _container_write_failure "$exit_code" "${FAILED_COMMAND:-}" "${FAILED_LINE:-}"

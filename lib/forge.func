@@ -1794,6 +1794,8 @@ check_for_release() {
     fi
   fi
   current="$(_forge_strip_v "$current")"
+  local unfinished=""
+  [[ -f "${current_file}.pending" ]] && unfinished=" (the last run did not finish, doing it again)"
 
   if [[ -n "$pinned_version_in" ]]; then
     local pin_clean match_raw="" i
@@ -1810,9 +1812,9 @@ check_for_release() {
       return 250
     fi
 
-    if [[ "$current" != "$pin_clean" ]]; then
+    if [[ "$current" != "$pin_clean" || -n "$unfinished" ]]; then
       CHECK_UPDATE_RELEASE="$match_raw"
-      msg_ok "Update available: ${app} ${current:-not installed} -> ${pin_clean}"
+      msg_ok "Update available: ${app} ${current:-not installed} -> ${pin_clean}${unfinished}"
       return 0
     fi
 
@@ -1824,13 +1826,13 @@ check_for_release() {
     return 1
   fi
 
-  if _forge_is_current "$current" "$latest_clean"; then
+  if [[ -z "$unfinished" ]] && _forge_is_current "$current" "$latest_clean"; then
     msg_ok "No update available: ${app} (${current})"
     return 1
   fi
 
   CHECK_UPDATE_RELEASE="$latest_raw"
-  msg_ok "Update available: ${app} ${current:-not installed} -> ${latest_clean}"
+  msg_ok "Update available: ${app} ${current:-not installed} -> ${latest_clean}${unfinished}"
   return 0
 }
 
@@ -2094,6 +2096,12 @@ fetch_and_deploy_release() {
   # path and a bare ^v in its three fallbacks; Codeberg used the bare form
   # throughout, which mangles tags like version-2.
   version="$(_forge_strip_v "$tag_name")"
+
+  # The stamp written at the end only says "deployed". This marker says the
+  # run around it still has to finish: on_exit removes it when the run exits 0,
+  # and check_for_release redoes the update while it exists (ProxmoxVE #18050).
+  touch "${version_file}.pending" 2>/dev/null || true
+  _CS_DEPLOYED=1
 
   local current_version=""
   [[ -f "$version_file" ]] && current_version="$(<"$version_file")"
