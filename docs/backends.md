@@ -71,6 +71,22 @@ from `/etc/localtime`, or from `Etc/UTC`.
 [`core/core.func`](../core/core.func) renders "Incus Version 6.x" on an Incus
 host and "PVE Version …" on Proxmox VE, from the same `PVEVERSION` value.
 
+### Driving a remote server
+
+The `incus` client always talks to a remote; `local:` is only the default.
+Every call in this backend uses bare names, so switching the default remote
+points the whole flow at another server:
+
+    incus remote add incusos https://<server>:8443 --token <token>
+    incus remote switch incusos
+    bash -c "$(curl -fsSL .../ct/<app>.sh)"
+
+The machine running the script needs bash, curl and the client. The backend
+takes the server's architecture from `incus info` and names the target when
+it is not `local`. This is the way in for IncusOS, which has no shell of its
+own. Pool free space comes from `incus storage info`; the local `df` fallback
+is skipped for a remote.
+
 ## VM scripts on the two backends
 
 `ct/` scripts are shared; `vm/` scripts are not, and the reason is worth

@@ -215,7 +215,7 @@ incus_storage_pool_free_gb() {
   if [[ -z "${free_bytes:-}" ]]; then
     local src
     src="$(LC_ALL=C incus storage get "$pool" source 2>/dev/null || true)"
-    if [[ -n "$src" && -d "$src" ]]; then
+    if [[ "${INCUS_REMOTE:-local}" == "local" && -n "$src" && -d "$src" ]]; then
       free_bytes="$(df -PB1 "$src" 2>/dev/null | awk 'NR==2 {print $4}')"
     fi
   fi
@@ -471,8 +471,9 @@ incus_create_lxc_container() {
   # plus a rollback to reach the state it would have had anyway. Privileged
   # only, and only when the host default is actually below what we want.
   local optional_sysctl_pending=0
+  # The sysctl probe reads this machine; against a remote, just try the setting.
   if [[ "${CT_TYPE:-1}" == "0" ]] &&
-    (($(cat /proc/sys/kernel/keys/maxkeys 2>/dev/null || echo 2000) < 2000)); then
+    { [[ "${INCUS_REMOTE:-local}" != "local" ]] || (($(cat /proc/sys/kernel/keys/maxkeys 2>/dev/null || echo 2000) < 2000)); }; then
     if incus config set "${CT_NAME}" linux.sysctl.kernel.keys.maxkeys=2000 >>"$LOGFILE" 2>&1; then
       optional_sysctl_pending=1
     fi
@@ -974,7 +975,7 @@ incus_set_root_password() {
 
 incus_customize_container() {
   msg_info "Customizing LXC Container"
-  ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+  ARCH="${INCUS_SERVER_ARCH:-$(dpkg --print-architecture 2>/dev/null || uname -m)}"
 
   if [[ "${var_os:-debian}" == "alpine" ]]; then
     sleep 2

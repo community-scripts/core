@@ -36,6 +36,7 @@ on:
       - "tests/exit-code-hints.sh"
       - "tests/forge-release-json.sh"
       - "tests/install-cleanup.sh"
+      - "tests/incus-target.sh"
       - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
@@ -63,6 +64,7 @@ on:
       - "tests/exit-code-hints.sh"
       - "tests/forge-release-json.sh"
       - "tests/install-cleanup.sh"
+      - "tests/incus-target.sh"
       - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
@@ -125,6 +127,9 @@ jobs:
 
       - name: Install cleanup and uv trap tests
         run: bash tests/install-cleanup.sh
+
+      - name: Incus target tests
+        run: bash tests/incus-target.sh
 
       - name: Prefetch lists cover every engine file
         run: |
