@@ -14,6 +14,8 @@ mkdir -p "$HOME"
 LOG="$TEST_DIR/log"
 passed=0 failed=0
 
+# jq on Windows prints CRLF; mapfile -t keeps the CR and the pin compare is exact.
+jq() { command jq "$@" | tr -d '\r'; }
 msg_info() { :; }
 msg_ok() { echo "ok: $*" >>"$LOG"; }
 msg_warn() { echo "warn: $*" >>"$LOG"; }
