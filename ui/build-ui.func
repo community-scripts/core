@@ -178,6 +178,12 @@ run_preflight() {
 # - Exits with dedicated error codes when limits cannot be read or are exceeded
 # ------------------------------------------------------------------------------
 maxkeys_check() {
+  # The limits are the server's; a client driving a remote Incus cannot read them.
+  if ! command -v pveversion >/dev/null 2>&1 && command -v incus >/dev/null 2>&1 &&
+    [[ "$(LC_ALL=C incus remote get-default 2>/dev/null || echo local)" != "local" ]]; then
+    return 0
+  fi
+
   local per_user_maxkeys per_user_maxbytes used_lxc_keys used_lxc_bytes
   local threshold_keys threshold_bytes new_limit_keys new_limit_bytes
   local failure=0
