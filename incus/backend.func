@@ -158,25 +158,23 @@ _incus_resolve_launch_image() {
 }
 
 _incus_parse_size_to_bytes() {
-  # Accepts raw bytes or human values like 589.51GiB / 211MiB / 1.5TB
-  local raw="${1:-}" val unit
+  # Integer arithmetic only: BusyBox awk truncates printf "%d" to 32 bit.
+  local raw="${1:-}" int frac unit mult scale=1 i
   raw="${raw// /}"
-  [[ -z "$raw" ]] && return 1
-  if [[ "$raw" =~ ^[0-9]+$ ]]; then
-    echo "$raw"
-    return 0
-  fi
-  val=$(echo "$raw" | sed -E 's/[^0-9.].*$//')
-  unit=$(echo "$raw" | sed -E 's/^[0-9.]+//' | tr '[:lower:]' '[:upper:]')
-  [[ -z "$val" ]] && return 1
+  [[ "$raw" =~ ^([0-9]+)(\.([0-9]+))?([A-Za-z]*)$ ]] || return 1
+  int="${BASH_REMATCH[1]}"
+  frac="${BASH_REMATCH[3]}"
+  unit="${BASH_REMATCH[4]^^}"
   case "$unit" in
-  B | "") echo "$(awk -v v="$val" 'BEGIN{printf "%d", v}')" ;;
-  KB | KIB | K) echo "$(awk -v v="$val" 'BEGIN{printf "%d", v*1024}')" ;;
-  MB | MIB | M) echo "$(awk -v v="$val" 'BEGIN{printf "%d", v*1024*1024}')" ;;
-  GB | GIB | G) echo "$(awk -v v="$val" 'BEGIN{printf "%d", v*1024*1024*1024}')" ;;
-  TB | TIB | T) echo "$(awk -v v="$val" 'BEGIN{printf "%d", v*1024*1024*1024*1024}')" ;;
+  B | "") mult=1 ;;
+  KB | KIB | K) mult=1024 ;;
+  MB | MIB | M) mult=$((1024 * 1024)) ;;
+  GB | GIB | G) mult=$((1024 * 1024 * 1024)) ;;
+  TB | TIB | T) mult=$((1024 * 1024 * 1024 * 1024)) ;;
   *) return 1 ;;
   esac
+  for ((i = 0; i < ${#frac}; i++)); do scale=$((scale * 10)); done
+  echo $((10#$int * mult + 10#${frac:-0} * mult / scale))
 }
 
 incus_storage_pool_free_gb() {
@@ -191,9 +189,9 @@ incus_storage_pool_free_gb() {
   # the subtraction stays in bash and never goes through awk floats (BusyBox awk
   # truncates those to 32 bit).
   info=$(LC_ALL=C incus storage info --bytes "$pool" 2>/dev/null || true)
-  free_raw=$(echo "$info" | awk -F': *' '/space free:/ {print $2; exit}')
-  total_raw=$(echo "$info" | awk -F': *' '/total space:/ {print $2; exit}')
-  used_raw=$(echo "$info" | awk -F': *' '/space used:/ {print $2; exit}')
+  free_raw=$(echo "$info" | awk -F': *' '/space free:/ {gsub(/"/, "", $2); print $2; exit}')
+  total_raw=$(echo "$info" | awk -F': *' '/total space:/ {gsub(/"/, "", $2); print $2; exit}')
+  used_raw=$(echo "$info" | awk -F': *' '/space used:/ {gsub(/"/, "", $2); print $2; exit}')
   if [[ "$free_raw" =~ ^[0-9]+$ ]]; then
     free_bytes="$free_raw"
   elif [[ "$total_raw" =~ ^[0-9]+$ && "$used_raw" =~ ^[0-9]+$ && "$total_raw" -ge "$used_raw" ]]; then
@@ -203,9 +201,9 @@ incus_storage_pool_free_gb() {
   # Older/human output often has only "space used" + "total space" (no free line).
   if [[ -z "${free_bytes:-}" ]]; then
     info=$(LC_ALL=C incus storage info "$pool" 2>/dev/null || true)
-    free_raw=$(echo "$info" | awk -F': *' '/space free:/ {print $2; exit}')
-    total_raw=$(echo "$info" | awk -F': *' '/total space:/ {print $2; exit}')
-    used_raw=$(echo "$info" | awk -F': *' '/space used:/ {print $2; exit}')
+    free_raw=$(echo "$info" | awk -F': *' '/space free:/ {gsub(/"/, "", $2); print $2; exit}')
+    total_raw=$(echo "$info" | awk -F': *' '/total space:/ {gsub(/"/, "", $2); print $2; exit}')
+    used_raw=$(echo "$info" | awk -F': *' '/space used:/ {gsub(/"/, "", $2); print $2; exit}')
     if [[ -n "$free_raw" ]]; then
       free_bytes="$(_incus_parse_size_to_bytes "$free_raw" 2>/dev/null || true)"
     elif [[ -n "$total_raw" && -n "$used_raw" ]]; then

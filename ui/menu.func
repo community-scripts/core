@@ -209,7 +209,7 @@ install_script() {
   storage_content_check
   diagnostics_check
 
-  if systemctl is-active -q ping-instances.service; then
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active -q ping-instances.service; then
     systemctl -q stop ping-instances.service
   fi
 

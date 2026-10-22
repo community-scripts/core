@@ -10,7 +10,8 @@ export INCUS_REMOTE=incusos
 incus() {
   case "$*" in
   "storage info --bytes local")
-    [[ "${MOCK_BYTES:-yes}" == "yes" ]] && printf 'info:\n  driver: zfs\n  name: local\n  space used: 238747648\n  total space: 88900000000\nused by: {}\n'
+    # yaml.Dump quotes strings that look like numbers; that is what the client prints.
+    [[ "${MOCK_BYTES:-yes}" == "yes" ]] && printf 'info:\n  driver: zfs\n  name: local\n  space used: "238747648"\n  total space: "88900000000"\nused by: {}\n'
     ;;
   "storage info local")
     printf 'info:\n  driver: zfs\n  name: local\n  space used: 227.68MiB\n  total space: 82.80GiB\nused by: {}\n'
@@ -34,6 +35,9 @@ expect "without --bytes the human sizes still work" 82 "$(MOCK_BYTES=no incus_st
 expect "GiB parses" 88905823027 "$(_incus_parse_size_to_bytes 82.80GiB)"
 expect "MiB parses" 238739783 "$(_incus_parse_size_to_bytes 227.68MiB)"
 expect "a plain number is bytes" 4096 "$(_incus_parse_size_to_bytes 4096)"
+expect "a fraction below one works" 536870912 "$(_incus_parse_size_to_bytes 0.5GiB)"
+expect "a leading zero in the fraction is decimal" 1101004 "$(_incus_parse_size_to_bytes 1.05MiB)"
+expect "TiB stays within 64 bit" 1649267441664 "$(_incus_parse_size_to_bytes 1.5TiB)"
 expect "nonsense is rejected" 1 "$(_incus_parse_size_to_bytes bogus >/dev/null 2>&1; echo $?)"
 
 printf '%s passed, %s failed\n' "$passed" "$failed"
