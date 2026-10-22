@@ -38,6 +38,7 @@ on:
       - "tests/install-cleanup.sh"
       - "tests/incus-target.sh"
       - "tests/incus-storage-space.sh"
+      - "tests/release-stamp-pending.sh"
       - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
@@ -67,6 +68,7 @@ on:
       - "tests/install-cleanup.sh"
       - "tests/incus-target.sh"
       - "tests/incus-storage-space.sh"
+      - "tests/release-stamp-pending.sh"
       - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
@@ -135,6 +137,8 @@ jobs:
 
       - name: Incus storage space tests
         run: bash tests/incus-storage-space.sh
+      - name: Release stamp pending marker tests
+        run: bash tests/release-stamp-pending.sh
 
       - name: Prefetch lists cover every engine file
         run: |

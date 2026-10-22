@@ -1670,6 +1670,17 @@ _forge_release_json() {
 #   still reads as an update. Version-aware ordering would change what every
 #   app sees and belongs in its own change
 # ------------------------------------------------------------------------------
+# The version a run started from: the marker of an unfinished run, otherwise
+# the stamp. Empty on a fresh install.
+_forge_previous_version() {
+  local version_file="${1:?version file}"
+  if [[ -f "${version_file}.pending" ]]; then
+    printf '%s' "$(<"${version_file}.pending")"
+  elif [[ -f "$version_file" ]]; then
+    printf '%s' "$(<"$version_file")"
+  fi
+}
+
 check_for_release() {
   local forge="${1:?forge}" app="${2:?app}" source="${3:?repo}"
   local pinned_version_in="${4:-}" pin_reason="${5:-}" tag_prefix="${6:-}"
@@ -1794,6 +1805,13 @@ check_for_release() {
     fi
   fi
   current="$(_forge_strip_v "$current")"
+  CS_PREVIOUS_VERSION="$(_forge_strip_v "$(_forge_previous_version "$current_file")")"
+  export CS_PREVIOUS_VERSION
+  local unfinished=""
+  if [[ -f "${current_file}.pending" ]]; then
+    unfinished=" (the last run did not finish, doing it again)"
+    current="$CS_PREVIOUS_VERSION"
+  fi
 
   if [[ -n "$pinned_version_in" ]]; then
     local pin_clean match_raw="" i
@@ -1810,9 +1828,9 @@ check_for_release() {
       return 250
     fi
 
-    if [[ "$current" != "$pin_clean" ]]; then
+    if [[ "$current" != "$pin_clean" || -n "$unfinished" ]]; then
       CHECK_UPDATE_RELEASE="$match_raw"
-      msg_ok "Update available: ${app} ${current:-not installed} -> ${pin_clean}"
+      msg_ok "Update available: ${app} ${current:-not installed} -> ${pin_clean}${unfinished}"
       return 0
     fi
 
@@ -1824,13 +1842,13 @@ check_for_release() {
     return 1
   fi
 
-  if _forge_is_current "$current" "$latest_clean"; then
+  if [[ -z "$unfinished" ]] && _forge_is_current "$current" "$latest_clean"; then
     msg_ok "No update available: ${app} (${current})"
     return 1
   fi
 
   CHECK_UPDATE_RELEASE="$latest_raw"
-  msg_ok "Update available: ${app} ${current:-not installed} -> ${latest_clean}"
+  msg_ok "Update available: ${app} ${current:-not installed} -> ${latest_clean}${unfinished}"
   return 0
 }
 
@@ -2095,9 +2113,25 @@ fetch_and_deploy_release() {
   # throughout, which mangles tags like version-2.
   version="$(_forge_strip_v "$tag_name")"
 
+  # The stamp written at the end only says "deployed". The marker beside it
+  # holds the version this update started from and stays until a run that
+  # deployed exits 0 (on_exit); check_for_release redoes the update while it
+  # exists, and CS_PREVIOUS_VERSION still names the real old version on that
+  # redo (ProxmoxVE #18050).
+  CS_PREVIOUS_VERSION="$(_forge_previous_version "$version_file")"
+  export CS_PREVIOUS_VERSION
+  # A redo deploys again: the failed run may already have patched the files (ProxmoxVE #18060).
+  local redo=""
+  if [[ -f "${version_file}.pending" ]]; then
+    redo=1
+  else
+    printf '%s' "$CS_PREVIOUS_VERSION" >"${version_file}.pending" 2>/dev/null || true
+  fi
+  _CS_DEPLOYED=1
+
   local current_version=""
   [[ -f "$version_file" ]] && current_version="$(<"$version_file")"
-  if [[ "$current_version" == "$version" && -d "$target" && "${FORCE_UPDATE:-}" != "1" ]]; then
+  if [[ -z "$redo" && "$current_version" == "$version" && -d "$target" && "${FORCE_UPDATE:-}" != "1" ]]; then
     msg_ok "${app} ${version} already installed"
     return 0
   fi

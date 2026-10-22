@@ -22,6 +22,7 @@ _forge_highest_version
 _forge_http_get
 _forge_is_current
 _forge_keep_raw
+_forge_previous_version
 _forge_release_json
 _forge_same_shape
 _forge_scan_older

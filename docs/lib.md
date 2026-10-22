@@ -45,6 +45,15 @@ have their own helpers outside that pair: `fetch_and_deploy_gh_tag`,
 Deploy modes: prebuilt release asset, source tarball, `.deb` package, or a
 plain URL through `fetch_and_deploy_from_url`.
 
+Both entry points keep a version stamp in `~/.<app>`. It is written when the
+deploy finishes, so a build that fails afterwards leaves it at the new
+version; the marker `~/.<app>.pending` beside it holds the version the run
+started from and stays until a run that deployed exits cleanly.
+`check_for_release` redoes the update while the marker exists, and both
+helpers export `CS_PREVIOUS_VERSION`, the version from before the update,
+which stays right on that redo. Prefer it over reading `~/.<app>` when a
+migration depends on the old version.
+
 ## [`runtime.func`](../lib/runtime.func)
 
 Language runtimes and the application-level installers: `setup_nodejs`,
