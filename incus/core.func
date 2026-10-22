@@ -237,17 +237,17 @@ incus_root_check() {
 # IncusOS has no shell, so a switched remote is the only way to drive it.
 incus_target() {
   INCUS_REMOTE="$(LC_ALL=C incus remote get-default 2>/dev/null || echo local)"
+  local info
+  info="$(LC_ALL=C incus info 2>/dev/null)"
   # kernel_architecture is a scalar; the architectures list indents by version.
-  INCUS_SERVER_ARCH="$(LC_ALL=C incus info 2>/dev/null | awk '$1 == "kernel_architecture:" {print $2; exit}')"
-  [[ -n "$INCUS_SERVER_ARCH" ]] || INCUS_SERVER_ARCH="$(LC_ALL=C incus info 2>/dev/null | awk '$1 == "architectures:" {a=1; next} a && $1 == "-" {print $2; exit}')"
+  INCUS_SERVER_ARCH="$(awk '$1 == "kernel_architecture:" {print $2; exit}' <<<"$info")"
+  [[ -n "$INCUS_SERVER_ARCH" ]] || INCUS_SERVER_ARCH="$(awk '$1 == "architectures:" {a=1; next} a && $1 == "-" {print $2; exit}' <<<"$info")"
   case "$INCUS_SERVER_ARCH" in
   x86_64) INCUS_SERVER_ARCH="amd64" ;;
   aarch64) INCUS_SERVER_ARCH="arm64" ;;
   esac
-  export INCUS_REMOTE INCUS_SERVER_ARCH
-  if [[ "$INCUS_REMOTE" != "local" ]]; then
-    incus_msg_custom "ℹ️" "${YW:-}" "Target: Incus remote '${INCUS_REMOTE}' (${INCUS_SERVER_ARCH:-unknown architecture})"
-  fi
+  INCUS_SERVER_KERNEL="$(awk '$1 == "kernel_version:" {print $2; exit}' <<<"$info")"
+  export INCUS_REMOTE INCUS_SERVER_ARCH INCUS_SERVER_KERNEL
 }
 
 incus_check() {
@@ -300,6 +300,9 @@ incus_check() {
   fi
 
   incus_target
+  if [[ "$INCUS_REMOTE" != "local" ]]; then
+    incus_msg_custom "ℹ️" "${YW:-}" "Target: Incus remote '${INCUS_REMOTE}' (${INCUS_SERVER_ARCH:-unknown architecture})"
+  fi
 }
 
 # ==============================================================================

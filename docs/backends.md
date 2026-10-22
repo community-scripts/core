@@ -81,7 +81,8 @@ points the whole flow at another server:
     incus remote switch incusos
     bash -c "$(curl -fsSL .../ct/<app>.sh)"
 
-The machine running the script needs bash, curl and the client. The backend
+The machine running the script needs bash, curl, newt (for whiptail) and the
+client; a BusyBox userland such as Alpine is fine. The backend
 takes the server's architecture from `incus info` and names the target when
 it is not `local`. This is the way in for IncusOS, which has no shell of its
 own. Pool free space comes from `incus storage info`; the local `df` fallback

@@ -3,6 +3,7 @@ set -uo pipefail
 
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 eval "$(awk '/^incus_target[(][)] [{]/,/^}/' "$CORE_DIR/incus/core.func")"
+eval "$(awk '/^_cs_host_arch[(][)] [{]/,/^}/' "$CORE_DIR/core/core.func")"
 
 TEST_DIR="$(mktemp -d)"
 trap 'rm -rf -- "$TEST_DIR"' EXIT
@@ -17,9 +18,9 @@ incus() {
   "info ")
     # Newer servers indent the list by four; kernel_architecture is the scalar we prefer.
     if [[ -n "${MOCK_KERNEL_ARCH:-}" ]]; then
-      printf 'config: {}\nenvironment:\n  addresses: []\n  architectures:\n    - %s\n    - i686\n  kernel_architecture: %s\n  server_name: box\n' "${MOCK_ARCH:-x86_64}" "$MOCK_KERNEL_ARCH"
+      printf 'config: {}\nenvironment:\n  addresses: []\n  architectures:\n    - %s\n    - i686\n  kernel_architecture: %s\n  kernel_version: 6.12.0-incusos\n  server_name: box\n' "${MOCK_ARCH:-x86_64}" "$MOCK_KERNEL_ARCH"
     else
-      printf 'config: {}\nenvironment:\n  addresses: []\n  architectures:\n    - %s\n    - i686\n  server_name: box\n' "${MOCK_ARCH:-x86_64}"
+      printf 'config: {}\nenvironment:\n  addresses: []\n  architectures:\n    - %s\n    - i686\n  kernel_version: 6.12.0-incusos\n  server_name: box\n' "${MOCK_ARCH:-x86_64}"
     fi
     ;;
   esac
@@ -39,13 +40,15 @@ expect() {
 MOCK_REMOTE=incusos MOCK_ARCH=aarch64 incus_target
 expect "the default remote is the target" incusos "$INCUS_REMOTE"
 expect "the server architecture is read, in Debian naming" arm64 "$INCUS_SERVER_ARCH"
-expect "a remote target is announced" "Target: Incus remote 'incusos' (arm64)" "$(cat "$LOG")"
+expect "the server kernel is read" 6.12.0-incusos "$INCUS_SERVER_KERNEL"
+expect "incus_target itself prints nothing" "" "$(cat "$LOG")"
 
 : >"$LOG"
 MOCK_REMOTE=local MOCK_ARCH=x86_64 incus_target
 expect "local stays local" local "$INCUS_REMOTE"
 expect "x86_64 becomes amd64" amd64 "$INCUS_SERVER_ARCH"
-expect "local is not announced" "" "$(cat "$LOG")"
+expect "_cs_host_arch follows the server" arm64 "$(INCUS_SERVER_ARCH=aarch64 _cs_host_arch)"
+expect "_cs_host_arch maps this machine without dpkg" amd64 "$(INCUS_SERVER_ARCH="" _cs_host_arch)"
 
 MOCK_REMOTE=lab MOCK_ARCH=riscv64 incus_target
 expect "an unmapped architecture is passed through" riscv64 "$INCUS_SERVER_ARCH"

@@ -187,10 +187,17 @@ incus_storage_pool_free_gb() {
   # LC_ALL=C: incus translates this output. A German host reports "Gesamter
   # Speicherplatz" and "Speicherplatz in Benutzung", so the awk below matched
   # nothing and a 357GB pool looked unmeasurable.
+  # Incus reports total and used only; with --bytes they are plain integers, so
+  # the subtraction stays in bash and never goes through awk floats (BusyBox awk
+  # truncates those to 32 bit).
   info=$(LC_ALL=C incus storage info --bytes "$pool" 2>/dev/null || true)
   free_raw=$(echo "$info" | awk -F': *' '/space free:/ {print $2; exit}')
-  if [[ -n "$free_raw" ]]; then
-    free_bytes="$(_incus_parse_size_to_bytes "$free_raw" 2>/dev/null || true)"
+  total_raw=$(echo "$info" | awk -F': *' '/total space:/ {print $2; exit}')
+  used_raw=$(echo "$info" | awk -F': *' '/space used:/ {print $2; exit}')
+  if [[ "$free_raw" =~ ^[0-9]+$ ]]; then
+    free_bytes="$free_raw"
+  elif [[ "$total_raw" =~ ^[0-9]+$ && "$used_raw" =~ ^[0-9]+$ && "$total_raw" -ge "$used_raw" ]]; then
+    free_bytes=$((total_raw - used_raw))
   fi
 
   # Older/human output often has only "space used" + "total space" (no free line).
@@ -975,7 +982,7 @@ incus_set_root_password() {
 
 incus_customize_container() {
   msg_info "Customizing LXC Container"
-  ARCH="${INCUS_SERVER_ARCH:-$(dpkg --print-architecture 2>/dev/null || uname -m)}"
+  ARCH="$(_cs_host_arch)"
 
   if [[ "${var_os:-debian}" == "alpine" ]]; then
     sleep 2
@@ -1094,7 +1101,7 @@ INNEREOF" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || { msg_error "Failed to push f
   incus exec "${CT_NAME}" -- bash -c "${_run_env}
 ${_install_script}
 touch /root/.install-${SESSION_ID}.done" 2>&1 |
-    tee >(sed -u 's/.*\r//' >>"${LOGFILE:-$INCUS_BUILD_LOG}")
+    tee >(sed 's/.*\r//' >>"${LOGFILE:-$INCUS_BUILD_LOG}")
   # PIPESTATUS, not $?: the line above turns pipefail off, so $? is tee's
   # status - always 0. Every non-zero exit from the container was discarded
   # here, which is why a half-finished install reported success.

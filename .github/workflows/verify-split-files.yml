@@ -37,6 +37,7 @@ on:
       - "tests/forge-release-json.sh"
       - "tests/install-cleanup.sh"
       - "tests/incus-target.sh"
+      - "tests/incus-storage-space.sh"
       - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
@@ -65,6 +66,7 @@ on:
       - "tests/forge-release-json.sh"
       - "tests/install-cleanup.sh"
       - "tests/incus-target.sh"
+      - "tests/incus-storage-space.sh"
       - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
@@ -130,6 +132,9 @@ jobs:
 
       - name: Incus target tests
         run: bash tests/incus-target.sh
+
+      - name: Incus storage space tests
+        run: bash tests/incus-storage-space.sh
 
       - name: Prefetch lists cover every engine file
         run: |
