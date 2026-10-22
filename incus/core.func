@@ -237,7 +237,9 @@ incus_root_check() {
 # IncusOS has no shell, so a switched remote is the only way to drive it.
 incus_target() {
   INCUS_REMOTE="$(LC_ALL=C incus remote get-default 2>/dev/null || echo local)"
-  INCUS_SERVER_ARCH="$(LC_ALL=C incus info 2>/dev/null | awk '/^environment:/ {e=1} e && /^  architectures:/ {a=1; next} a && /^  - / {print $2; exit}')"
+  # kernel_architecture is a scalar; the architectures list indents by version.
+  INCUS_SERVER_ARCH="$(LC_ALL=C incus info 2>/dev/null | awk '$1 == "kernel_architecture:" {print $2; exit}')"
+  [[ -n "$INCUS_SERVER_ARCH" ]] || INCUS_SERVER_ARCH="$(LC_ALL=C incus info 2>/dev/null | awk '$1 == "architectures:" {a=1; next} a && $1 == "-" {print $2; exit}')"
   case "$INCUS_SERVER_ARCH" in
   x86_64) INCUS_SERVER_ARCH="amd64" ;;
   aarch64) INCUS_SERVER_ARCH="arm64" ;;
