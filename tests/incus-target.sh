@@ -14,7 +14,14 @@ incus_msg_custom() { echo "$3" >>"$LOG"; }
 incus() {
   case "$1 ${2:-}" in
   "remote get-default") echo "${MOCK_REMOTE:-local}" ;;
-  "info ") printf 'config: {}\nenvironment:\n  addresses: []\n  architectures:\n  - %s\n  - i686\n  server_name: box\n' "${MOCK_ARCH:-x86_64}" ;;
+  "info ")
+    # Newer servers indent the list by four; kernel_architecture is the scalar we prefer.
+    if [[ -n "${MOCK_KERNEL_ARCH:-}" ]]; then
+      printf 'config: {}\nenvironment:\n  addresses: []\n  architectures:\n    - %s\n    - i686\n  kernel_architecture: %s\n  server_name: box\n' "${MOCK_ARCH:-x86_64}" "$MOCK_KERNEL_ARCH"
+    else
+      printf 'config: {}\nenvironment:\n  addresses: []\n  architectures:\n    - %s\n    - i686\n  server_name: box\n' "${MOCK_ARCH:-x86_64}"
+    fi
+    ;;
   esac
 }
 
@@ -42,6 +49,9 @@ expect "local is not announced" "" "$(cat "$LOG")"
 
 MOCK_REMOTE=lab MOCK_ARCH=riscv64 incus_target
 expect "an unmapped architecture is passed through" riscv64 "$INCUS_SERVER_ARCH"
+
+MOCK_REMOTE=incus-001 MOCK_ARCH=i686 MOCK_KERNEL_ARCH=x86_64 incus_target
+expect "kernel_architecture wins over the list" amd64 "$INCUS_SERVER_ARCH"
 
 printf '%s passed, %s failed\n' "$passed" "$failed"
 ((failed == 0))
