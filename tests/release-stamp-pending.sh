@@ -81,6 +81,25 @@ expect "without a marker it is the stamp" 2.16.0 "$CS_PREVIOUS_VERSION"
 rm -f "$HOME/.npm"
 expect "a fresh install has no previous version" "" "$(_forge_previous_version "$HOME/.npm")"
 
+# fetch_and_deploy_release: a redo deploys again, the failed run may have patched the files
+eval "$(awk '/^fetch_and_deploy_release[(][)] [{]/,/^}/' "$CORE_DIR/lib/forge.func")"
+_forge_release_json() { printf '%s' '{"tag_name":"v2.16.0"}' >"$5"; }
+_forge_source_url() { echo "https://example.invalid/src.tar.gz"; }
+_download_source_tarball() { :; }
+_deploy_source_tarball() { echo "deploy" >>"$LOG"; }
+deploy() {
+  : >"$LOG"
+  rm -f "$HOME/.npm.pending"
+  echo 2.16.0 >"$HOME/.npm"
+  mkdir -p "$TEST_DIR/target"
+  [[ "$1" == "yes" ]] && printf '%s' 2.15.1 >"$HOME/.npm.pending"
+  fetch_and_deploy_release github NPM owner/repo tarball latest "$TEST_DIR/target" >/dev/null 2>&1
+  grep -c '^deploy$' "$LOG"
+}
+expect "current stamp, no marker: already installed" 0 "$(deploy no)"
+expect "current stamp, marker: deployed again" 1 "$(deploy yes)"
+rm -f "$HOME/.npm" "$HOME/.npm.pending"
+
 # on_exit: only a run that deployed and exits 0 removes the marker
 touch "$HOME/.npm.pending"
 (_CS_DEPLOYED=1; on_exit) 2>/dev/null

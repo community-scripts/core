@@ -2120,12 +2120,18 @@ fetch_and_deploy_release() {
   # redo (ProxmoxVE #18050).
   CS_PREVIOUS_VERSION="$(_forge_previous_version "$version_file")"
   export CS_PREVIOUS_VERSION
-  [[ -f "${version_file}.pending" ]] || printf '%s' "$CS_PREVIOUS_VERSION" >"${version_file}.pending" 2>/dev/null || true
+  # A redo deploys again: the failed run may already have patched the files (ProxmoxVE #18060).
+  local redo=""
+  if [[ -f "${version_file}.pending" ]]; then
+    redo=1
+  else
+    printf '%s' "$CS_PREVIOUS_VERSION" >"${version_file}.pending" 2>/dev/null || true
+  fi
   _CS_DEPLOYED=1
 
   local current_version=""
   [[ -f "$version_file" ]] && current_version="$(<"$version_file")"
-  if [[ "$current_version" == "$version" && -d "$target" && "${FORCE_UPDATE:-}" != "1" ]]; then
+  if [[ -z "$redo" && "$current_version" == "$version" && -d "$target" && "${FORCE_UPDATE:-}" != "1" ]]; then
     msg_ok "${app} ${version} already installed"
     return 0
   fi
