@@ -1670,8 +1670,9 @@ vm_prompt_keyboard() {
 # VM_TIMEZONE, else the host's zone; empty when neither names a known zone.
 vm_timezone_default() {
   local tz="${VM_TIMEZONE:-}"
-  [[ -n "$tz" ]] || tz="$(cat /etc/timezone 2>/dev/null)"
-  [[ -n "$tz" ]] || tz="$(timedatectl show -p Timezone --value 2>/dev/null)"
+  # Debian 13 no longer ships /etc/timezone; a failed read must fall through, not trip the ERR trap
+  [[ -n "$tz" ]] || tz="$(cat /etc/timezone 2>/dev/null || true)"
+  [[ -n "$tz" ]] || tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
   [[ -n "$tz" && -f "/usr/share/zoneinfo/$tz" ]] && printf '%s' "$tz"
   return 0
 }
