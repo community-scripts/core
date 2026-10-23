@@ -19,7 +19,11 @@ terminal status: it writes `/root/.install-<SESSION_ID>.failed` and an
 
 `explain_exit_code` — the exit code table — and `categorize_error`. This is the
 authoritative copy of the table; `core/error_handler.func` carries a fallback
-for the container case where this file is not loaded.
+for the container case where this file is not loaded. The table borrows curl's
+and APT's numbering, so the telemetry summary (`_tm_explain` in
+`errorlog.func`) runs it through the handler's tool guard when the failing
+command is known, and `categorize_error` files `systemctl` and `pct`/`qm`
+failures under their own categories rather than the code's.
 
 ## [`errorlog.func`](../api/errorlog.func)
 

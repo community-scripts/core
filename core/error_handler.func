@@ -343,6 +343,9 @@ _eh_explanation() {
   if [[ -n "$tools" ]] && ! _eh_command_is "$command" "$tools"; then
     explanation="Command failed with exit status ${exit_code}"
   fi
+  if [[ "$exit_code" == 5 ]] && _eh_command_is "$command" "systemctl"; then
+    explanation="Systemd: unit not found"
+  fi
   printf '%s' "$explanation"
 }
 
