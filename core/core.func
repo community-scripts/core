@@ -19,6 +19,9 @@
 [[ -n "${_CORE_FUNC_LOADED:-}" ]] && return
 _CORE_FUNC_LOADED=1
 
+# Scripts run as root; without this Composer waits at a "Continue as root?" prompt that $STD hides
+export COMPOSER_ALLOW_SUPERUSER=1
+
 if [[ -z "${HOME:-}" ]]; then
   HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
   export HOME="${HOME:-/root}"
