@@ -198,17 +198,25 @@ _pve_wait_for_detached_install() {
   echo "[INFO] $(date '+%Y-%m-%d %H:%M:%S') Waiting for the install in container ${CTID} to finish on its own"
   while :; do
     if pct exec "$CTID" -- test -f "${base}.failed" 2>/dev/null; then
+      echo "[INFO] The install reported a failure"
       return 1
     fi
     if pct exec "$CTID" -- test -f "${base}.done" 2>/dev/null; then
+      echo "[INFO] The install finished"
       return 0
     fi
-    [[ "$(pct status "$CTID" 2>/dev/null)" == "status: running" ]] || return 199
+    if [[ "$(pct status "$CTID" 2>/dev/null)" != "status: running" ]]; then
+      echo "[WARN] Container ${CTID} is no longer running"
+      return 199
+    fi
     pid="$(pct exec "$CTID" -- cat "${base}.pid" 2>/dev/null | tr -d '[:space:]')"
     if [[ "$pid" =~ ^[0-9]+$ ]] && ! pct exec "$CTID" -- kill -0 "$pid" 2>/dev/null; then
+      echo "[WARN] Install process ${pid} is gone without reporting; processes left in the container:"
+      pct exec "$CTID" -- ps -eo pid,ppid,stat,etime,cmd 2>/dev/null | head -n 40
       return 199
     fi
     if ((waited >= limit)); then
+      echo "[WARN] Gave up waiting after ${waited}s"
       return 124
     fi
     sleep "$poll"
