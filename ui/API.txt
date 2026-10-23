@@ -53,6 +53,7 @@ _stop_container_if_installing
 _telemetry_report_exit
 _tm_clean_log
 _tm_enabled
+_tm_explain
 _tm_find_errinfo
 _tm_payload
 _tm_pick_logfile
