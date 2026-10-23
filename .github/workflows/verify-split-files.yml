@@ -33,13 +33,14 @@ on:
       - "tests/nodejs-key-refresh.sh"
       - "tests/forge-connection.sh"
       - "tests/failed-command-output.sh"
+      - "tests/stale-silent-record.sh"
       - "tests/exit-code-hints.sh"
       - "tests/forge-release-json.sh"
       - "tests/install-cleanup.sh"
       - "tests/incus-target.sh"
       - "tests/incus-storage-space.sh"
       - "tests/release-stamp-pending.sh"
-      - "tests/stale-silent-record.sh"
+      - "tests/pct-start-reason.sh"
       - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
@@ -64,13 +65,14 @@ on:
       - "tests/nodejs-key-refresh.sh"
       - "tests/forge-connection.sh"
       - "tests/failed-command-output.sh"
+      - "tests/stale-silent-record.sh"
       - "tests/exit-code-hints.sh"
       - "tests/forge-release-json.sh"
       - "tests/install-cleanup.sh"
       - "tests/incus-target.sh"
       - "tests/incus-storage-space.sh"
       - "tests/release-stamp-pending.sh"
-      - "tests/stale-silent-record.sh"
+      - "tests/pct-start-reason.sh"
       - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
@@ -124,6 +126,8 @@ jobs:
 
       - name: Failed command output tests
         run: bash tests/failed-command-output.sh
+      - name: Stale silent record tests
+        run: bash tests/stale-silent-record.sh
 
       - name: Exit code hint tests
         run: bash tests/exit-code-hints.sh
@@ -141,8 +145,8 @@ jobs:
         run: bash tests/incus-storage-space.sh
       - name: Release stamp pending marker tests
         run: bash tests/release-stamp-pending.sh
-      - name: Stale silent record tests
-        run: bash tests/stale-silent-record.sh
+      - name: pct start reason tests
+        run: bash tests/pct-start-reason.sh
 
       - name: Prefetch lists cover every engine file
         run: |
