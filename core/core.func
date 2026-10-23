@@ -939,6 +939,13 @@ log_section() {
 #   for telemetry (the host builds the error trace from this file)
 # - Temporarily disables error trap to capture exit code correctly
 # ------------------------------------------------------------------------------
+_silent_exec() {
+  (
+    trap '' HUP
+    exec "$@"
+  )
+}
+
 silent() {
   # A failure the caller handled (a retry loop) must not be reported for a later, unrelated error.
   unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG
@@ -966,14 +973,21 @@ silent() {
   [[ -f "$logfile" ]] && start_bytes=$(stat -c%s "$logfile" 2>/dev/null || echo 0)
   [[ ! "$start_bytes" =~ ^[0-9]+$ ]] && start_bytes=0
 
-  local rc
+  # A closed console sends SIGHUP to everything in the foreground. A function
+  # stays in this shell, which handles the signal itself; an external program
+  # inherits "ignore" and keeps running.
+  local rc run=("$@")
+  case "$(type -t "$1" 2>/dev/null)" in
+  function | builtin | "") ;;
+  *) run=(_silent_exec "$@") ;;
+  esac
   if [[ "${VERBOSE:-no}" == "yes" ]]; then
     # Not a pipe: the command must stay in this shell so functions keep their side effects.
-    "$@" > >(tee -a "$logfile") 2>&1
+    "${run[@]}" > >(tee -a "$logfile") 2>&1
     rc=$?
     wait $! 2>/dev/null
   else
-    "$@" >>"$logfile" 2>&1
+    "${run[@]}" >>"$logfile" 2>&1
     rc=$?
   fi
 

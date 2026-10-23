@@ -184,6 +184,46 @@ _pct_restart() {
   return 1
 }
 
+# ------------------------------------------------------------------------------
+# _pve_wait_for_detached_install
+#
+# The console closed mid-install: SIGHUP took lxc-attach, but the script inside
+# ignores it and runs on. Wait for its markers: .failed (its exit code, read by
+# the caller), .done (clean end), or the process gone without either.
+# Returns 0 for .done, 1 for .failed, 199 when nothing reported, 124 on timeout.
+# ------------------------------------------------------------------------------
+_pve_wait_for_detached_install() {
+  local base="/root/.install-${SESSION_ID}" pid="" waited=0
+  local poll="${_CS_HANGUP_POLL:-15}" limit="${_CS_HANGUP_TIMEOUT:-21600}"
+  echo "[INFO] $(date '+%Y-%m-%d %H:%M:%S') Waiting for the install in container ${CTID} to finish on its own"
+  while :; do
+    if pct exec "$CTID" -- test -f "${base}.failed" 2>/dev/null; then
+      echo "[INFO] The install reported a failure"
+      return 1
+    fi
+    if pct exec "$CTID" -- test -f "${base}.done" 2>/dev/null; then
+      echo "[INFO] The install finished"
+      return 0
+    fi
+    if [[ "$(pct status "$CTID" 2>/dev/null)" != "status: running" ]]; then
+      echo "[WARN] Container ${CTID} is no longer running"
+      return 199
+    fi
+    pid="$(pct exec "$CTID" -- cat "${base}.pid" 2>/dev/null | tr -d '[:space:]')"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && ! pct exec "$CTID" -- kill -0 "$pid" 2>/dev/null; then
+      echo "[WARN] Install process ${pid} is gone without reporting; processes left in the container:"
+      pct exec "$CTID" -- ps -eo pid,ppid,stat,etime,cmd 2>/dev/null | head -n 40
+      return 199
+    fi
+    if ((waited >= limit)); then
+      echo "[WARN] Gave up waiting after ${waited}s"
+      return 124
+    fi
+    sleep "$poll"
+    waited=$((waited + poll))
+  done
+}
+
 # Where a template lands in $TEMPLATE_STORAGE, or the default dir layout when
 # pvesm cannot say.
 _template_path() {
@@ -1404,8 +1444,19 @@ PROFILE
       fi
       exit 115
     fi
-    lxc-attach -n "$CTID" -- bash -c "$_install_script"
+    msg_custom "ℹ️" "${YW}" "Closing this console does not abort the install; it finishes on its own (Ctrl-C does abort)."
+    msg_custom "   " "${YW}" "Follow it with: pct exec ${CTID} -- tail -f /root/.install-${SESSION_ID}.log"
+    lxc-attach -n "$CTID" -- bash -c "printf '%s' \$\$ >/root/.install-${SESSION_ID}.pid
+$_install_script"
     local lxc_exit=$?
+
+    # The terminal went and took lxc-attach with it; the install inside did
+    # not stop. Follow it through its markers instead of calling it failed.
+    if [[ "${_CS_HANGUP:-}" == "1" && $lxc_exit -ne 0 ]]; then
+      _pve_wait_for_detached_install
+      lxc_exit=$?
+    fi
+    pct exec "$CTID" -- rm -f "/root/.install-${SESSION_ID}.pid" "/root/.install-${SESSION_ID}.done" 2>/dev/null || true
 
     unset CONTAINER_INSTALLING
 
@@ -1692,9 +1743,15 @@ PROFILE
 
     local response=""
     local read_rc
-    reclaim_tty
-    read -t 60 -r response </dev/tty
-    read_rc=$?
+    if [[ "${_CS_HANGUP:-}" == "1" ]]; then
+      # Nobody is there to answer; keep the container for a look later.
+      response=2
+      read_rc=0
+    else
+      reclaim_tty
+      read -t 60 -r response </dev/tty
+      read_rc=$?
+    fi
     if [[ $read_rc -eq 0 ]]; then
       case "${response:-1}" in
       1)
@@ -1787,8 +1844,14 @@ PROFILE
             msg_error "Could not fetch install/${var_install}.sh for the retry"
             exit 115
           fi
-          lxc-attach -n "$CTID" -- bash -c "$_install_script"
+          lxc-attach -n "$CTID" -- bash -c "printf '%s' \$\$ >/root/.install-${SESSION_ID}.pid
+$_install_script"
           local apt_retry_exit=$?
+          if [[ "${_CS_HANGUP:-}" == "1" && $apt_retry_exit -ne 0 ]]; then
+            _pve_wait_for_detached_install
+            apt_retry_exit=$?
+          fi
+          pct exec "$CTID" -- rm -f "/root/.install-${SESSION_ID}.pid" "/root/.install-${SESSION_ID}.done" 2>/dev/null || true
           set -Eeuo pipefail
           trap 'error_handler' ERR
 
@@ -3840,8 +3903,8 @@ api_exit_script() {
   fi
 }
 
-# All five traps report telemetry, so all five belong to the host. EXIT was
-# already guarded; the other four were not, and core/build.func sources this
+# These traps report telemetry, so they belong to the host. EXIT was already
+# guarded; the others were not, and core/build.func sources this
 # file unconditionally -- including inside a container, where a ct script runs
 # again for an update. A Ctrl-C or any ERR during an update therefore posted a
 # failed record, typed lxc, indistinguishable from a failed install. Their pct
@@ -3851,7 +3914,7 @@ api_exit_script() {
 if command -v pveversion >/dev/null 2>&1; then
   trap 'api_exit_script' EXIT
   trap '_ec=$?; if [[ $_ec -ne 0 ]]; then post_update_to_api "failed" "$_ec" 2>/dev/null || true; if declare -f ensure_log_on_host &>/dev/null; then ensure_log_on_host 2>/dev/null || true; fi; fi' ERR
-  trap 'post_update_to_api "failed" "129" 2>/dev/null || true; if [[ -n "${CTID:-}" ]] && command -v pct &>/dev/null; then pct stop "$CTID" 2>/dev/null || true; fi; exit 129' SIGHUP
+  # SIGHUP stays with on_hangup (core/error_handler.func): a closed console is not an abort.
   trap 'post_update_to_api "failed" "130" 2>/dev/null || true; if [[ -n "${CTID:-}" ]] && command -v pct &>/dev/null; then pct stop "$CTID" 2>/dev/null || true; fi; exit 130' SIGINT
   trap 'post_update_to_api "failed" "143" 2>/dev/null || true; if [[ -n "${CTID:-}" ]] && command -v pct &>/dev/null; then pct stop "$CTID" 2>/dev/null || true; fi; exit 143' SIGTERM
 fi
