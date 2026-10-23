@@ -99,8 +99,9 @@ msg_error() { echo "error: $*"; }
 handler_output() {
   # error_handler exits, so it runs in a subshell with the state silent() leaves behind.
   (
-    export _SILENT_FAILED_RC=1 _SILENT_FAILED_CMD="pnpm install" _SILENT_FAILED_LINE=34 _SILENT_FAILED_LOG="$LOGFILE"
-    error_handler 1 "silent pnpm install" 2>&1
+    export _SILENT_FAILED_RC=1 _SILENT_FAILED_CMD="pnpm install" _SILENT_FAILED_LOG="$LOGFILE"
+    # The record only counts for the line it came from.
+    _SILENT_FAILED_LINE=$LINENO error_handler 1 "silent pnpm install" 2>&1
   )
 }
 reset

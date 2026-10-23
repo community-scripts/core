@@ -665,12 +665,20 @@ error_handler() {
   command="${command//\$STD/}"
 
   # silent() knows the real failing command; the trap only sees the wrapper.
+  # Its record outlives a failure the caller handled, so it only counts for
+  # the line it came from; otherwise its capture would be sent for this one.
   local from_silent=0
   if [[ -n "${_SILENT_FAILED_RC:-}" ]]; then
-    exit_code="$_SILENT_FAILED_RC"
-    command="$_SILENT_FAILED_CMD"
-    line_number="$_SILENT_FAILED_LINE"
-    from_silent=1
+    if [[ "${_SILENT_FAILED_LINE:-}" == "$line_number" ]]; then
+      exit_code="$_SILENT_FAILED_RC"
+      command="$_SILENT_FAILED_CMD"
+      from_silent=1
+    else
+      if [[ -n "${_SILENT_FAILED_LOG:-}" ]]; then
+        rm -f "${_SILENT_FAILED_LOG}.errinfo" 2>/dev/null
+      fi
+      unset _SILENT_FAILED_LOG
+    fi
     unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE
   fi
 
