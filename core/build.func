@@ -235,7 +235,7 @@ _CS_ENGINE_FILES=(
   lib/alpine.func api/api.func
   api/errorlog.func api/exitcodes.func api/sysinfo.func
   api/telemetry.func
-  ui/build-ui.func ui/advanced.func ui/defaults.func
+  ui/build-ui.func ui/advanced.func ui/defaults.func ui/identity.func
   ui/menu.func ui/validate.func vm/cloud-init.func vm/common.func
   core/core.func core/dev-mode.func core/error_handler.func
   lxc/install.func lxc/platform.func host/preflight.func
