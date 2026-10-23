@@ -1007,7 +1007,7 @@ advanced_settings() {
         --title "DEVICE NODE CREATION" \
         --ok-button "Next" --cancel-button "Back" \
         $mknod_default_flag \
-        --yesno "\nAllow device node creation (mknod)?\n\nRequired for: Creating device files inside container.\nExperimental feature (requires kernel 5.3+).\n\n(App default: ${var_mknod:-0})" 14 62; then
+        --yesno "\nAllow device node creation (mknod)?\n\nRequired for: Creating device files inside container.\n\n(App default: ${var_mknod:-0})" 13 62; then
         _enable_mknod="1"
       else
         if [ $? -eq 1 ]; then
