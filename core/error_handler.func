@@ -676,6 +676,13 @@ error_handler() {
 
   [[ "$exit_code" -eq 0 ]] && return 0
 
+  # set -E hands the ERR trap (which passes no arguments) to $(...) and ( ) too.
+  # The calling shell fails on the same error and reports it, so reporting here
+  # as well printed it twice.
+  if ((BASH_SUBSHELL > 0 && $# == 0)); then
+    exit "$exit_code"
+  fi
+
   # Telemetry reads these for the "where"
   FAILED_COMMAND="$command"
   FAILED_LINE="$line_number"
