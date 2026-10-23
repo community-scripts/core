@@ -796,6 +796,9 @@ on_exit() {
   if _is_container_context; then
     if [[ $exit_code -ne 0 ]]; then
       _container_write_failure "$exit_code" "${FAILED_COMMAND:-}" "${FAILED_LINE:-}"
+    elif [[ "${INSTALL_LOG:-}" == *.install-*.log ]]; then
+      # The host reads this when its lxc-attach did not live to see the end.
+      : >"${INSTALL_LOG%.log}.done" 2>/dev/null || true
     fi
   else
     if [[ "${POST_UPDATE_DONE:-}" != "true" ]] && declare -f post_update_to_api >/dev/null 2>&1; then
@@ -874,11 +877,18 @@ on_terminate() {
 # ------------------------------------------------------------------------------
 # on_hangup() - SIGHUP (SSH disconnect, terminal closed)
 #
-# No cursor restore and no message: the terminal that would read them is gone.
+# Not an abort: the run carries on with its output in the active log, and
+# whoever opens a console later finds the result. Writes to the terminal that
+# is gone would fail with EIO and end the script, hence the redirect.
 # ------------------------------------------------------------------------------
 on_hangup() {
   declare -f stop_spinner >/dev/null 2>&1 && { stop_spinner 2>/dev/null || true; }
-  _eh_signal_exit 129
+  local log=""
+  declare -f get_active_logfile >/dev/null 2>&1 && log="$(get_active_logfile 2>/dev/null)"
+  [[ -n "$log" ]] || log="${INSTALL_LOG:-${BUILD_LOG:-/dev/null}}"
+  exec </dev/null >>"$log" 2>&1
+  export _CS_HANGUP=1 CS_ANIMATION_OK=0
+  echo "[WARN] $(date '+%Y-%m-%d %H:%M:%S') The terminal hung up (SIGHUP); continuing, output follows here."
 }
 
 # ==============================================================================

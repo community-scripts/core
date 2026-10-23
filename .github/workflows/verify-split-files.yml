@@ -37,6 +37,7 @@ on:
       - "tests/exit-code-hints.sh"
       - "tests/forge-release-json.sh"
       - "tests/install-cleanup.sh"
+      - "tests/console-hangup.sh"
       - "tests/incus-target.sh"
       - "tests/incus-storage-space.sh"
       - "tests/release-stamp-pending.sh"
@@ -70,6 +71,7 @@ on:
       - "tests/exit-code-hints.sh"
       - "tests/forge-release-json.sh"
       - "tests/install-cleanup.sh"
+      - "tests/console-hangup.sh"
       - "tests/incus-target.sh"
       - "tests/incus-storage-space.sh"
       - "tests/release-stamp-pending.sh"
@@ -139,6 +141,8 @@ jobs:
 
       - name: Install cleanup and uv trap tests
         run: bash tests/install-cleanup.sh
+      - name: Console hangup tests
+        run: bash tests/console-hangup.sh
 
       - name: Incus target tests
         run: bash tests/incus-target.sh
