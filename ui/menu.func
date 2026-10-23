@@ -432,8 +432,13 @@ settings_menu() {
 # - Warns if under-provisioned and asks user to continue or abort
 # ------------------------------------------------------------------------------
 check_container_resources() {
-  current_ram=$(free -m | awk 'NR==2{print $2}')
-  current_cpu=$(nproc)
+  current_ram=$(free -m 2>/dev/null | awk 'NR==2{print $2}' || true)
+  current_cpu=$(nproc 2>/dev/null || true)
+  # A broken lxcfs mount on the host leaves /proc/meminfo unreadable; that is no reason to stop the update
+  if [[ ! "$current_ram" =~ ^[0-9]+$ || ! "$current_cpu" =~ ^[0-9]+$ ]]; then
+    msg_warn "Could not read this container's RAM or CPU count, skipping the resource check"
+    return 0
+  fi
 
   if [[ "$current_ram" -lt "$var_ram" ]] || [[ "$current_cpu" -lt "$var_cpu" ]]; then
     echo -e "\n${INFO}${HOLD} ${GN}Required: ${var_cpu} CPU, ${var_ram}MB RAM ${CL}| ${RD}Current: ${current_cpu} CPU, ${current_ram}MB RAM${CL}"
