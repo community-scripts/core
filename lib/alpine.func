@@ -638,7 +638,9 @@ setup_uv() {
 
   tmpd="$(mktemp -d)" || return 1
   tarball="uv-${arch}.tar.gz"
-  url="https://github.com/astral-sh/uv/releases/download/v${ver}/${tarball}"
+  # astral-sh/uv publishes bare tags ("0.13.5"); the "v" was already stripped
+  # above, so adding one back here asked GitHub for a tag that does not exist.
+  url="https://github.com/astral-sh/uv/releases/download/${ver}/${tarball}"
 
   download_with_progress "$url" "$tmpd/uv.tar.gz" || {
     rm -rf "$tmpd"
