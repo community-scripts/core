@@ -618,12 +618,18 @@ setup_uv() {
     ;;
   esac
 
-  ver="$(curl -fsSL https://api.github.com/repos/astral-sh/uv/releases/latest | jq -r '.tag_name' 2>/dev/null)"
+  # UV_VERSION pins the release, the same prefix the generic setup_uv in
+  # lib/runtime.func honours; otherwise the latest one. Resolved through
+  # get_latest_github_release so the call retries, uses GITHUB_TOKEN and pulls
+  # in jq — the bare curl here printed nothing when jq was absent.
+  ver="${UV_VERSION:-}"
+  if [ -z "$ver" ]; then
+    ver="$(get_latest_github_release "astral-sh/uv")" || {
+      msg_error "uv: cannot determine latest version"
+      return 1
+    }
+  fi
   ver="${ver#v}"
-  [ -z "$ver" ] && {
-    msg_error "uv: cannot determine latest version"
-    return 1
-  }
 
   if has "$UV_BIN"; then
     installed="$($UV_BIN -V 2>/dev/null | awk '{print $2}')"
