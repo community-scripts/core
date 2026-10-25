@@ -888,7 +888,7 @@ on_hangup() {
   declare -f get_active_logfile >/dev/null 2>&1 && log="$(get_active_logfile 2>/dev/null)"
   [[ -n "$log" ]] || log="${INSTALL_LOG:-${BUILD_LOG:-/dev/null}}"
   exec </dev/null >>"$log" 2>&1
-  export _CS_HANGUP=1 CS_ANIMATION_OK=0
+  export _CS_HANGUP=1 CS_ANIMATION_OK=0 _CS_HANGUP_LOG="$log"
   echo "[WARN] $(date '+%Y-%m-%d %H:%M:%S') The terminal hung up (SIGHUP); continuing, output follows here. (pid $$, subshell ${BASH_SUBSHELL}, during: ${BASH_COMMAND:-?})"
 }
 

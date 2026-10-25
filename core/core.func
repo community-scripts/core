@@ -939,6 +939,19 @@ log_section() {
 #   for telemetry (the host builds the error trace from this file)
 # - Temporarily disables error trap to capture exit code correctly
 # ------------------------------------------------------------------------------
+# After a hangup the shell's stdout and stderr still point at the terminal that
+# is gone, and every write to it fails. The trap redirects them to the log, but
+# bash saves and restores fd 1 and 2 around a redirected call to a shell
+# function -- silent() makes exactly such a call -- so the redirect is undone
+# the moment that call returns. Re-apply it where no redirection is in effect.
+_cs_reattach_output() {
+  [[ "${_CS_HANGUP:-}" == "1" ]] || return 0
+  local log="${_CS_HANGUP_LOG:-}"
+  [[ -n "$log" ]] || log="$(get_active_logfile)"
+  [[ -n "$log" ]] || return 0
+  exec </dev/null >>"$log" 2>&1
+}
+
 _silent_exec() {
   (
     trap '' HUP
@@ -947,6 +960,7 @@ _silent_exec() {
 }
 
 silent() {
+  _cs_reattach_output
   # A failure the caller handled (a retry loop) must not be reported for a later, unrelated error.
   unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG
   local cmd="$*"
@@ -1252,6 +1266,7 @@ fi
 # - Backgrounds spinner process and stores PID for later cleanup
 # ------------------------------------------------------------------------------
 msg_info() {
+  _cs_reattach_output
   local msg="$1"
   [[ -z "$msg" ]] && return
 
@@ -1310,6 +1325,7 @@ msg_info() {
 # - Uses green color for success indication
 # ------------------------------------------------------------------------------
 msg_ok() {
+  _cs_reattach_output
   local msg="$1"
   [[ -z "$msg" ]] && return
   stop_spinner
@@ -1332,6 +1348,7 @@ msg_ok() {
 # - Outputs to stderr
 # ------------------------------------------------------------------------------
 msg_error() {
+  _cs_reattach_output
   stop_spinner
   _MSG_BLOCKS=()
   local msg="$1"
@@ -1348,6 +1365,7 @@ msg_error() {
 # - Outputs to stderr
 # ------------------------------------------------------------------------------
 msg_warn() {
+  _cs_reattach_output
   stop_spinner
   _MSG_BLOCKS=()
   local msg="$1"
@@ -1364,6 +1382,7 @@ msg_warn() {
 # - Useful for specialized status messages
 # ------------------------------------------------------------------------------
 msg_custom() {
+  _cs_reattach_output
   local symbol="${1:-"[*]"}"
   local color="${2:-"\e[36m"}"
   local msg="${3:-}"

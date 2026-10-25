@@ -6,7 +6,7 @@
 set -uo pipefail
 
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-eval "$(awk '/^(silent|_silent_exec)[(][)] [{]/,/^}/' "$CORE_DIR/core/core.func")"
+eval "$(awk '/^(silent|_silent_exec|_cs_reattach_output)[(][)] [{]/,/^}/' "$CORE_DIR/core/core.func")"
 eval "$(awk '/^(on_hangup|on_exit|_eh_quiet_spinner)[(][)] [{]/,/^}/' "$CORE_DIR/core/error_handler.func")"
 eval "$(awk '/^_pve_wait_for_detached_install[(][)] [{]/,/^}/' "$CORE_DIR/pve/backend.func")"
 
@@ -112,6 +112,30 @@ CT_STATE="status: stopped"
 _pve_wait_for_detached_install >/dev/null
 expect "a stopped container ends the wait" 199 "$?"
 kill "$worker" 2>/dev/null
+
+# A redirected call to a shell function makes bash save fd 1 and restore it
+# afterwards, which undid the redirect the hangup trap had made. Every message
+# after that wrote to the terminal that was gone, and the failed write ended
+# the run under errexit.
+REDIR="$TEST_DIR/redirected.log"
+AFTER="$TEST_DIR/after.log"
+inner() { echo "inner"; }
+out="$( (
+  exec >"$TEST_DIR/orig.log" 2>&1
+  _CS_HANGUP=1 _CS_HANGUP_LOG="$AFTER"
+  export _CS_HANGUP _CS_HANGUP_LOG
+  inner >"$REDIR" 2>&1
+  _cs_reattach_output
+  echo "after the redirected call"
+  readlink /proc/$$/fd/1
+) 2>&1 )"
+expect "output after a redirected call goes to the hangup log" 1 "$(grep -c 'after the redirected call' "$AFTER" 2>/dev/null)"
+expect "and not back to the original target" 0 "$(grep -c 'after the redirected call' "$TEST_DIR/orig.log" 2>/dev/null)"
+
+: >"$AFTER"
+( unset _CS_HANGUP; _CS_HANGUP_LOG="$AFTER"; _cs_reattach_output; echo "no hangup" ) >"$TEST_DIR/orig2.log" 2>&1
+expect "without a hangup nothing is redirected" 0 "$(grep -c 'no hangup' "$AFTER" 2>/dev/null)"
+expect "it stays where it was" 1 "$(grep -c 'no hangup' "$TEST_DIR/orig2.log" 2>/dev/null)"
 
 echo "$passed passed, $failed failed"
 ((failed == 0))
