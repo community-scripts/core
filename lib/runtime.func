@@ -1396,6 +1396,28 @@ _setup_npm() {
   return 0
 }
 
+# apt swaps nodejs for the new repository's build and drops Debian's npm and
+# node-* packages with it; the packages that kept the purge from running
+# (thelounge) must survive that.
+_nodejs_in_place_simulate() {
+  local sim removed dependents pkg
+  dependents=$(apt-get -s purge -y nodejs npm 2>/dev/null | awk '/^(Remv|Purg) /{print $2}' |
+    grep -vE '^(nodejs|nodejs-doc|npm|libnode.*|node-.*)$' || true)
+  sim=$(apt-get -s install -y nodejs 2>&1) || {
+    msg_error "apt cannot upgrade nodejs in place:"
+    printf '%s\n' "$sim" | grep -E '^(E:|W:| )' | head -n 5
+    return 1
+  }
+  removed=$(awk '/^Remv /{print $2}' <<<"$sim")
+  for pkg in $dependents; do
+    if grep -qxF "$pkg" <<<"$removed"; then
+      msg_error "Upgrading Node.js in place would remove ${pkg}"
+      return 1
+    fi
+  done
+  return 0
+}
+
 setup_nodejs() {
   local NODE_VERSION="${NODE_VERSION:-24}"
   local NODE_MODULE="${NODE_MODULE:-}"
@@ -1404,6 +1426,7 @@ setup_nodejs() {
   local wants_corepack=0
   local node_setup_ok_msg=""
   local NPM_SETUP_VERSION=""
+  local in_place=0
 
   # npm dies with uv_cwd when the caller's directory was deleted, e.g. a build dir.
   mkdir -p /opt
@@ -1458,17 +1481,23 @@ setup_nodejs() {
     if [[ -n "$CURRENT_NODE_VERSION" && "$CURRENT_NODE_VERSION" != "$NODE_VERSION" ]]; then
       msg_info "Upgrade Node.js from $CURRENT_NODE_VERSION to $NODE_VERSION"
       node_setup_ok_msg="Upgrade Node.js to $NODE_VERSION"
-      remove_old_tool_version "nodejs" || {
-        msg_error "Aborting Node.js upgrade: another package depends on it"
+      if _purge_is_safe nodejs npm; then
+        remove_old_tool_version "nodejs" || return 1
+      elif ((node_major < CURRENT_NODE_VERSION)); then
+        msg_error "Node.js $CURRENT_NODE_VERSION cannot be downgraded to $NODE_VERSION while another package depends on it"
         return 1
-      }
+      else
+        # An app package depends on nodejs, so the purge would take it along.
+        # apt upgrades nodejs in place once the new repository is set.
+        in_place=1
+      fi
     else
       msg_info "Setup Node.js $NODE_VERSION"
       node_setup_ok_msg="Setup Node.js $NODE_VERSION"
     fi
 
     # Remove ALL Debian nodejs packages BEFORE adding NodeSource repo
-    if dpkg -l 2>/dev/null | grep -qE "^ii.*(nodejs|libnode|node-cjs|node-acorn|node-balanced|node-brace|node-minimatch|node-undici|node-xtend|node-corepack)"; then
+    if ((!in_place)) && dpkg -l 2>/dev/null | grep -qE "^ii.*(nodejs|libnode|node-cjs|node-acorn|node-balanced|node-brace|node-minimatch|node-undici|node-xtend|node-corepack)"; then
       msg_info "Removing Debian-packaged Node.js and dependencies"
       $STD apt purge -y nodejs nodejs-doc libnode* node-* 2>/dev/null || true
       $STD apt autoremove -y 2>/dev/null || true
@@ -1497,6 +1526,16 @@ setup_nodejs() {
     }
 
     ensure_dependencies curl ca-certificates gnupg
+
+    if ((in_place)) && ! _nodejs_in_place_simulate; then
+      if dpkg-query -W -f='${Version}' nodejs 2>/dev/null | grep -q nodesource; then
+        manage_tool_repository "nodejs" "$CURRENT_NODE_VERSION" "https://deb.nodesource.com/node_${CURRENT_NODE_VERSION}.x" "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key" >/dev/null 2>&1 || true
+      else
+        cleanup_old_repo_files "nodesource"
+      fi
+      $STD apt update || true
+      return 1
+    fi
 
     install_packages_with_retry "nodejs" || {
       msg_error "Failed to install Node.js ${NODE_VERSION} from NodeSource"
@@ -1550,16 +1589,20 @@ setup_nodejs() {
 
   # npm 11+ skips install hooks not covered by allowScripts and still exits 0,
   # so apps with native addons install with nothing built.
-  local npm_major
+  # npm reads the global npmrc from <prefix>/etc, so `npm --prefix /opt/app`
+  # never sees it; the user npmrc applies whatever the prefix.
+  local npm_major npm_location
   npm_major="$(npm -v 2>/dev/null | cut -d. -f1)" || npm_major=""
-  if [[ "$npm_major" -ge 11 ]]; then
-    $STD npm config set dangerously-allow-all-scripts true --location=global 2>/dev/null || true
-  fi
-  # npm 12 refuses git and tarball-URL dependencies by default (EALLOWGIT/EALLOWREMOTE).
-  if [[ "$npm_major" -ge 12 ]]; then
-    $STD npm config set allow-git all --location=global 2>/dev/null || true
-    $STD npm config set allow-remote all --location=global 2>/dev/null || true
-  fi
+  for npm_location in global user; do
+    if [[ "$npm_major" -ge 11 ]]; then
+      $STD npm config set dangerously-allow-all-scripts true --location="$npm_location" 2>/dev/null || true
+    fi
+    # npm 12 refuses git and tarball-URL dependencies by default (EALLOWGIT/EALLOWREMOTE).
+    if [[ "$npm_major" -ge 12 ]]; then
+      $STD npm config set allow-git all --location="$npm_location" 2>/dev/null || true
+      $STD npm config set allow-remote all --location="$npm_location" 2>/dev/null || true
+    fi
+  done
 
   # Set a safe default heap limit for Node.js builds if not explicitly provided.
   # Priority:
