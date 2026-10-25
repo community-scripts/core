@@ -31,6 +31,7 @@ on:
       - "tests/external-installer.sh"
       - "tests/forge-version-key.sh"
       - "tests/nodejs-key-refresh.sh"
+      - "tests/nodejs-in-place.sh"
       - "tests/forge-connection.sh"
       - "tests/failed-command-output.sh"
       - "tests/stale-silent-record.sh"
@@ -64,6 +65,7 @@ on:
       - "tests/external-installer.sh"
       - "tests/forge-version-key.sh"
       - "tests/nodejs-key-refresh.sh"
+      - "tests/nodejs-in-place.sh"
       - "tests/forge-connection.sh"
       - "tests/failed-command-output.sh"
       - "tests/stale-silent-record.sh"
@@ -122,6 +124,9 @@ jobs:
 
       - name: Node.js key refresh tests
         run: bash tests/nodejs-key-refresh.sh
+
+      - name: Node.js in-place upgrade tests
+        run: bash tests/nodejs-in-place.sh
 
       - name: Forge connection diagnosis tests
         run: bash tests/forge-connection.sh
