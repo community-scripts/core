@@ -78,6 +78,15 @@ from `/etc/localtime`, or from `Etc/UTC`.
 [`core/core.func`](../core/core.func) renders "Incus Version 6.x" on an Incus
 host and "PVE Version …" on Proxmox VE, from the same `PVEVERSION` value.
 
+A closed console is not an abort here either, but it takes a different route.
+`incus exec` ends as soon as its client goes away and takes the command with
+it, which `lxc-attach` does not do. The install therefore runs detached inside
+the container, writing to its own log, and the host only watches it: input
+reaches it through a fifo for as long as there is a console, and once there is
+none the reads return EOF and the prompts take their defaults.
+`_incus_wait_for_detached_install` then waits for the `.done`/`.failed`
+markers before the host reports.
+
 ### Driving a remote server
 
 The `incus` client always talks to a remote; `local:` is only the default.

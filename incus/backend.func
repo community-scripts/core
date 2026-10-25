@@ -1061,6 +1061,30 @@ MOTDEOF
   msg_ok "MOTD configured"
 }
 
+# ------------------------------------------------------------------------------
+# _incus_wait_for_detached_install <base>
+#
+# The console closed while the install ran. incus ended the exec session that
+# was watching it, but the install itself is detached and carries on. Wait for
+# what it leaves behind: .failed (its exit code, read by the caller), .done, or
+# the process gone without either.
+# ------------------------------------------------------------------------------
+_incus_wait_for_detached_install() {
+  local base="$1" pid="" waited=0
+  local poll="${_CS_HANGUP_POLL:-10}" limit="${_CS_HANGUP_TIMEOUT:-21600}"
+  while :; do
+    incus_ct_exec test -f "${base}.failed" >/dev/null 2>&1 && return 0
+    incus_ct_exec test -f "${base}.done" >/dev/null 2>&1 && return 0
+    pid="$(incus_ct_exec cat "${base}.pid" 2>/dev/null | tr -d '[:space:]')"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && ! incus_ct_exec kill -0 "$pid" >/dev/null 2>&1; then
+      return 0
+    fi
+    ((waited >= limit)) && return 0
+    sleep "$poll"
+    waited=$((waited + poll))
+  done
+}
+
 _incus_push_functions_and_run_install() {
   # Sets INCUS_LAST_INSTALL_EXIT (do not capture stdout — msg_* writes there).
   INCUS_LAST_INSTALL_EXIT=0
@@ -1095,15 +1119,53 @@ INNEREOF" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || { msg_error "Failed to push f
   # No pty on purpose: under `incus exec -t` apt's tcsetattr fails with EIO and kills the shell.
   set +Eeuo pipefail
   trap - ERR
+
+  # incus ends an exec session the moment its client goes away, so closing the
+  # console killed the install outright - the one thing lxc-attach does not do.
+  # Run it detached from that session and only watch it from here. The console
+  # keeps the view and the keyboard: input reaches the install through a fifo
+  # for as long as there is a console, and once there is none the reads return
+  # EOF and the prompts take their defaults.
+  local _base="/root/.install-${SESSION_ID}"
+  local _runner _watcher _body
+  _runner='setsid bash "$1".sh <"$1".in >>"$1".out 2>&1 &
+echo $! >"$1".pid'
+  _watcher='tail -n +1 -f "$1".out &
+_tp=$!
+while [ ! -f "$1".done ] && [ ! -f "$1".failed ]; do sleep 2; done
+sleep 1
+kill $_tp 2>/dev/null'
   # The trailing touch is a completion sentinel: no install script exits early.
-  incus exec "${CT_NAME}" -- bash -c "${_run_env}
+  _body="${_run_env}
 ${_install_script}
-touch /root/.install-${SESSION_ID}.done" 2>&1 |
+touch ${_base}.done"
+
+  incus exec "${CT_NAME}" -- bash -c "cat >${_base}.sh <<'CSBODYEOF'
+${_body}
+CSBODYEOF
+cat >${_base}.run <<'CSRUNEOF'
+${_runner}
+CSRUNEOF
+cat >${_base}.watch <<'CSWATCHEOF'
+${_watcher}
+CSWATCHEOF
+rm -f ${_base}.in ${_base}.pid ${_base}.done ${_base}.failed ${_base}.out
+mkfifo ${_base}.in" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
+
+  # A writer has to hold the fifo open before the install opens it to read.
+  incus exec "${CT_NAME}" -- sh -c "cat >${_base}.in" &
+  local _feeder=$!
+  incus exec "${CT_NAME}" -- bash "${_base}.run" "${_base}" >/dev/null 2>&1
+
+  incus exec "${CT_NAME}" -- bash "${_base}.watch" "${_base}" 2>&1 |
     tee >(sed 's/.*\r//' >>"${LOGFILE:-$INCUS_BUILD_LOG}")
-  # PIPESTATUS, not $?: the line above turns pipefail off, so $? is tee's
-  # status - always 0. Every non-zero exit from the container was discarded
-  # here, which is why a half-finished install reported success.
-  lxc_exit=${PIPESTATUS[0]}
+  kill "$_feeder" 2>/dev/null || true
+  wait "$_feeder" 2>/dev/null || true
+
+  # The watcher is gone either way - because the install ended, or because the
+  # console did. Only the markers say which.
+  _incus_wait_for_detached_install "$_base"
+  lxc_exit=0
   set -Eeuo pipefail
   declare -f error_handler &>/dev/null && trap 'error_handler' ERR || true
 
@@ -1125,10 +1187,12 @@ touch /root/.install-${SESSION_ID}.done" 2>&1 |
       incus_ct_exec rm -f "/root/.install-${SESSION_ID}.done" 2>/dev/null || true
     else
       msg_error "Install script stopped before it finished - nothing reported it"
+      [[ "${_CS_HANGUP:-}" == "1" ]] && msg_custom "ℹ️" "${YW}" "The console was closed; the install ran on detached, so look at its log for the reason"
       msg_custom "ℹ️" "${YW}" "Output: incus exec ${CT_NAME} -- tail -50 /root/.install-${SESSION_ID}.log"
       install_exit_code=1
     fi
   fi
+  incus_ct_exec rm -f "${_base}.sh" "${_base}.run" "${_base}.watch" "${_base}.in" "${_base}.pid" "${_base}.out" >/dev/null 2>&1 || true
   INCUS_LAST_INSTALL_EXIT=$install_exit_code
 }
 
