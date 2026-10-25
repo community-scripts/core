@@ -638,7 +638,8 @@ _incus_on_signal() {
 # installation. Writes to the terminal that is gone fail with EIO and would
 # end the run under errexit, hence the redirect.
 _incus_on_hangup() {
-  local log="${LOGFILE:-${INCUS_BUILD_LOG:-/dev/null}}"
+  local log="${LOGFILE:-${_INCUS_HOST_LOGFILE:-${INCUS_BUILD_LOG:-}}}"
+  [[ -n "$log" ]] || log="/tmp/incus-hangup-${SESSION_ID:-$$}.log"
   exec </dev/null >>"$log" 2>&1
   export _CS_HANGUP=1 _CS_HANGUP_LOG="$log" CS_STDIN_OK=0
   echo "[WARN] $(date '+%Y-%m-%d %H:%M:%S') The terminal hung up (SIGHUP); continuing, output follows here."
