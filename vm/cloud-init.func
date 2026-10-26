@@ -759,15 +759,31 @@ EOF
 
 # ------------------------------------------------------------------------------
 # get_vm_ip - Get VM IP address via qemu-guest-agent
+#
+#   get_vm_ip <vmid> [timeout seconds] [mac]
+#
+# With a MAC only the interface carrying it counts, which is the only reliable
+# answer once the guest runs Docker, Podman or Kubernetes. Without one, bridge
+# and tunnel interfaces those create are skipped. Loopback and link-local
+# addresses never count.
 # ------------------------------------------------------------------------------
 function get_vm_ip() {
   local vmid="$1"
   local timeout="${2:-30}"
+  local mac="${3:-}"
+  mac="${mac,,}"
 
-  local elapsed=0
+  local elapsed=0 vm_ip
   while [ $elapsed -lt $timeout ]; do
-    local vm_ip=$(qm guest cmd "$vmid" network-get-interfaces 2>/dev/null |
-      jq -r '.[] | select(.name != "lo") | ."ip-addresses"[]? | select(."ip-address-type" == "ipv4") | ."ip-address"' 2>/dev/null | head -1)
+    vm_ip=$(qm guest cmd "$vmid" network-get-interfaces 2>/dev/null |
+      jq -r --arg mac "$mac" '
+        .[] | select(.name != "lo")
+        | select(if $mac != ""
+                 then ((."hardware-address" // "") | ascii_downcase) == $mac
+                 else (.name | test("^(docker|br-|veth|podman|cni|flannel|cali|cilium|kube|virbr|lxc|vnet|tun|tap|wg|tailscale|zt)") | not)
+                 end)
+        | ."ip-addresses"[]? | select(."ip-address-type" == "ipv4") | ."ip-address"
+        | select(test("^(127\\.|169\\.254\\.)") | not)' 2>/dev/null | head -1)
 
     if [ -n "$vm_ip" ]; then
       echo "$vm_ip"
@@ -782,12 +798,46 @@ function get_vm_ip() {
 }
 
 # ------------------------------------------------------------------------------
-# wait_for_cloud_init - Wait for Cloud-Init to complete (requires SSH access)
+# wait_for_cloud_init - Wait for Cloud-Init to complete
+#
+# Asks through the guest agent first, which needs neither an address nor SSH
+# keys. Falls back to SSH for guests without an agent.
 # ------------------------------------------------------------------------------
 function wait_for_cloud_init() {
   local vmid="$1"
   local timeout="${2:-300}"
   local vm_ip="${3:-}"
+
+  local waited=0 json rc=""
+  while [ $waited -lt 60 ]; do
+    qm guest cmd "$vmid" ping >/dev/null 2>&1 && break
+    sleep 3
+    waited=$((waited + 3))
+  done
+
+  if [ $waited -lt 60 ]; then
+    _ci_msg_info "Waiting for Cloud-Init to complete (guest agent)"
+    json=$(qm guest exec "$vmid" --timeout "$timeout" -- cloud-init status --wait 2>/dev/null) || true
+    rc=$(jq -r 'if .exited == 1 then (.exitcode // 1) else 124 end' <<<"$json" 2>/dev/null) || rc=""
+    case "$rc" in
+    0)
+      _ci_msg_ok "Cloud-Init completed successfully"
+      return 0
+      ;;
+    2)
+      _ci_msg_warn "Cloud-Init completed with recoverable errors -- see /var/log/cloud-init.log in the VM"
+      return 0
+      ;;
+    124)
+      _ci_msg_warn "Cloud-Init did not complete within ${timeout}s"
+      return 1
+      ;;
+    [0-9]*)
+      _ci_msg_warn "Cloud-Init reported an error (exit ${rc}) -- see /var/log/cloud-init.log in the VM"
+      return 1
+      ;;
+    esac
+  fi
 
   # Get IP if not provided
   if [ -z "$vm_ip" ]; then

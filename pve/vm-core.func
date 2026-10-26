@@ -47,6 +47,19 @@ else
     wget -qO- "${_vm_validate_base}/host/validate.func")
 fi
 
+# Helpers that do not touch qm, shared with incus/vm-core.func.
+if declare -f _cs_source_func >/dev/null 2>&1; then
+  _cs_source_func "vm/common.func"
+elif [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -f "${COMMUNITY_SCRIPTS_CORE_DIR}/vm/common.func" ]]; then
+  # shellcheck disable=SC1091
+  source "${COMMUNITY_SCRIPTS_CORE_DIR}/vm/common.func"
+else
+  _vm_common_base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
+  # shellcheck disable=SC1090
+  source <(curl -fsSL "${_CS_CURL_RETRY[@]}" "${_vm_common_base}/vm/common.func" 2>/dev/null ||
+    wget -qO- "${_vm_common_base}/vm/common.func")
+fi
+
 SPINNER_PID=""
 SPINNER_ACTIVE=0
 SPINNER_MSG=""
@@ -188,6 +201,9 @@ header_info() {
 
   if [ -n "$header_content" ]; then
     echo "$header_content"
+  else
+    echo "${_CS_FALLBACK_HEADER:-Community Scripts}"
+    echo "  ${APP:-}"
   fi
 }
 
@@ -298,14 +314,17 @@ get_active_logfile() {
 # silent()
 #
 # - Executes command with output redirected to active log file
-# - On error: displays last 20 lines of log and exits with original exit code
-# - Temporarily disables error trap to capture exit code correctly
-# - Sources explain_exit_code() for detailed error messages
+# - On error: records the command, line and log, and returns its exit code;
+#   the ERR trap reports it. `$STD cmd || true` used to end the run instead.
+# - Temporarily disables error trap to capture exit code correctly, then
+#   restores the script's own trap
 # ------------------------------------------------------------------------------
 silent() {
   local cmd="$*"
   local caller_line="${BASH_LINENO[0]:-unknown}"
   local logfile="$(get_active_logfile)"
+  local err_trap
+  err_trap="$(trap -p ERR)"
 
   set +Eeuo pipefail
   trap - ERR
@@ -314,40 +333,33 @@ silent() {
   local rc=$?
 
   set -Eeuo pipefail
-  trap 'error_handler' ERR
+  eval "${err_trap:-trap - ERR}"
 
   if [[ $rc -ne 0 ]]; then
-    # Source explain_exit_code if needed
-    if ! declare -f explain_exit_code >/dev/null 2>&1; then
-      if declare -f _cs_source_func >/dev/null 2>&1; then
-        _cs_source_func "core/error_handler.func" 2>/dev/null || true
-      else
-        # shellcheck disable=SC1090
-        source <(curl -fsSL "${_CS_CURL_RETRY[@]}" "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/core/error_handler.func") 2>/dev/null || true
-      fi
-    fi
-
-    local explanation=""
-    if declare -f explain_exit_code >/dev/null 2>&1; then
-      explanation="$(explain_exit_code "$rc")"
-    fi
-
-    printf "\e[?25h"
-    if [[ -n "$explanation" ]]; then
-      msg_error "in line ${caller_line}: exit code ${rc} (${explanation})"
-    else
-      msg_error "in line ${caller_line}: exit code ${rc}"
-    fi
-    msg_custom "→" "${YWB}" "${cmd}"
-
-    if [[ -s "$logfile" ]]; then
-      echo -e "\n${TAB}--- Last 20 lines of log ---"
-      tail -n 20 "$logfile"
-      echo -e "${TAB}----------------------------\n"
-    fi
-
-    exit "$rc"
+    export _SILENT_FAILED_RC="$rc" _SILENT_FAILED_CMD="$cmd" _SILENT_FAILED_LINE="$caller_line" _SILENT_FAILED_LOG="$logfile"
+    return "$rc"
   fi
+  unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG
+}
+
+# The record silent() left behind only counts for the line it came from: a
+# failure the caller handled must not be reported for a later, unrelated one.
+_vm_show_silent_failure() {
+  local explanation=""
+  if ! declare -f explain_exit_code >/dev/null 2>&1 && declare -f _cs_source_func >/dev/null 2>&1; then
+    _cs_source_func "api/exitcodes.func" 2>/dev/null || true
+  fi
+  declare -f explain_exit_code >/dev/null 2>&1 && explanation="$(explain_exit_code "$_SILENT_FAILED_RC")"
+
+  printf "\e[?25h"
+  msg_error "in line ${_SILENT_FAILED_LINE}: exit code ${_SILENT_FAILED_RC}${explanation:+ (${explanation})}"
+  msg_custom "→" "${YWB:-}" "${_SILENT_FAILED_CMD}"
+  if [[ -s "${_SILENT_FAILED_LOG:-}" ]]; then
+    echo -e "\n${TAB}--- Last 20 lines of log ---"
+    tail -n 20 "$_SILENT_FAILED_LOG"
+    echo -e "${TAB}----------------------------\n"
+  fi
+  unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG
 }
 
 # ------------------------------------------------------------------------------
@@ -663,6 +675,11 @@ error_handler() {
   local line_number="${1:-unknown}"
   local command="${2:-unknown}"
 
+  if [[ -n "${_SILENT_FAILED_RC:-}" && "${_SILENT_FAILED_LINE:-}" == "$line_number" ]]; then
+    command="$_SILENT_FAILED_CMD"
+    _vm_show_silent_failure
+  fi
+
   if declare -f post_update_to_api >/dev/null 2>&1; then
     post_update_to_api "failed" "$exit_code"
   fi
@@ -693,6 +710,27 @@ get_valid_nextid() {
     break
   done
   echo "$try_id"
+}
+
+# vm_claim_vmid
+# VMID was picked before the download, and a parallel run may have taken it
+# since. An auto-picked ID moves to the next free one, with the disk names
+# from vm_define_disk_references following; an ID typed in advanced settings
+# stops the run.
+vm_claim_vmid() {
+  if ! qm status "$VMID" &>/dev/null && ! pct status "$VMID" &>/dev/null; then
+    return 0
+  fi
+  if [[ "${METHOD:-default}" == "advanced" ]]; then
+    msg_error "VM ID ${VMID} is already in use"
+    exit 205
+  fi
+  local old="$VMID"
+  VMID="$(get_valid_nextid)"
+  export VMID
+  msg_warn "VM ID ${old} was taken by another run; using ${VMID}"
+  [[ -n "${_VM_DISK_REFS:-}" ]] && vm_define_disk_references "$_VM_DISK_REFS"
+  return 0
 }
 
 cleanup_vmid() {
@@ -871,6 +909,7 @@ vm_echo_default_settings() {
   echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}${MAC}${CL}"
   echo -e "${VLANTAG}${BOLD}${DGN}VLAN: ${BGN}${VLAN:-Default}${CL}"
   echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}${MTU:-Default}${CL}"
+  echo -e "${DEFAULT}${BOLD}${DGN}Keyboard Layout: ${BGN}$(kb="$(vm_keyboard_default)"; echo "${kb:-Proxmox default}")${CL}"
   echo -e "${GATEWAY}${BOLD}${DGN}Start VM when completed: ${BGN}${START_VM}${CL}"
   # Shown on the default path too, so VERBOSE=yes is visible.
   echo -e "${SEARCH}${BOLD}${DGN}Verbose Mode: ${BGN}${VERBOSE:-no}${CL}"
@@ -1523,6 +1562,122 @@ vm_prompt_vlan() {
   done
 }
 
+# vm_keyboard_default
+# VM_KEYBOARD, else the datacenter's keyboard setting (Proxmox layout codes:
+# de, en-us, fr-ch, ...). Applied to the VM and to prepared images alike: the
+# Y/Z swap in noVNC comes from the two not matching.
+vm_keyboard_default() {
+  if [[ -n "${VM_KEYBOARD:-}" ]]; then
+    printf '%s' "$VM_KEYBOARD"
+  elif [[ -r /etc/pve/datacenter.cfg ]]; then
+    sed -n 's/^keyboard: *//p' /etc/pve/datacenter.cfg | head -n1 | tr -d '[:space:]'
+  fi
+}
+
+_VM_KEYBOARDS="de de-ch da en-gb en-us es fi fr fr-be fr-ca fr-ch hu is it ja lt mk nl no pl pt pt-br sl sv tr"
+
+_vm_keyboard_label() {
+  case "$1" in
+  de) echo "German" ;;
+  de-ch) echo "German (Switzerland)" ;;
+  da) echo "Danish" ;;
+  en-gb) echo "English (UK)" ;;
+  en-us) echo "English (US)" ;;
+  es) echo "Spanish" ;;
+  fi) echo "Finnish" ;;
+  fr) echo "French" ;;
+  fr-be) echo "French (Belgium)" ;;
+  fr-ca) echo "French (Canada)" ;;
+  fr-ch) echo "French (Switzerland)" ;;
+  hu) echo "Hungarian" ;;
+  is) echo "Icelandic" ;;
+  it) echo "Italian" ;;
+  ja) echo "Japanese" ;;
+  lt) echo "Lithuanian" ;;
+  mk) echo "Macedonian" ;;
+  nl) echo "Dutch" ;;
+  no) echo "Norwegian" ;;
+  pl) echo "Polish" ;;
+  pt) echo "Portuguese" ;;
+  pt-br) echo "Portuguese (Brazil)" ;;
+  sl) echo "Slovenian" ;;
+  sv) echo "Swedish" ;;
+  tr) echo "Turkish" ;;
+  *) echo "$1" ;;
+  esac
+}
+
+# _vm_guest_keymap <proxmox code>
+# Prints "<xkb layout> <xkb variant or -> <console keymap>" for the guest.
+_vm_guest_keymap() {
+  case "$1" in
+  de) echo "de - de-latin1" ;;
+  de-ch) echo "ch - sg-latin1" ;;
+  da) echo "dk - dk" ;;
+  en-gb) echo "gb - uk" ;;
+  en-us) echo "us - us" ;;
+  es) echo "es - es" ;;
+  fi) echo "fi - fi" ;;
+  fr) echo "fr - fr" ;;
+  fr-be) echo "be - be-latin1" ;;
+  fr-ca) echo "ca - cf" ;;
+  fr-ch) echo "ch fr fr_CH-latin1" ;;
+  hu) echo "hu - hu" ;;
+  is) echo "is - is-latin1" ;;
+  it) echo "it - it" ;;
+  ja) echo "jp - jp106" ;;
+  lt) echo "lt - lt" ;;
+  mk) echo "mk - mk" ;;
+  nl) echo "nl - nl" ;;
+  no) echo "no - no" ;;
+  pl) echo "pl - pl" ;;
+  pt) echo "pt - pt-latin1" ;;
+  pt-br) echo "br - br-abnt2" ;;
+  sl) echo "si - slovene" ;;
+  sv) echo "se - sv-latin1" ;;
+  tr) echo "tr - trq" ;;
+  *) return 1 ;;
+  esac
+}
+
+_vm_apply_keyboard() {
+  local kb
+  kb="$(vm_keyboard_default)"
+  [[ -n "$kb" ]] || return 0
+  qm set "$VMID" --keyboard "$kb" >/dev/null 2>&1 ||
+    msg_warn "Could not set the keyboard layout ${kb} on VM ${VMID}"
+  return 0
+}
+
+# vm_prompt_keyboard [default]
+vm_prompt_keyboard() {
+  local default="${1:-$(vm_keyboard_default)}" code state
+  local -a items=()
+  [[ " $_VM_KEYBOARDS " == *" $default "* ]] || default="en-us"
+  for code in $_VM_KEYBOARDS; do
+    state=OFF
+    [[ "$code" == "$default" ]] && state=ON
+    items+=("$code" "$(_vm_keyboard_label "$code")" "$state")
+  done
+  if vm_dialog radiolist "KEYBOARD LAYOUT" "Layout for the noVNC console and the guest" --cancel-button Exit-Script 22 60 14 "${items[@]}"; then
+    VM_KEYBOARD="$VM_DIALOG_RESULT"
+    echo -e "${DEFAULT}${BOLD}${DGN}Keyboard Layout: ${BGN}${VM_KEYBOARD}${CL}"
+  else
+    exit_script
+  fi
+}
+
+# vm_timezone_default
+# VM_TIMEZONE, else the host's zone; empty when neither names a known zone.
+vm_timezone_default() {
+  local tz="${VM_TIMEZONE:-}"
+  # Debian 13 no longer ships /etc/timezone; a failed read must fall through, not trip the ERR trap
+  [[ -n "$tz" ]] || tz="$(cat /etc/timezone 2>/dev/null || true)"
+  [[ -n "$tz" ]] || tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+  [[ -n "$tz" && -f "/usr/share/zoneinfo/$tz" ]] && printf '%s' "$tz"
+  return 0
+}
+
 vm_prompt_mtu() {
   local default_mtu="${1:-}"
   local input_mtu
@@ -1598,26 +1753,21 @@ vm_prompt_start_vm() {
 #                               [--exact-bytes N] [--sha256 H] [--sha1 H]
 #                               [--advisory-sha1 H] [--needs-bytes N]
 vm_image_checksum() {
-  local url="${1:?url}" tool sums style want
+  local url="${1:?url}" name sums
 
+  name="${url%%\?*}"
+  name="${name##*/}"
   case "$url" in
-  *cloud.debian.org/*) tool=sha512sum; sums="${url%/*}/SHA512SUMS"; style=sums ;;
-  *cloud-images.ubuntu.com/*) tool=sha256sum; sums="${url%/*}/SHA256SUMS"; style=sums ;;
-  *download.truenas.com/*) tool=sha256sum; sums="${url}.sha256"; style=bare ;;
+  *cloud.debian.org/*) sums="${url%/*}/SHA512SUMS" ;;
+  *cloud-images.ubuntu.com/*) sums="${url%/*}/SHA256SUMS" ;;
+  *download.truenas.com/*) sums="${url}.sha256" ;;
+  *downloads.openwrt.org/*) sums="${url%/*}/sha256sums" ;;
+  *download.freebsd.org/*/VM-IMAGES/*) sums="${url%/*}/CHECKSUM.SHA256" ;;
+  *mirror.turnkeylinux.org/*) sums="${url}.hash" ;;
   *) return 1 ;;
   esac
 
-  command -v "$tool" >/dev/null 2>&1 || return 1
-
-  if [[ "$style" == bare ]]; then
-    want=$(curl -fsSL --max-time 30 "$sums" 2>/dev/null | tr -d '[:space:]')
-  else
-    want=$(curl -fsSL --max-time 30 "$sums" 2>/dev/null |
-      awk -v f="$(basename "$url")" '$NF == f || $NF == "*" f {print $1; exit}')
-  fi
-
-  [[ "$want" =~ ^([0-9a-fA-F]{64}|[0-9a-fA-F]{128})$ ]] || return 1
-  printf '%s %s' "$tool" "$want"
+  _vm_checksum_from_sums "$sums" "$name"
 }
 
 _vm_image_ok() {
@@ -1649,7 +1799,9 @@ vm_image_cache_path() {
 
 # A cached image that no longer matches usually means the upstream was rebuilt,
 # not that anything is wrong. Offer the choice instead of silently re-downloading
-# several hundred MB. Unattended or without a terminal, take the new one.
+# several hundred MB. Unattended or without a terminal, take the new one. A
+# "Keep cached" answer is remembered in <file>.keep with the upstream checksum
+# it was given against, so the question returns only when the upstream changes.
 _vm_cache_choice() {
   local file="$1" url="$2" local_size local_date remote_size remote_date head
 
@@ -1678,7 +1830,7 @@ vm_fetch_image() {
   local url="${1:?url}" target="${2:?target}"
   shift 2
   local min_bytes=0 exact_bytes="" sha256="" sha1="" advisory_sha1="" needs_bytes=""
-  local cache=no xz=no
+  local checksum_url="" cache=no xz=no
   local got avail_mib need_mib have part sha_tool="" sha_want="" discovered
 
   while [[ $# -gt 0 ]]; do
@@ -1689,6 +1841,7 @@ vm_fetch_image() {
     --exact-bytes) exact_bytes="$2"; shift 2 ;;
     --sha256) sha256="$2"; shift 2 ;;
     --sha1) sha1="$2"; shift 2 ;;
+    --checksum-url) checksum_url="$2"; shift 2 ;;
     --advisory-sha1) advisory_sha1="$2"; shift 2 ;;
     --needs-bytes) needs_bytes="$2"; shift 2 ;;
     *) msg_error "vm_fetch_image: unknown option $1"; return 2 ;;
@@ -1696,21 +1849,39 @@ vm_fetch_image() {
   done
 
   if [[ -n "$sha256" ]]; then
-    sha_tool=sha256sum sha_want="$sha256"
+    sha_tool=sha256sum sha_want="${sha256,,}"
   elif [[ -n "$sha1" ]]; then
     sha_tool=sha1sum sha_want="$sha1"
+  elif [[ -n "$checksum_url" ]]; then
+    # Looked up by the file's own name: download URLs such as SourceForge's
+    # .../file.iso/download do not end in it.
+    if discovered=$(_vm_checksum_from_sums "$checksum_url" "$(basename "$target")"); then
+      read -r sha_tool sha_want <<<"$discovered"
+    else
+      msg_warn "No checksum for $(basename "$target") in ${checksum_url}; checking the size only"
+    fi
   elif discovered=$(vm_image_checksum "$url"); then
     read -r sha_tool sha_want <<<"$discovered"
   fi
 
   if [[ "$cache" == yes && -e "$target" ]]; then
+    local keep="${target}.keep"
     if _vm_image_ok "$target" "$exact_bytes" "$min_bytes" "$sha_tool" "$sha_want" "$xz"; then
+      rm -f "$keep"
       msg_ok "Using cached ${CL}${BL}$(basename "$target")${CL}"
+      return 0
+    fi
+    if [[ -n "$sha_want" && -f "$keep" && "$(<"$keep")" == "${sha_tool}:${sha_want}" ]]; then
+      msg_ok "Using cached ${CL}${BL}$(basename "$target")${CL} (kept; the upstream has not changed)"
       return 0
     fi
     if _vm_cache_choice "$target" "$url"; then
       msg_warn "Replacing the cached $(basename "$target")"
-      rm -f "$target"
+      rm -f "$target" "$keep"
+    elif [[ -n "$sha_want" ]]; then
+      printf '%s' "${sha_tool}:${sha_want}" >"$keep"
+      msg_ok "Using cached ${CL}${BL}$(basename "$target")${CL} (kept until the upstream changes)"
+      return 0
     else
       msg_ok "Using cached ${CL}${BL}$(basename "$target")${CL}"
       return 0
@@ -1959,6 +2130,20 @@ vm_prepare_cloud_image() {
     '[ -f /etc/ssh/sshd_config ] || exit 0
      sed -i "s/^#*PermitRootLogin.*/PermitRootLogin yes/;s/^#*PasswordAuthentication.*/PasswordAuthentication yes/" /etc/ssh/sshd_config'
 
+  local tz kb layout variant keymap
+  tz="$(vm_timezone_default)"
+  [[ -n "$tz" ]] && _vm_customize "timezone ${tz}" "$image" --timezone "$tz"
+  kb="$(vm_keyboard_default)"
+  if [[ -n "$kb" ]] && read -r layout variant keymap < <(_vm_guest_keymap "$kb"); then
+    [[ "$variant" == "-" ]] && variant=""
+    _vm_customize "keyboard ${kb}" "$image" --run-command "
+      mkdir -p /etc/default
+      [ -f /etc/default/keyboard ] && sed -i '/^XKBLAYOUT=/d;/^XKBVARIANT=/d' /etc/default/keyboard
+      printf 'XKBLAYOUT=\"%s\"\nXKBVARIANT=\"%s\"\n' '${layout}' '${variant}' >>/etc/default/keyboard
+      [ -f /etc/vconsole.conf ] && sed -i '/^KEYMAP=/d' /etc/vconsole.conf
+      printf 'KEYMAP=%s\n' '${keymap}' >>/etc/vconsole.conf"
+  fi
+
   vm_enable_consoles "$image"
   vm_install_guest_agent "$image" || true
   _VM_PREPARE_COLLECTING=0
@@ -2039,10 +2224,51 @@ vm_enable_consoles() {
   # first and ttyS0 last keeps qm terminal as the primary console while the
   # graphical one also shows the boot.
   _vm_customize "grub console" "$image" --run-command \
-    'if [ -f /etc/default/grub ]; then
-       sed -i "s/console=ttyS0[^ \"]*/console=tty1 &/" /etc/default/grub
-       grep -q "console=tty1" /etc/default/grub || sed -i "s/\(GRUB_CMDLINE_LINUX_DEFAULT=\"\)/\1console=tty1 /" /etc/default/grub
-       command -v update-grub >/dev/null 2>&1 && update-grub
+    'set -e
+     if command -v grubby >/dev/null 2>&1; then
+       kernel_info=$(grubby --info=DEFAULT)
+       if ! printf "%s\n" "$kernel_info" | grep -q "^args=\""; then
+         echo "error: grubby returned no default kernel arguments" >&2
+         exit 1
+       fi
+       all_kernel_info=$(grubby --info=ALL)
+       if ! printf "%s\n" "$all_kernel_info" | grep -q "^args=\""; then
+         echo "error: grubby returned no installed kernel arguments" >&2
+         exit 1
+       fi
+       remove_args=$(printf "%s\n" "$all_kernel_info" |
+         grep "^args=" | grep -o "console=[^ \"]*" |
+         sed "s/.*/console/" | tr "\n" " ")
+       console_args=$(printf "%s\n" "$kernel_info" |
+         grep "^args=" | grep -o "console=[^ \"]*" |
+         grep -vE "^console=tty[0-9]+(,|$)" | tr "\n" " ")
+       # Older grubby versions add before removing when both flags share a call.
+       if [ -n "$remove_args" ]; then
+         grubby --update-kernel=ALL --remove-args="$remove_args"
+       fi
+       grubby --update-kernel=ALL --args="console=tty1 ${console_args:-console=ttyS0,115200}"
+     elif [ -f /etc/default/grub ]; then
+       cmdline=GRUB_CMDLINE_LINUX
+       if ! grep -q "^${cmdline}=\"" /etc/default/grub; then
+         cmdline=GRUB_CMDLINE_LINUX_DEFAULT
+       fi
+       if ! grep -q "^${cmdline}=\"" /etc/default/grub; then
+         echo "error: No quoted GRUB kernel command line found" >&2
+         exit 1
+       fi
+       if ! grep "^${cmdline}=" /etc/default/grub | grep -Eq "console=tty1([[:space:],\"]|$)"; then
+         sed -i "s/^${cmdline}=\"/${cmdline}=\"console=tty1 /" /etc/default/grub
+       fi
+       if command -v update-grub >/dev/null 2>&1; then
+         update-grub
+       elif command -v grub2-mkconfig >/dev/null 2>&1; then
+         grub2-mkconfig -o /boot/grub2/grub.cfg
+       elif command -v grub-mkconfig >/dev/null 2>&1; then
+         grub-mkconfig -o /boot/grub/grub.cfg
+       else
+         echo "error: No supported GRUB configuration tool found" >&2
+         exit 1
+       fi
      fi'
   return 0
 }
@@ -2080,10 +2306,15 @@ vm_boot_order() {
 vm_mark_created() {
   VM_CREATED=1
   trap 'vm_post_create_error $LINENO "$BASH_COMMAND"' ERR
+  _vm_apply_keyboard
 }
 
 vm_post_create_error() {
   local rc=$? line="${1:-unknown}" cmd="${2:-unknown}"
+  if [[ -n "${_SILENT_FAILED_RC:-}" && "${_SILENT_FAILED_LINE:-}" == "$line" ]]; then
+    cmd="$_SILENT_FAILED_CMD"
+    _vm_show_silent_failure
+  fi
   msg_warn "A step after VM creation failed (line ${line}, exit ${rc}): ${cmd}"
   msg_warn "VM ${VMID:-?} is left in place -- finish the remaining configuration by hand."
   declare -f post_update_to_api >/dev/null 2>&1 && post_update_to_api "failed" "$rc"
@@ -2172,7 +2403,7 @@ vm_select_storage() {
     while [ -z "${STORAGE:+x}" ]; do
       # Without an exit-code check STORAGE stayed empty and this spun forever.
       if vm_dialog radiolist "Storage Pools" \
-        "Which storage pool would you like to use for ${hostname}?\nTo make a selection, use the Spacebar.\n" \
+        "Which storage pool should hold the disks of ${hostname}?\nTo make a selection, use the Spacebar.\n" \
         16 "$menu_width" 6 \
         "${storage_menu[@]}"; then
         STORAGE="$VM_DIALOG_RESULT"
@@ -2189,9 +2420,86 @@ vm_select_storage() {
   vm_apply_storage_layout "$STORAGE_TYPE"
 }
 
+vm_select_iso_storage() {
+  local filename="${1:-}" hostname="${2:-${HN:-vm}}"
+  local selected="${VM_ISO_STORAGE:-${ISO_STORAGE:-}}"
+  local storage_status tag type volume path i found=0 menu_width=70 term_cols
+  local -a storage_menu=()
+
+  if [[ ! "$filename" =~ ^[[:alnum:]][[:alnum:]._+-]*\.iso$ ]]; then
+    msg_error "Invalid ISO filename: '${filename}'"
+    return 119
+  fi
+
+  if ! storage_status=$(pvesm status -content iso -enabled 1); then
+    msg_error "Unable to query ISO storage locations."
+    return 119
+  fi
+  while read -r tag type; do
+    storage_menu+=("$tag" "Type: $type" "OFF")
+  done < <(awk 'NR>1 && $3 == "active" {print $1, $2}' <<<"$storage_status")
+
+  if ((${#storage_menu[@]} == 0)); then
+    msg_error "No active, enabled storage supports ISO images on this host."
+    msg_error "Enable ISO image content on a suitable file-based storage in Proxmox VE."
+    return 119
+  fi
+
+  # The pool already chosen for the disks also takes the ISO when it can, so
+  # the question is only asked where it has to be.
+  if [[ -z "$selected" && -n "${STORAGE:-}" ]]; then
+    for ((i = 0; i < ${#storage_menu[@]}; i += 3)); do
+      [[ "$STORAGE" == "${storage_menu[i]}" ]] && selected="$STORAGE"
+    done
+  fi
+
+  if [[ -z "$selected" ]]; then
+    if ((${#storage_menu[@]} == 3)); then
+      selected="${storage_menu[0]}"
+    elif [[ "${VM_UNATTENDED:-0}" == "1" ]]; then
+      msg_error "Multiple ISO storage locations are available; set VM_ISO_STORAGE."
+      return 119
+    else
+      term_cols=$(tput cols 2>/dev/null || echo 0)
+      ((term_cols > 0 && menu_width > term_cols)) && menu_width=$term_cols
+      if vm_dialog radiolist "ISO Storage Pools" \
+        "Which storage pool should hold the installer ISO for ${hostname}?\nTo make a selection, use the Spacebar.\n" \
+        16 "$menu_width" 6 "${storage_menu[@]}"; then
+        selected="$VM_DIALOG_RESULT"
+      else
+        exit_script
+      fi
+    fi
+  fi
+
+  for ((i = 0; i < ${#storage_menu[@]}; i += 3)); do
+    [[ "$selected" == "${storage_menu[i]}" ]] && found=1
+  done
+  if ((found == 0)); then
+    msg_error "ISO storage '${selected}' is not active, enabled, and ISO-capable on this host."
+    return 119
+  fi
+
+  volume="${selected}:iso/${filename}"
+  if ! path=$(pvesm path "$volume"); then
+    msg_error "Unable to resolve the path for ISO volume '${volume}'."
+    return 119
+  fi
+  if [[ "$path" != /* || "$path" == *$'\n'* ]]; then
+    msg_error "Invalid path returned for ISO volume '${volume}': '${path}'"
+    return 119
+  fi
+
+  ISO_STORAGE="$selected"
+  ISO_VOLUME="$volume"
+  ISO_PATH="$path"
+  msg_ok "Using ${CL}${BL}${ISO_STORAGE}${CL} ${GN}for ISO Storage Location."
+}
+
 vm_define_disk_references() {
   local disk_count="${1:-2}"
   local i disk_name
+  _VM_DISK_REFS="$disk_count"
 
   for ((i = 0; i < disk_count; i++)); do
     disk_name="vm-${VMID}-disk-${i}${DISK_EXT:-}"
@@ -2215,6 +2523,113 @@ vm_resize_disk() {
   fi
 }
 
+# vm_import_disk <vmid> <image> <storage> [format]
+# Sets VM_IMPORTED_DISK to the volume Proxmox created: from qm's own report
+# ("Successfully imported disk as 'unused0:<volume>'"), else from the unusedN
+# entry the import added. Scripts used to guess the name or take the last
+# `pvesm list` line, which sorts disk-10 before disk-9. The format defaults to
+# DISK_IMPORT_FORMAT from vm_select_storage.
+vm_import_disk() {
+  local vmid="${1:?vmid}" file="${2:?image}" storage="${3:?storage}" format="${4:-${DISK_IMPORT_FORMAT:-}}"
+  local out before volume
+  local -a cmd=(qm importdisk) opts=()
+
+  VM_IMPORTED_DISK=""
+  qm disk import --help >/dev/null 2>&1 && cmd=(qm disk import)
+  [[ -n "$format" ]] && opts=(--format "$format")
+  before="$(qm config "$vmid" 2>/dev/null | sed -n 's/^unused[0-9]*: //p')" || before=""
+
+  msg_info "Importing $(basename "$file") to ${storage}"
+  if ! out="$("${cmd[@]}" "$vmid" "$file" "$storage" "${opts[@]}" 2>&1)"; then
+    msg_error "Importing $(basename "$file") into VM ${vmid} failed"
+    printf '%s\n' "$out" | tail -n 5 >&2
+    return 1
+  fi
+
+  volume="$(printf '%s\n' "$out" | sed -n "s/.*[Ss]uccessfully imported disk\( as\)\? '\([^']*\)'.*/\2/p" | tail -n 1)"
+  volume="${volume#unused[0-9]*:}"
+  if [[ -z "$volume" ]]; then
+    volume="$(qm config "$vmid" 2>/dev/null | sed -n 's/^unused[0-9]*: //p' |
+      grep -vxF -f <(printf '%s\n' "$before") | tail -n 1)" || volume=""
+  fi
+  volume="${volume//[$'\r\"\'']/}"
+
+  if [[ -z "$volume" ]]; then
+    msg_error "Imported $(basename "$file"), but could not tell which volume Proxmox created"
+    printf '%s\n' "$out" | tail -n 5 >&2
+    return 1
+  fi
+
+  VM_IMPORTED_DISK="$volume"
+  msg_ok "Imported disk ${CL}${BL}${VM_IMPORTED_DISK}${CL}"
+}
+
+# vm_start_vm [label]
+# Starts the VM when START_VM is yes; a failed start keeps the created VM.
+vm_start_vm() {
+  local label="${1:-${APP:-VM}}"
+  [[ "${START_VM:-yes}" == "yes" ]] || return 0
+  msg_info "Starting ${label}"
+  ${STD:-} qm start "$VMID"
+  msg_ok "Started ${label}"
+}
+
+# vm_wait_guest_agent <vmid> [timeout seconds]
+# vm_guest_exec <vmid> <timeout seconds> [--] <command> [args]...
+# vm_guest_exec prints the command's stdout and returns its exit code, 124 when
+# it was still running at the timeout.
+vm_wait_guest_agent() {
+  local vmid="${1:?vmid}" timeout="${2:-120}" waited=0
+  while ((waited < timeout)); do
+    qm guest cmd "$vmid" ping >/dev/null 2>&1 && return 0
+    sleep 3
+    waited=$((waited + 3))
+  done
+  return 1
+}
+
+vm_guest_exec() {
+  local vmid="${1:?vmid}" timeout="${2:?timeout}" json rc
+  shift 2
+  [[ "${1:-}" == "--" ]] && shift
+  if (($# == 0)); then
+    msg_error "vm_guest_exec: no command given"
+    return 2
+  fi
+
+  # qm reports the guest's exit status in the JSON, not in its own.
+  json="$(qm guest exec "$vmid" --timeout "$timeout" -- "$@" 2>/dev/null)" || true
+  [[ -n "$json" ]] || return 1
+  rc="$(jq -r 'if .exited == 1 then (.exitcode // 1) else 124 end' <<<"$json" 2>/dev/null)" || return 1
+  [[ "$rc" =~ ^[0-9]+$ ]] || return 1
+  jq -r '."out-data" // empty' <<<"$json" 2>/dev/null || true
+  return "$rc"
+}
+
+# vm_wait_for_ip [timeout seconds]
+# Sets VM_IP from the NIC matching MAC, so a Docker or Podman bridge in the
+# guest is never reported as the VM's address. Warns and returns non-zero when
+# the VM was not started or no address appeared.
+vm_wait_for_ip() {
+  local timeout="${1:-${VM_IP_TIMEOUT:-120}}"
+  VM_IP=""
+  [[ "${START_VM:-yes}" == "yes" ]] || return 1
+  vm_require_tools jq || return 1
+  if ! load_cloud_init_functions; then
+    msg_warn "The IP lookup helpers are unavailable; read the address from the Proxmox summary"
+    return 1
+  fi
+
+  msg_info "Waiting for the VM's IP address (up to ${timeout}s)"
+  VM_IP="$(get_vm_ip "$VMID" "$timeout" "${MAC:-}")" || VM_IP=""
+  if [[ -n "$VM_IP" ]]; then
+    msg_ok "VM IP address ${CL}${BL}${VM_IP}${CL}"
+    return 0
+  fi
+  msg_warn "No IP address yet -- the guest agent may still be starting; check the Proxmox summary or console"
+  return 1
+}
+
 check_hostname_conflict() {
   local hostname="$1"
   if qm list | awk '{print $2}' | grep -qx "$hostname"; then
@@ -2235,7 +2650,7 @@ set_description() {
     cat <<EOF
 <div align='center'>
   <a href='https://community-scripts.org' target='_blank' rel='noopener noreferrer'>
-      <img src='https://raw.githubusercontent.com/community-scripts/core/main/images/logo-81x112.png' alt='Logo' style='width:81px;height:112px;'/>
+      <img src='https://raw.githubusercontent.com/community-scripts/core/main/images/logo-description.png' alt='Community-Scripts' width='192' height='112' style='width:192px;height:112px;'/>
   </a>
 
   <h2 style='font-size: 24px; margin: 20px 0;'>${description_title}</h2>

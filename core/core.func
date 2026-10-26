@@ -19,6 +19,9 @@
 [[ -n "${_CORE_FUNC_LOADED:-}" ]] && return
 _CORE_FUNC_LOADED=1
 
+# Scripts run as root; without this Composer waits at a "Continue as root?" prompt that $STD hides
+export COMPOSER_ALLOW_SUPERUSER=1
+
 if [[ -z "${HOME:-}" ]]; then
   HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
   export HOME="${HOME:-/root}"
@@ -374,12 +377,21 @@ default_vars() {
 # - If VERBOSE=no: STD="silent" (suppress output via silent() wrapper)
 # - If DEV_MODE_TRACE=true: Enables bash tracing (set -x)
 # ------------------------------------------------------------------------------
+# Debian-style architecture of the machine that will run the container: the
+# Incus server when driving a remote, otherwise this host. Needs no dpkg.
+_cs_host_arch() {
+  local a="${INCUS_SERVER_ARCH:-}"
+  [[ -n "$a" ]] || a="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+  case "$a" in
+  x86_64) a="amd64" ;;
+  aarch64) a="arm64" ;;
+  esac
+  printf '%s' "$a"
+}
+
 set_std_mode() {
-  if [ "${VERBOSE:-no}" = "yes" ]; then
-    STD=""
-  else
-    STD="silent"
-  fi
+  # Verbose shows the output live and still keeps it in the log; silent() reads VERBOSE.
+  STD="silent"
 
   # Enable bash tracing if trace mode active
   if [[ "${DEV_MODE_TRACE:-false}" == "true" ]]; then
@@ -745,7 +757,7 @@ pmxcfs_check() {
 # ------------------------------------------------------------------------------
 arch_check() {
   local arch
-  arch="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+  arch="$(_cs_host_arch)"
   case "$arch" in
   x86_64) arch="amd64" ;;
   aarch64) arch="arm64" ;;
@@ -934,7 +946,13 @@ log_section() {
 # - Temporarily disables error trap to capture exit code correctly
 # ------------------------------------------------------------------------------
 silent() {
+  # A failure the caller handled (a retry loop) must not be reported for a later, unrelated error.
+  unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG
   local cmd="$*"
+  # apt warns about its CLI whenever stdout is not a terminal, and here it never is.
+  if [[ "${1:-}" == "apt" ]]; then
+    set -- apt -o Apt::Cmd::Disable-Script-Warning=true "${@:2}"
+  fi
   local caller_line="${BASH_LINENO[0]:-unknown}"
   local logfile="$(get_active_logfile)"
   local errinfo="${logfile}.errinfo"
@@ -954,8 +972,16 @@ silent() {
   [[ -f "$logfile" ]] && start_bytes=$(stat -c%s "$logfile" 2>/dev/null || echo 0)
   [[ ! "$start_bytes" =~ ^[0-9]+$ ]] && start_bytes=0
 
-  "$@" >>"$logfile" 2>&1
-  local rc=$?
+  local rc
+  if [[ "${VERBOSE:-no}" == "yes" ]]; then
+    # Not a pipe: the command must stay in this shell so functions keep their side effects.
+    "$@" > >(tee -a "$logfile") 2>&1
+    rc=$?
+    wait $! 2>/dev/null
+  else
+    "$@" >>"$logfile" 2>&1
+    rc=$?
+  fi
 
   # Restore error handling ONLY if it was active before this call.
   if $_restore_errexit; then
@@ -1405,6 +1431,15 @@ exit_script() {
 # - Determines app type (ct/vm) from APP_TYPE variable
 # - Returns header content or empty string on failure
 # ------------------------------------------------------------------------------
+# Drawn until the generator has produced a script's own banner (figlet slant,
+# like the generated ones); the app name follows in plain text.
+_CS_FALLBACK_HEADER='   ______                                      _ __           _____           _       __
+  / ____/___  ____ ___  ____ ___  __  ______  (_) /___  __   / ___/__________(_)___  / /______
+ / /   / __ \/ __ `__ \/ __ `__ \/ / / / __ \/ / __/ / / /   \__ \/ ___/ ___/ / __ \/ __/ ___/
+/ /___/ /_/ / / / / / / / / / / / /_/ / / / / / /_/ /_/ /   ___/ / /__/ /  / / /_/ / /_(__  )
+\____/\____/_/ /_/ /_/_/ /_/ /_/\__,_/_/ /_/_/\__/\__, /   /____/\___/_/  /_/ .___/\__/____/
+                                                 /____/                    /_/'
+
 get_header() {
   # Slug must match what the generator writes: APP lowercased, spaces removed.
   local app_name=$(echo "${APP,,}" | tr -d ' ')
@@ -1487,6 +1522,9 @@ header_info() {
 
   if [ -n "$header_content" ]; then
     echo "$header_content"
+  else
+    echo "${_CS_FALLBACK_HEADER:-Community Scripts}"
+    echo "  ${APP:-}"
   fi
 }
 
@@ -1837,6 +1875,39 @@ prompt_confirm() {
     else
       return 1
     fi
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# confirm_external_installer()
+#
+#   confirm_external_installer <source> <installer>
+#
+# - Warns that a third-party installer is about to run and asks to continue
+# - var_external_installer answers it, so unattended runs can say yes or no.
+#   prompt_confirm is no use here: it takes its default without asking in
+#   every non-advanced mode, and the default has to be no
+# - Exits 10 when declined
+# ------------------------------------------------------------------------------
+confirm_external_installer() {
+  local source="$1" installer="$2" answer="${var_external_installer:-}"
+  msg_warn "WARNING: This script will run an external installer from a third-party source (${source})."
+  msg_warn "The following code is NOT maintained or audited by our repository."
+  msg_warn "If you have any doubts or concerns, please review the installer code before proceeding:"
+  msg_custom "${TAB3}${GATEWAY}${BGN}${CL}" "\e[1;34m" "→  ${installer}"
+  echo
+  # 254 is the user declining; 10 would read as "needs privileged mode".
+  if [[ -z "$answer" ]] && ! read -r -p "${TAB3}Do you want to continue? [y/N]: " answer; then
+    msg_error "No terminal to confirm on. Set var_external_installer=yes to run it unattended."
+    exit 254
+  fi
+  if [[ ! "${answer,,}" =~ ^(y|yes|true)$ ]]; then
+    if [[ -n "${var_external_installer:-}" ]]; then
+      msg_error "var_external_installer=${var_external_installer} declines the upstream installer, and this script has no other way to install. Set it to yes, or leave it unset to be asked."
+    else
+      msg_error "Aborted by user. No changes have been made."
+    fi
+    exit 254
   fi
 }
 
@@ -2261,7 +2332,8 @@ cs_testing_state() {
 # cleanup_lxc()
 #
 # - Cleans package manager and language caches (safe for installs AND updates)
-# - Supports Alpine (apk), Debian/Ubuntu (apt), Python, Node.js, Go, Rust, Ruby, PHP
+# - Supports Alpine (apk), Debian/Ubuntu (apt), other distros through install.func's
+#   pkg_clean, and Python, Node.js, Go, Rust, Ruby, PHP caches
 # - Uses fallback error handling to prevent cleanup failures from breaking installs
 # ------------------------------------------------------------------------------
 cleanup_lxc() {
@@ -2282,10 +2354,11 @@ cleanup_lxc() {
     $STD zypper clean 2>/dev/null || msg_warn "zypper clean failed (non-critical)"
   elif command -v pacman &>/dev/null; then
     $STD pacman -Sc --noconfirm 2>/dev/null || msg_warn "pacman clean failed (non-critical)"
-  elif command -v apt &>/dev/null; then
+  elif command -v apt-get &>/dev/null; then
     $STD apt -y autoremove 2>/dev/null || msg_warn "apt autoremove failed (non-critical)"
-    $STD apt -y autoclean 2>/dev/null || msg_warn "apt autoclean failed (non-critical)"
     $STD apt -y clean 2>/dev/null || msg_warn "apt clean failed (non-critical)"
+  elif declare -f pkg_clean >/dev/null 2>&1; then
+    pkg_clean 2>/dev/null || msg_warn "Package cache cleanup failed (non-critical)"
   fi
 
   find /tmp /var/tmp -type f -name 'tmp*' -delete 2>/dev/null || true
@@ -2533,7 +2606,7 @@ apt_update_safe() {
 _cs_conffile_list() {
   # 2>/dev/null hides find's message about an unreadable /etc/credstore, not its
   # exit status, which pipefail then passes on as if sort had failed.
-  { find "${_CS_CONFFILE_ROOT:-/etc}" -maxdepth 6 \( -name '*.dpkg-dist' -o -name '*.dpkg-new' \) 2>/dev/null || true; } | sort
+  { find "${_CS_CONFFILE_ROOT:-/etc}" -maxdepth 6 \( -name '*.dpkg-dist' -o -name '*.dpkg-new' \) 2>/dev/null || true; } | LC_ALL=C sort
 }
 
 apt_conffile_guard() {
@@ -2557,7 +2630,7 @@ apt_conffile_report() {
   [[ -n "${_CS_CONFFILE_GUARD:-}" ]] || return 0
 
   local added
-  added="$(comm -13 <(printf '%s\n' "${_CS_CONFFILE_BASELINE:-}") <(_cs_conffile_list) 2>/dev/null)"
+  added="$(LC_ALL=C comm -13 <(printf '%s\n' "${_CS_CONFFILE_BASELINE:-}") <(_cs_conffile_list) 2>/dev/null)"
   rm -f "$_CS_CONFFILE_GUARD"
   _CS_CONFFILE_GUARD=""
   unset APT_CONFIG
@@ -2597,7 +2670,7 @@ ensure_whiptail() {
 # - Shows a short warning when running scripts on ARM64 systems
 # ------------------------------------------------------------------------------
 arm64_notice() {
-  [[ "$(dpkg --print-architecture)" == "arm64" ]] || return 0
+  [[ "$(_cs_host_arch)" == "arm64" ]] || return 0
 
   whiptail --backtitle "Proxmox VE Helper Scripts" \
     --title "ARM64 SUPPORT" \
@@ -2630,7 +2703,7 @@ on_hup_keepalive() {
 arch_resolve() {
   local amd64_val="${1:-amd64}"
   local arm64_val="${2:-arm64}"
-  local arch="${PCT_ARCH:-$(dpkg --print-architecture 2>/dev/null || uname -m)}"
+  local arch="${PCT_ARCH:-$(_cs_host_arch)}"
   case "$arch" in
   amd64 | x86_64) echo "$amd64_val" ;;
   arm64 | aarch64) echo "$arm64_val" ;;

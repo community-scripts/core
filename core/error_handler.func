@@ -39,9 +39,9 @@ if ! declare -f explain_exit_code &>/dev/null; then
   explain_exit_code() {
     local code="$1"
     case "$code" in
-    1) echo "General error / Operation not permitted" ;;
-    2) echo "Misuse of shell builtins (e.g. syntax error)" ;;
-    3) echo "General syntax or argument error" ;;
+    1) echo "The command failed; its output says why" ;;
+    2) echo "The command failed with status 2 (a usage error for most tools); its output says why" ;;
+    3) echo "The command failed with status 3; its output says why" ;;
     10) echo "Docker / privileged mode required (unsupported environment)" ;;
     4) echo "curl: Feature not supported or protocol error" ;;
     5) echo "curl: Could not resolve proxy" ;;
@@ -123,7 +123,7 @@ if ! declare -f explain_exit_code &>/dev/null; then
     125) echo "Command failed to start (Docker daemon or execution error)" ;;
     126) echo "Command invoked cannot execute (permission problem?)" ;;
     127) echo "Command not found" ;;
-    128) echo "Invalid argument to exit" ;;
+    128) echo "git: Fatal error (repository, network or permission problem)" ;;
     129) echo "Killed by SIGHUP (terminal closed / hangup)" ;;
     130) echo "Aborted by user (SIGINT)" ;;
     131) echo "Killed by SIGQUIT (core dumped)" ;;
@@ -334,13 +334,40 @@ _eh_ok() {
 # readings are only right if curl is what actually ran, so they are dropped when
 # the failing command was something else.
 # ------------------------------------------------------------------------------
+# A tool-specific explanation only holds when the failing command is that tool:
+# cargo's 101 is a panic, not an APT configuration error.
 _eh_explanation() {
-  local exit_code="$1" command="$2" explanation
+  local exit_code="$1" command="$2" explanation tools
   explanation="$(explain_exit_code "$exit_code")"
-  if [[ "$explanation" == curl:* && ! "$command" =~ (^|[[:space:]])([^[:space:]]*/)?curl([[:space:]]|$) ]]; then
+  tools="$(_eh_tools_for "${explanation%%:*}")"
+  if [[ -n "$tools" ]] && ! _eh_command_is "$command" "$tools"; then
     explanation="Command failed with exit status ${exit_code}"
   fi
+  if [[ "$exit_code" == 5 ]] && _eh_command_is "$command" "systemctl"; then
+    explanation="Systemd: unit not found"
+  fi
   printf '%s' "$explanation"
+}
+
+# The prefix of an explanation names the tool family it belongs to.
+_eh_tools_for() {
+  case "$1" in
+  curl) echo "curl" ;;
+  APT | DPKG) echo "apt|apt-get|apt-cache|aptitude|dpkg|dpkg-query|dpkg-reconfigure" ;;
+  Node.js | npm/Node.js | npm/pnpm/yarn) echo "node|npm|npx|pnpm|yarn|corepack|bun" ;;
+  Python) echo "python|python3|pip|pip3|pipx|uv|uvx" ;;
+  PostgreSQL) echo "psql|pg_[a-z_]+|postgres" ;;
+  MySQL/MariaDB) echo "mysql|mariadb|mysqladmin|mariadb-admin" ;;
+  MongoDB) echo "mongosh|mongo|mongod" ;;
+  Systemd) echo "systemctl" ;;
+  git) echo "git" ;;
+  esac
+}
+
+# Does the command line run one of the tools (first word or any word, with or without a path)?
+_eh_command_is() {
+  local command="$1" tools="$2"
+  [[ "$command" =~ (^|[[:space:]]|/)(${tools})([[:space:]]|$) ]]
 }
 
 # ------------------------------------------------------------------------------
@@ -408,6 +435,21 @@ _eh_print_log_tail() {
   echo -e "\n${TAB}--- Last 20 lines of log ---" >&2
   tail -n 20 "$log" >&2
   echo -e "${TAB}-----------------------------------\n" >&2
+}
+
+# ------------------------------------------------------------------------------
+# _eh_print_failed_output() - what the failing command printed, from .errinfo
+#
+# The exit code alone says nothing; this is the part of the log that does.
+# ------------------------------------------------------------------------------
+_eh_print_failed_output() {
+  local errinfo="$1" lines="${2:-25}" out
+  [[ -n "$errinfo" && -s "$errinfo" ]] || return 0
+  out="$(awk 'found { print } /^--- OUTPUT ---$/ { found = 1 }' "$errinfo" | cut -c1-400 | tail -n "$lines")"
+  [[ -n "$out" ]] || return 0
+  echo -e "\n${TAB}--- Output of the failing command ---" >&2
+  printf '%s\n' "$out" >&2
+  echo -e "${TAB}--------------------------------------\n" >&2
 }
 
 # ------------------------------------------------------------------------------
@@ -525,6 +567,10 @@ _eh_hint_from_log() {
       _eh_warn "Hint: Run 'apt-get install -f' inside the container or check that all required repositories are configured for your distribution."
     fi
 
+  elif grep -qE "ERR_PNPM_OUTDATED_LOCKFILE|ERR_PNPM_LOCKFILE_CONFIG_MISMATCH|npm ERR! code ELOCKVERIFY" <<<"$tail_txt"; then
+    _eh_warn "The release's lockfile does not match its package.json: an upstream packaging slip, not this container."
+    _eh_warn "Hint: the install script can fall back to 'pnpm install --no-frozen-lockfile' for this release."
+
   elif grep -qE "sqv|KEYEXPIRED|NO_PUBKEY|key is not certified|signature verification failed|is not signed|Sub-process.*sqv" <<<"$tail_txt"; then
     _eh_warn "APT repository signature error detected."
     _eh_warn "Hint: A repository GPG key may be missing, expired, or the keyring file is not yet present (/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc etc.)."
@@ -622,14 +668,31 @@ error_handler() {
   command="${command//\$STD/}"
 
   # silent() knows the real failing command; the trap only sees the wrapper.
+  # Its record outlives a failure the caller handled, so it only counts for
+  # the line it came from; otherwise its capture would be sent for this one.
+  local from_silent=0
   if [[ -n "${_SILENT_FAILED_RC:-}" ]]; then
-    exit_code="$_SILENT_FAILED_RC"
-    command="$_SILENT_FAILED_CMD"
-    line_number="$_SILENT_FAILED_LINE"
+    if [[ "${_SILENT_FAILED_LINE:-}" == "$line_number" ]]; then
+      exit_code="$_SILENT_FAILED_RC"
+      command="$_SILENT_FAILED_CMD"
+      from_silent=1
+    else
+      if [[ -n "${_SILENT_FAILED_LOG:-}" ]]; then
+        rm -f "${_SILENT_FAILED_LOG}.errinfo" 2>/dev/null
+      fi
+      unset _SILENT_FAILED_LOG
+    fi
     unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE
   fi
 
   [[ "$exit_code" -eq 0 ]] && return 0
+
+  # set -E hands the ERR trap (which passes no arguments) to $(...) and ( ) too.
+  # The calling shell fails on the same error and reports it, so reporting here
+  # as well printed it twice.
+  if ((BASH_SUBSHELL > 0 && $# == 0)); then
+    exit "$exit_code"
+  fi
 
   # Telemetry reads these for the "where"
   FAILED_COMMAND="$command"
@@ -654,7 +717,12 @@ error_handler() {
   _eh_write_debug_log "$exit_code" "$command" "$line_number" "$explanation"
 
   _eh_resolve_log
-  _eh_print_log_tail "$_EH_ACTIVE_LOG"
+  # silent() captured exactly this command's output; the raw log tail is the fallback.
+  if ((from_silent)) && [[ -s "${_EH_ACTIVE_LOG}.errinfo" ]]; then
+    _eh_print_failed_output "${_EH_ACTIVE_LOG}.errinfo"
+  else
+    _eh_print_log_tail "$_EH_ACTIVE_LOG"
+  fi
   _eh_hint_missing_command "$exit_code" "$command"
   _eh_hint_node_oom "$exit_code" "$command" "$_EH_ACTIVE_LOG"
   _eh_hint_from_log "$_EH_ACTIVE_LOG"
@@ -714,6 +782,16 @@ on_exit() {
 
   # Here, because most ct scripts exit inside update_script.
   declare -f apt_conffile_report >/dev/null 2>&1 && apt_conffile_report
+  if [[ $exit_code -eq 0 && "${_CS_UPDATE_CLEANUP:-}" == "1" ]] && declare -f cleanup_lxc >/dev/null 2>&1; then
+    _CS_UPDATE_CLEANUP=0
+    cleanup_lxc || true
+  fi
+
+  # fetch_and_deploy_release leaves a pending marker next to the stamp; only a
+  # run that deployed and exits 0 may remove it.
+  if [[ $exit_code -eq 0 && "${_CS_DEPLOYED:-}" == "1" ]]; then
+    rm -f "${HOME:-/root}"/.*.pending 2>/dev/null || true
+  fi
 
   if _is_container_context; then
     if [[ $exit_code -ne 0 ]]; then

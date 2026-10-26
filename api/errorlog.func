@@ -278,6 +278,16 @@ write_errinfo() {
 #   * $1: exit_code
 #   * $2: log_text (optional override for the output section)
 # ------------------------------------------------------------------------------
+# The table's curl and APT readings only hold when that tool ran. The error
+# handler's guard knows which; the host always has it loaded.
+_tm_explain() {
+  if [[ -n "${2:-}" ]] && declare -f _eh_explanation >/dev/null 2>&1; then
+    _eh_explanation "$1" "$2"
+  else
+    explain_exit_code "$1"
+  fi
+}
+
 build_error_string() {
   local exit_code="${1:-1}"
   local log_text="${2:-}"
@@ -305,7 +315,7 @@ build_error_string() {
   [[ -z "$cmd" && -n "${FAILED_COMMAND:-}" ]] && cmd="${FAILED_COMMAND}"
   [[ -z "$line" && -n "${FAILED_LINE:-}" ]] && line="${FAILED_LINE}"
 
-  explanation=$(explain_exit_code "$exit_code")
+  explanation=$(_tm_explain "$exit_code" "$cmd")
 
   if [[ -n "$cmd" ]]; then
     if [[ -n "$line" ]]; then

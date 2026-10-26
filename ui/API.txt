@@ -5,6 +5,7 @@ _cs_ask_update_mode
 _cs_clear
 _cs_conffile_list
 _cs_engine_ref_line
+_cs_host_arch
 _cs_host_version_line
 _cs_live_base
 _cs_os_family
@@ -18,6 +19,7 @@ _dev_step_end
 _dev_step_key
 _dev_step_start
 _dev_timing_dir
+_eh_command_is
 _eh_destroy_container
 _eh_explanation
 _eh_hint_from_log
@@ -26,11 +28,13 @@ _eh_hint_node_oom
 _eh_info
 _eh_offer_container_removal
 _eh_ok
+_eh_print_failed_output
 _eh_print_log_tail
 _eh_quiet_spinner
 _eh_report
 _eh_resolve_log
 _eh_signal_exit
+_eh_tools_for
 _eh_warn
 _eh_write_debug_log
 _get_current_ip
@@ -50,6 +54,7 @@ _stop_container_if_installing
 _telemetry_report_exit
 _tm_clean_log
 _tm_enabled
+_tm_explain
 _tm_find_errinfo
 _tm_payload
 _tm_pick_logfile
@@ -79,6 +84,7 @@ color
 color_spinner
 configure_http_proxy
 configure_ssh_settings
+confirm_external_installer
 confirm_not_pve_host
 cs_testing_state
 default_var_settings

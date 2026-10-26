@@ -45,12 +45,62 @@ have their own helpers outside that pair: `fetch_and_deploy_gh_tag`,
 Deploy modes: prebuilt release asset, source tarball, `.deb` package, or a
 plain URL through `fetch_and_deploy_from_url`.
 
+Both entry points keep a version stamp in `~/.<app>`. It is written when the
+deploy finishes, so a build that fails afterwards leaves it at the new
+version; the marker `~/.<app>.pending` beside it holds the version the run
+started from and stays until a run that deployed exits cleanly.
+`check_for_release` redoes the update while the marker exists, and both
+helpers export `CS_PREVIOUS_VERSION`, the version from before the update,
+which stays right on that redo. Prefer it over reading `~/.<app>` when a
+migration depends on the old version.
+
 ## [`runtime.func`](../lib/runtime.func)
 
 Language runtimes and the application-level installers: `setup_nodejs`,
 `setup_uv`, `setup_php`, `setup_go`, `setup_ruby`, `setup_rust`,
 `setup_java`, `setup_dotnet`, `setup_composer`, `setup_ffmpeg`,
 `setup_imagemagick`, `setup_yq`, `setup_adminer`.
+
+### Docker inside LXC
+
+Inside an LXC container, Docker gives each container a fresh procfs, so the
+lxcfs mounts on `/proc/meminfo` and friends never reach it: nested containers
+see the physical host's memory instead of the CT's limit. Limits are still
+enforced, but anything that sizes itself from those numbers (JVM heap, Node, Go,
+OpenMP thread pools) gets OOM-killed instead of staying within them.
+
+`setup_docker` can fix this. It is off by default; enable it with
+`DOCKER_LXCFS_VISIBILITY=yes` (or `true`), or the app variable
+`var_docker_lxcfs=yes`. When enabled, it registers `/usr/local/bin/runc-lxcfs` as
+Docker's `default-runtime`. On each container create, the wrapper binds the lxcfs
+files into the container. If the container sets no memory limit, the wrapper
+also applies the CT's limit to its cgroup, which musl and Node's
+`uv_get_constrained_memory()` read. CPU needs nothing extra: `cpuset` is
+inherited, and `/sys/devices/system/cpu/online` is bound for glibc's
+`_SC_NPROCESSORS_ONLN`.
+
+- It is a no-op, with a warning, outside LXC or where lxcfs is not mounted.
+- It never replaces an existing `default-runtime` (e.g. `nvidia`). It never
+  overrides an explicit `--memory` / `mem_limit`.
+- On an update it only runs when explicitly requested. Without the variable,
+  `daemon.json` is left as it is. With it, a running Docker is reloaded
+  (`SIGHUP`) so the new default runtime applies without a restart.
+- Setup leaves Docker untouched when `runc` or `jq` is missing or `daemon.json`
+  cannot be parsed. If the wrapper cannot patch a container's config, it hands
+  that config to runc unmodified.
+- Use `docker run --runtime=runc` (compose: `runtime: runc`) to bypass it for one
+  container.
+- The limit is written at container creation. After `pct set` changes the CT's
+  memory, existing containers keep the old value until they are recreated, or
+  until `docker update --memory=<new> --memory-swap=<new> <container>`.
+- **Monitoring containers are affected.** lxcfs reports *usage* from the
+  reading process's own cgroup. A container that graphs "system memory used"
+  from `/proc/meminfo` (gopsutil-based tools such as netdata, glances, Arcane's
+  live stats) therefore shows only its own footprint. Total is correct, but
+  free, available and cached memory are not. Run those containers with
+  `runtime: runc`. Tools that read the Docker API instead (Portainer's
+  dashboard, Arcane's Docker info panel) are unaffected, and `/proc/stat` (CPU)
+  is not cgroup-scoped.
 
 ## [`db.func`](../lib/db.func)
 

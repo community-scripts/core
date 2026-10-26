@@ -81,6 +81,13 @@ preflight_warn() {
 # - https://docs.kernel.org/security/keys/core.html
 # ------------------------------------------------------------------------------
 preflight_maxkeys() {
+  # The limits are the server's; a client driving a remote Incus cannot read them.
+  if ! command -v pveversion >/dev/null 2>&1 && command -v incus >/dev/null 2>&1 &&
+    [[ "$(LC_ALL=C incus remote get-default 2>/dev/null || echo local)" != "local" ]]; then
+    preflight_pass "Kernel key limits left to the remote Incus server"
+    return 0
+  fi
+
   local per_user_maxkeys per_user_maxbytes
   per_user_maxkeys=$(cat /proc/sys/kernel/keys/maxkeys 2>/dev/null || echo 0)
   per_user_maxbytes=$(cat /proc/sys/kernel/keys/maxbytes 2>/dev/null || echo 0)
@@ -395,7 +402,7 @@ preflight_container_id() {
 # ------------------------------------------------------------------------------
 preflight_template_connectivity() {
   # ARM64 uses custom template sources (GitHub/jenkins), not the pveam catalog
-  if [[ "$(dpkg --print-architecture)" == "arm64" ]]; then
+  if [[ "$(_cs_host_arch)" == "arm64" ]]; then
     preflight_pass "Template connectivity check skipped (ARM64 uses custom template source)"
     return 0
   fi
@@ -435,7 +442,7 @@ preflight_template_connectivity() {
 # ------------------------------------------------------------------------------
 preflight_template_available() {
   # ARM64 uses custom template sources (GitHub/jenkins), not the pveam catalog
-  if [[ "$(dpkg --print-architecture)" == "arm64" ]]; then
+  if [[ "$(_cs_host_arch)" == "arm64" ]]; then
     preflight_pass "Template check skipped (ARM64 uses custom template source)"
     return 0
   fi

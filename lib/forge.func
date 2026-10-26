@@ -238,7 +238,7 @@ github_api_call() {
         continue
       fi
       msg_error "GitHub API connection failed (no response)."
-      msg_error "Check your network/DNS: curl -sSL https://api.github.com/rate_limit"
+      _forge_explain_failure "api.github.com"
       return 22
       ;;
     *)
@@ -1228,16 +1228,27 @@ _forge_descriptor() {
 # version: a patch backported to an older line is published after the newer
 # minor. Order by version instead. This only decides between tags of the same
 # shape; which release line is current is the forge's answer, not ours.
-_FORGE_JQ_VKEY='((.tag_name // "") | sub("^[vV]";"") | [scan("[0-9]+")] | map(tonumber))'
+#
+# The key used to be every digit run in the tag, so the label was lost:
+# 1.0.0-beta38 became 1.0.0.38 and beat 1.0.0-rc.1 (1.0.0.1), and an install
+# on beta38 never saw the rc. The numeric core is now padded to one width and
+# followed by a rank for the pre-release label (dev < alpha < beta < pre < rc
+# < none), then the digits that follow it. Any other suffix ranks as a final
+# release, so -ls45 or -1 revisions still order by their number.
+_FORGE_JQ_VKEY_DEF='def _forge_vkey:
+  sub("^[^0-9]*"; "")
+  | (capture("^(?<b>[0-9]+(?:[.][0-9]+)*)(?<r>.*)$") // {b: "", r: .}) as $m
+  | [$m.b | scan("[0-9]+") | tonumber] as $core
+  | ($m.r | ascii_downcase) as $rest
+  | ($rest | capture("^[-._+]?(?<l>dev|alpha|beta|preview|pre|rc)(?=[-._0-9]|$)") // {l: ""}).l as $lbl
+  | $core + [range($core | length; 6) | 0]
+  + [{"dev": 1, "alpha": 2, "beta": 3, "preview": 4, "pre": 4, "rc": 5}[$lbl] // 9]
+  + [$rest | scan("[0-9]+") | tonumber];'
+_FORGE_JQ_VKEY="(${_FORGE_JQ_VKEY_DEF} (.tag_name // \"\") | _forge_vkey)"
 
-# Highest of the versions on stdin.
+# Highest of the versions on stdin, on the same key as _FORGE_JQ_VKEY.
 _forge_highest_version() {
-  local line key
-  while IFS= read -r line; do
-    [[ -n "$line" ]] || continue
-    key="$(printf '%s' "$line" | grep -oE '[0-9]+' | tr '\n' '.')"
-    printf '%s\t%s\n' "${key:-0}" "$line"
-  done | sort -V -k1,1 | tail -n1 | cut -f2-
+  jq -Rrs "${_FORGE_JQ_VKEY_DEF} split(\"\n\") | map(select(length > 0)) | sort_by(_forge_vkey) | last // empty"
 }
 
 # Do both carry a separator between digits? 20260823 and nightly-20260511-414
@@ -1280,6 +1291,35 @@ _forge_curl() {
   status=$?
   ((status != 0)) && code="000"
   printf '%s' "${code:-000}"
+}
+
+# The fetch helpers run curl with -s and only see 000. Reproduce the failure
+# once with the message visible and say what the exit code points to.
+_forge_explain_failure() {
+  local host="${1:?host}" msg rc v4
+  msg="$(curl -sS -o /dev/null --connect-timeout 5 --max-time 15 "https://${host}/" 2>&1)"
+  rc=$?
+  msg="$(printf '%s' "$msg" | tail -n1 | sed 's/^curl: ([0-9]*) //')"
+  [[ -n "$msg" ]] && msg_error "curl: ${msg}"
+  case "$rc" in
+  0) msg_error "${host} answers now; the failure looks transient, run the script again" ;;
+  6) msg_error "${host} does not resolve here: check /etc/resolv.conf and whether a DNS filter (Pi-hole, AdGuard) blocks it" ;;
+  7 | 28)
+    v4="$(curl -4 -sS -o /dev/null --connect-timeout 5 --max-time 15 -w '%{http_code}' "https://${host}/" 2>/dev/null)" || v4="000"
+    if [[ "$v4" != "000" ]] && ip -6 addr show scope global 2>/dev/null | grep -q inet6; then
+      msg_error "IPv4 reaches ${host}, IPv6 does not: this container has an IPv6 address without a working route. Disable IPv6 for it or fix the route."
+    elif [[ "$v4" != "000" ]]; then
+      msg_error "${host} answered an IPv4 probe just now; the failure looks transient, run the script again"
+    elif ((rc == 28)); then
+      msg_error "Connection to ${host} timed out: a firewall or proxy is holding the traffic (set HTTP_PROXY if one is required)"
+    else
+      msg_error "No route to ${host}: check the gateway, firewall and proxy (HTTP_PROXY)"
+    fi
+    ;;
+  35 | 60) msg_error "TLS handshake with ${host} failed: check the clock ($(date -u '+%F %T') UTC), ca-certificates, and whether something intercepts TLS" ;;
+  56) msg_error "Connection to ${host} was reset: a filtering proxy or a regional block" ;;
+  *) msg_error "curl exit ${rc} reaching ${host}; try: curl -v https://${host}/" ;;
+  esac
 }
 
 # ------------------------------------------------------------------------------
@@ -1441,6 +1481,15 @@ _forge_release_json() {
   local forge="${1:?forge}" repo="${2:?repo}" version="${3:-latest}"
   local tag_prefix="${4:-}" out="${5:?outfile}"
 
+  # The install path arrives here without check_for_release; a Proxmox host has no jq.
+  # VM scripts load this file without system.func and bring jq themselves.
+  if declare -F ensure_dependencies >/dev/null; then
+    ensure_dependencies jq || return 100
+  elif ! command -v jq >/dev/null 2>&1; then
+    msg_error "jq is required to read ${repo}'s releases"
+    return 100
+  fi
+
   local base repo_path list one
   base="$(_forge_descriptor "$forge" base)"
   repo_path="$repo"
@@ -1473,7 +1522,7 @@ _forge_release_json() {
   fi
 
   local -a timeouts=(60 120 240)
-  local raw attempt=1 delay=2 code ok=false
+  local raw attempt=1 delay=2 code ok=false curl_rc
   raw="$(mktemp /tmp/tools-forge-rel-XXXXXX)" || return 73
 
   local -a headers=()
@@ -1485,13 +1534,18 @@ _forge_release_json() {
   [[ -n "$auth" ]] && headers+=(-H "$auth")
 
   while ((attempt <= ${#timeouts[@]})); do
+    curl_rc=0
     code="$(curl -sSL -w "%{http_code}" -o "$raw" \
       --max-time "${timeouts[$((attempt - 1))]}" \
-      "${headers[@]}" "$api_url" 2>/dev/null)" || true
+      "${headers[@]}" "$api_url" 2>/dev/null)" || curl_rc=$?
 
     if [[ "$code" == "200" ]]; then
-      ok=true
-      break
+      # A body cut short still reports 200, and jq then finds no release at all.
+      if ((curl_rc == 0)) && jq -e 'type == "array" or type == "object"' "$raw" >/dev/null 2>&1; then
+        ok=true
+        break
+      fi
+      code="000"
     fi
 
     if [[ "$forge" == "github" && "$code" == "401" ]]; then
@@ -1546,9 +1600,18 @@ _forge_release_json() {
 
   if [[ "$ok" != "true" ]]; then
     if [[ "$code" == "000" ]]; then
-      msg_error "Connection to ${forge} failed"
+      if ((curl_rc == 0)); then
+        local excerpt
+        excerpt="$(head -c 160 "$raw" | tr -cd '[:print:]')"
+        rm -f "$raw"
+        msg_error "${forge} answered, but not with JSON: a captive portal or a proxy error page is in the way"
+        msg_error "The response starts with: ${excerpt:-(empty)}"
+        return 22
+      fi
       rm -f "$raw"
-      return 7
+      msg_error "Connection to ${forge} failed"
+      _forge_explain_failure "$host"
+      return "$curl_rc"
     fi
     msg_error "${forge} API returned HTTP ${code} for ${repo}"
     rm -f "$raw"
@@ -1607,6 +1670,17 @@ _forge_release_json() {
 #   still reads as an update. Version-aware ordering would change what every
 #   app sees and belongs in its own change
 # ------------------------------------------------------------------------------
+# The version a run started from: the marker of an unfinished run, otherwise
+# the stamp. Empty on a fresh install.
+_forge_previous_version() {
+  local version_file="${1:?version file}"
+  if [[ -f "${version_file}.pending" ]]; then
+    printf '%s' "$(<"${version_file}.pending")"
+  elif [[ -f "$version_file" ]]; then
+    printf '%s' "$(<"$version_file")"
+  fi
+}
+
 check_for_release() {
   local forge="${1:?forge}" app="${2:?app}" source="${3:?repo}"
   local pinned_version_in="${4:-}" pin_reason="${5:-}" tag_prefix="${6:-}"
@@ -1649,6 +1723,14 @@ check_for_release() {
     if _forge_http_get "$forge" "${base}/${repo_path}${one}/${enc}" "$json_file"; then
       [[ -s "$json_file" ]] && releases_json="[$(<"$json_file")]"
     fi
+  fi
+
+  # The deploy path takes the release the maintainer marked as latest. Sorting
+  # the list here instead offered unflagged betas with higher numbers, which the
+  # deploy then refused as "already installed" on every run.
+  if [[ -z "$releases_json" && -z "$pinned_version_in" && -z "$tag_prefix" && "${GH_INCLUDE_PRERELEASE:-0}" != "1" ]] &&
+    _forge_designated_release "$forge" "$base" "$repo_path" "$json_file"; then
+    releases_json="[$(<"$json_file")]"
   fi
 
   if [[ -z "$releases_json" ]]; then
@@ -1723,6 +1805,13 @@ check_for_release() {
     fi
   fi
   current="$(_forge_strip_v "$current")"
+  CS_PREVIOUS_VERSION="$(_forge_strip_v "$(_forge_previous_version "$current_file")")"
+  export CS_PREVIOUS_VERSION
+  local unfinished=""
+  if [[ -f "${current_file}.pending" ]]; then
+    unfinished=" (the last run did not finish, doing it again)"
+    current="$CS_PREVIOUS_VERSION"
+  fi
 
   if [[ -n "$pinned_version_in" ]]; then
     local pin_clean match_raw="" i
@@ -1739,9 +1828,9 @@ check_for_release() {
       return 250
     fi
 
-    if [[ "$current" != "$pin_clean" ]]; then
+    if [[ "$current" != "$pin_clean" || -n "$unfinished" ]]; then
       CHECK_UPDATE_RELEASE="$match_raw"
-      msg_ok "Update available: ${app} ${current:-not installed} -> ${pin_clean}"
+      msg_ok "Update available: ${app} ${current:-not installed} -> ${pin_clean}${unfinished}"
       return 0
     fi
 
@@ -1753,13 +1842,13 @@ check_for_release() {
     return 1
   fi
 
-  if _forge_is_current "$current" "$latest_clean"; then
+  if [[ -z "$unfinished" ]] && _forge_is_current "$current" "$latest_clean"; then
     msg_ok "No update available: ${app} (${current})"
     return 1
   fi
 
   CHECK_UPDATE_RELEASE="$latest_raw"
-  msg_ok "Update available: ${app} ${current:-not installed} -> ${latest_clean}"
+  msg_ok "Update available: ${app} ${current:-not installed} -> ${latest_clean}${unfinished}"
   return 0
 }
 
@@ -2024,9 +2113,25 @@ fetch_and_deploy_release() {
   # throughout, which mangles tags like version-2.
   version="$(_forge_strip_v "$tag_name")"
 
+  # The stamp written at the end only says "deployed". The marker beside it
+  # holds the version this update started from and stays until a run that
+  # deployed exits 0 (on_exit); check_for_release redoes the update while it
+  # exists, and CS_PREVIOUS_VERSION still names the real old version on that
+  # redo (ProxmoxVE #18050).
+  CS_PREVIOUS_VERSION="$(_forge_previous_version "$version_file")"
+  export CS_PREVIOUS_VERSION
+  # A redo deploys again: the failed run may already have patched the files (ProxmoxVE #18060).
+  local redo=""
+  if [[ -f "${version_file}.pending" ]]; then
+    redo=1
+  else
+    printf '%s' "$CS_PREVIOUS_VERSION" >"${version_file}.pending" 2>/dev/null || true
+  fi
+  _CS_DEPLOYED=1
+
   local current_version=""
   [[ -f "$version_file" ]] && current_version="$(<"$version_file")"
-  if [[ "$current_version" == "$version" && -d "$target" && "${FORCE_UPDATE:-}" != "1" ]]; then
+  if [[ -z "$redo" && "$current_version" == "$version" && -d "$target" && "${FORCE_UPDATE:-}" != "1" ]]; then
     msg_ok "${app} ${version} already installed"
     return 0
   fi

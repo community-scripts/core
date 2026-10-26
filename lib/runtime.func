@@ -142,6 +142,8 @@ setup_composer() {
 #   DOCKER_PORTAINER       - Install Portainer CE (optional, "true" to enable)
 #   DOCKER_LOG_DRIVER      - Log driver (optional, default: "journald")
 #   DOCKER_SKIP_UPDATES    - Skip container update check (optional, "true" to skip)
+#   DOCKER_LXCFS_VISIBILITY - "yes"/"true" to show the CT's resource limits inside
+#                            nested containers (default: no; also var_docker_lxcfs)
 #
 # Features:
 #   - Uses official Docker repository by default
@@ -219,6 +221,131 @@ ensure_docker() {
   fi
 }
 
+# ------------------------------------------------------------------------------
+# Opt-in runc wrapper that shows the LXC container's resource limits to nested
+# Docker containers. Caveats and per-container bypass: docs/lib.md#docker-inside-lxc.
+# ------------------------------------------------------------------------------
+_docker_setup_lxcfs_visibility() {
+  local enabled="${DOCKER_LXCFS_VISIBILITY:-${var_docker_lxcfs:-no}}"
+  case "${enabled,,}" in
+  yes | true) ;;
+  *) return 0 ;;
+  esac
+
+  # Only meaningful inside an LXC container whose /proc is served by lxcfs
+  if ! grep -qs 'fuse\.lxcfs' /proc/mounts; then
+    msg_warn "lxcfs not mounted - skipping LXC resource visibility for Docker"
+    return 0
+  fi
+
+  if ! command -v runc >/dev/null 2>&1; then
+    msg_warn "runc not found - skipping LXC resource visibility for Docker"
+    return 0
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    $STD apt-get install -y jq || {
+      msg_warn "jq unavailable - skipping LXC resource visibility for Docker"
+      return 0
+    }
+  fi
+
+  local current_runtime
+  current_runtime=$(jq -r '."default-runtime" // empty' /etc/docker/daemon.json 2>/dev/null) || current_runtime=""
+  if [[ -n "$current_runtime" && "$current_runtime" != "lxcfs" ]]; then
+    msg_warn "Docker default-runtime is already '${current_runtime}' - skipping LXC resource visibility"
+    return 0
+  fi
+
+  msg_info "Configuring LXC resource visibility for Docker"
+
+  cat <<'RUNC_LXCFS' >/usr/local/bin/runc-lxcfs
+#!/bin/sh
+# Managed by community-scripts - see setup_docker() in lib/runtime.func
+#
+# runc wrapper: let Docker containers running inside this LXC container observe
+# the LXC container's resource limits instead of the physical host's.
+#
+# Docker mounts a fresh procfs per container, so the lxcfs binds LXC placed on
+# /proc/meminfo & friends never reach it. Re-bind them into the OCI bundle, and
+# apply the CT's memory limit to the container cgroup for runtimes that consult
+# cgroups rather than /proc.
+#
+# Bypass for a single container with: docker run --runtime=runc ...
+set -eu
+
+REAL_RUNC=
+for candidate in /usr/bin/runc /usr/sbin/runc /usr/local/bin/runc; do
+  if [ -x "$candidate" ]; then
+    REAL_RUNC=$candidate
+    break
+  fi
+done
+[ -n "$REAL_RUNC" ] || exit 127
+
+bundle=""
+prev=""
+for arg in "$@"; do
+  case "$prev" in
+  -b | --bundle) bundle="$arg" ;;
+  esac
+  case "$arg" in
+  --bundle=*) bundle="${arg#--bundle=}" ;;
+  esac
+  prev="$arg"
+done
+
+# Only "create" carries a bundle; everything else passes straight through.
+[ -n "$bundle" ] && [ -f "$bundle/config.json" ] || exec "$REAL_RUNC" "$@"
+
+mem=$(awk '/^MemTotal:/ { print $2 * 1024 }' /proc/meminfo)
+[ -n "$mem" ] || exec "$REAL_RUNC" "$@"
+
+config="$bundle/config.json"
+patched="$config.lxcfs"
+if jq --argjson mem "$mem" '
+  ["/proc/meminfo", "/proc/cpuinfo", "/proc/stat", "/proc/uptime",
+   "/proc/swaps", "/proc/loadavg", "/proc/diskstats",
+   "/sys/devices/system/cpu/online"] as $lxcfs
+  | [.mounts[].destination] as $taken
+  | .mounts += [
+    $lxcfs[]
+    | select(. as $f | $taken | index($f) | not)
+    | {destination: ., type: "bind", source: ., options: ["rbind", "rprivate", "ro"]}
+  ]
+  | if (.linux.resources.memory.limit // 0) <= 0
+    then .linux.resources.memory.limit = $mem
+    else . end
+' "$config" >"$patched" 2>/dev/null && [ -s "$patched" ]; then
+  cat "$patched" >"$config"
+fi
+rm -f "$patched"
+
+exec "$REAL_RUNC" "$@"
+RUNC_LXCFS
+
+  chmod 755 /usr/local/bin/runc-lxcfs
+
+  local tmpfile
+  tmpfile=$(mktemp)
+  if jq '. + {
+    "default-runtime": "lxcfs",
+    "runtimes": ((.runtimes // {}) + {"lxcfs": {"path": "/usr/local/bin/runc-lxcfs"}})
+  }' /etc/docker/daemon.json >"$tmpfile" && [ -s "$tmpfile" ]; then
+    mv "$tmpfile" /etc/docker/daemon.json
+    # An already-running dockerd (update path) picks up default-runtime on SIGHUP.
+    if systemctl is-active -q docker 2>/dev/null; then
+      $STD systemctl reload docker || msg_warn "Could not reload Docker - restart it to apply LXC resource visibility"
+    fi
+    msg_ok "Configured LXC resource visibility for Docker"
+  else
+    rm -f "$tmpfile"
+    # A previous run's daemon.json still points at the wrapper; keep it.
+    [[ -n "$current_runtime" ]] || rm -f /usr/local/bin/runc-lxcfs
+    msg_warn "Could not update /etc/docker/daemon.json - LXC resource visibility not enabled"
+  fi
+}
+
 setup_docker() {
   local docker_installed=false
   local portainer_installed=false
@@ -274,6 +401,8 @@ setup_docker() {
 }
 EOF
     fi
+
+    _docker_setup_lxcfs_visibility
 
     # Enable and start Docker
     systemctl enable -q --now docker
@@ -348,6 +477,8 @@ EOF
 }
 EOF
     fi
+
+    _docker_setup_lxcfs_visibility
 
     # Enable and start Docker
     systemctl enable -q --now docker
@@ -1255,11 +1386,35 @@ _setup_npm() {
 
   if ! $STD npm install -g "npm@${target}" 2>/dev/null; then
     msg_warn "npm stayed at ${before}"
+    # Handled here; left set, a later unrelated error is reported as this command.
+    unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG
     return 0
   fi
 
   after="$(npm -v 2>/dev/null || echo "$before")"
   NPM_SETUP_VERSION="$after"
+  return 0
+}
+
+# apt swaps nodejs for the new repository's build and drops Debian's npm and
+# node-* packages with it; the packages that kept the purge from running
+# (thelounge) must survive that.
+_nodejs_in_place_simulate() {
+  local sim removed dependents pkg
+  dependents=$(apt-get -s purge -y nodejs npm 2>/dev/null | awk '/^(Remv|Purg) /{print $2}' |
+    grep -vE '^(nodejs|nodejs-doc|npm|libnode.*|node-.*)$' || true)
+  sim=$(apt-get -s install -y nodejs 2>&1) || {
+    msg_error "apt cannot upgrade nodejs in place:"
+    printf '%s\n' "$sim" | grep -E '^(E:|W:| )' | head -n 5
+    return 1
+  }
+  removed=$(awk '/^Remv /{print $2}' <<<"$sim")
+  for pkg in $dependents; do
+    if grep -qxF "$pkg" <<<"$removed"; then
+      msg_error "Upgrading Node.js in place would remove ${pkg}"
+      return 1
+    fi
+  done
   return 0
 }
 
@@ -1271,6 +1426,14 @@ setup_nodejs() {
   local wants_corepack=0
   local node_setup_ok_msg=""
   local NPM_SETUP_VERSION=""
+  local in_place=0
+
+  # npm dies with uv_cwd when the caller's directory was deleted, e.g. a build dir.
+  mkdir -p /opt
+  cd /opt || {
+    msg_error "Failed to set safe working directory before npm install"
+    return 127
+  }
 
   # Corepack must run fully non-interactive, or it blocks on "about to download
   # X. Continue? [Y/n]" -- here and in the calling script's later corepack calls,
@@ -1297,6 +1460,11 @@ setup_nodejs() {
   if [[ -n "$CURRENT_NODE_VERSION" && "$CURRENT_NODE_VERSION" == "$NODE_VERSION" ]]; then
     msg_info "Update Node.js $NODE_VERSION"
 
+    # NodeSource re-signed its key in 2026-01. apt on Debian 13 rejects the old
+    # SHA1-only keyring, keeps the stale index, and the upgrade below does nothing.
+    download_gpg_key "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key" "/etc/apt/keyrings/nodesource.gpg" "dearmor" ||
+      msg_warn "Could not refresh the NodeSource signing key"
+
     ensure_apt_working || return 100
 
     # Upgrade to the latest minor/patch release from NodeSource
@@ -1313,17 +1481,23 @@ setup_nodejs() {
     if [[ -n "$CURRENT_NODE_VERSION" && "$CURRENT_NODE_VERSION" != "$NODE_VERSION" ]]; then
       msg_info "Upgrade Node.js from $CURRENT_NODE_VERSION to $NODE_VERSION"
       node_setup_ok_msg="Upgrade Node.js to $NODE_VERSION"
-      remove_old_tool_version "nodejs" || {
-        msg_error "Aborting Node.js upgrade: another package depends on it"
+      if _purge_is_safe nodejs npm; then
+        remove_old_tool_version "nodejs" || return 1
+      elif ((node_major < CURRENT_NODE_VERSION)); then
+        msg_error "Node.js $CURRENT_NODE_VERSION cannot be downgraded to $NODE_VERSION while another package depends on it"
         return 1
-      }
+      else
+        # An app package depends on nodejs, so the purge would take it along.
+        # apt upgrades nodejs in place once the new repository is set.
+        in_place=1
+      fi
     else
       msg_info "Setup Node.js $NODE_VERSION"
       node_setup_ok_msg="Setup Node.js $NODE_VERSION"
     fi
 
     # Remove ALL Debian nodejs packages BEFORE adding NodeSource repo
-    if dpkg -l 2>/dev/null | grep -qE "^ii.*(nodejs|libnode|node-cjs|node-acorn|node-balanced|node-brace|node-minimatch|node-undici|node-xtend|node-corepack)"; then
+    if ((!in_place)) && dpkg -l 2>/dev/null | grep -qE "^ii.*(nodejs|libnode|node-cjs|node-acorn|node-balanced|node-brace|node-minimatch|node-undici|node-xtend|node-corepack)"; then
       msg_info "Removing Debian-packaged Node.js and dependencies"
       $STD apt purge -y nodejs nodejs-doc libnode* node-* 2>/dev/null || true
       $STD apt autoremove -y 2>/dev/null || true
@@ -1352,6 +1526,16 @@ setup_nodejs() {
     }
 
     ensure_dependencies curl ca-certificates gnupg
+
+    if ((in_place)) && ! _nodejs_in_place_simulate; then
+      if dpkg-query -W -f='${Version}' nodejs 2>/dev/null | grep -q nodesource; then
+        manage_tool_repository "nodejs" "$CURRENT_NODE_VERSION" "https://deb.nodesource.com/node_${CURRENT_NODE_VERSION}.x" "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key" >/dev/null 2>&1 || true
+      else
+        cleanup_old_repo_files "nodesource"
+      fi
+      $STD apt update || true
+      return 1
+    fi
 
     install_packages_with_retry "nodejs" || {
       msg_error "Failed to install Node.js ${NODE_VERSION} from NodeSource"
@@ -1405,9 +1589,20 @@ setup_nodejs() {
 
   # npm 11+ skips install hooks not covered by allowScripts and still exits 0,
   # so apps with native addons install with nothing built.
-  if [[ "$(npm -v 2>/dev/null | cut -d. -f1)" -ge 11 ]]; then
-    $STD npm config set dangerously-allow-all-scripts true --location=global 2>/dev/null || true
-  fi
+  # npm reads the global npmrc from <prefix>/etc, so `npm --prefix /opt/app`
+  # never sees it; the user npmrc applies whatever the prefix.
+  local npm_major npm_location
+  npm_major="$(npm -v 2>/dev/null | cut -d. -f1)" || npm_major=""
+  for npm_location in global user; do
+    if [[ "$npm_major" -ge 11 ]]; then
+      $STD npm config set dangerously-allow-all-scripts true --location="$npm_location" 2>/dev/null || true
+    fi
+    # npm 12 refuses git and tarball-URL dependencies by default (EALLOWGIT/EALLOWREMOTE).
+    if [[ "$npm_major" -ge 12 ]]; then
+      $STD npm config set allow-git all --location="$npm_location" 2>/dev/null || true
+      $STD npm config set allow-remote all --location="$npm_location" 2>/dev/null || true
+    fi
+  done
 
   # Set a safe default heap limit for Node.js builds if not explicitly provided.
   # Priority:
@@ -1436,15 +1631,6 @@ setup_nodejs() {
 
     export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--max-old-space-size=${node_heap_mb}"
   fi
-
-  # Ensure valid working directory for npm (avoids uv_cwd error)
-  if [[ ! -d /opt ]]; then
-    mkdir -p /opt
-  fi
-  cd /opt || {
-    msg_error "Failed to set safe working directory before npm install"
-    return 127
-  }
 
   # Install global Node modules
   if [[ -n "$NODE_MODULE" ]] || ((node_major >= 25)); then
@@ -2501,13 +2687,65 @@ setup_rust() {
 # uv refuses to run when a project pins a required-version it does not match,
 # in either direction. Only the exact form is read; a range falls through to
 # whatever the caller would have installed anyway.
+# required-version from pyproject.toml or uv.toml. An exact pin ("==0.12.3")
+# is returned as is; a range (">=0.12.15,<0.13") resolves to the newest
+# published uv inside it, so a project that caps uv keeps getting the
+# upgrades it accepts instead of the latest release it rejects.
 _uv_required_version() {
-  local dir="${1:?dir}" f v
+  local dir="${1:?dir}" f spec exact='^(==)?([0-9][0-9A-Za-z.+-]*)$'
   for f in "$dir/pyproject.toml" "$dir/uv.toml"; do
     [[ -f "$f" ]] || continue
-    v="$(grep -m1 -E '^[[:space:]]*required-version[[:space:]]*=' "$f" 2>/dev/null |
-      sed -E 's/.*=[[:space:]]*"[[:space:]]*==[[:space:]]*([0-9][0-9A-Za-z.+-]*)"[[:space:]]*$/\1/')"
-    if [[ "$v" =~ ^[0-9] ]]; then
+    spec="$(grep -m1 -E '^[[:space:]]*required-version[[:space:]]*=' "$f" 2>/dev/null |
+      sed -nE 's/^[^=]*=[[:space:]]*"([^"]*)".*/\1/p' | tr -d '[:space:]')"
+    [[ -n "$spec" ]] || continue
+    if [[ "$spec" =~ $exact ]]; then
+      echo "${BASH_REMATCH[2]}"
+      return 0
+    fi
+    _uv_pick_version "$spec" < <(_uv_release_list)
+    return
+  done
+  return 1
+}
+
+_uv_release_list() {
+  local tmp
+  tmp=$(mktemp) || return 1
+  if ! github_api_call "https://api.github.com/repos/astral-sh/uv/releases?per_page=100" "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  jq -r '.[].tag_name' "$tmp" | sed 's/^v//' | sort -rV
+  rm -f "$tmp"
+}
+
+_uv_ver_ge() { [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" == "$1" ]]; }
+
+# Newest version on stdin (one per line, newest first) that satisfies every
+# comma-separated clause in $1: ==, !=, <, <=, >, >=, ~=.
+_uv_pick_version() {
+  local spec="$1" v c op want ok
+  local version='^[0-9]+(\.[0-9]+)*$' clause='^(==|!=|<=|>=|<|>|~=)(.+)$'
+  local -a clauses
+  IFS=',' read -ra clauses <<<"$spec"
+  while IFS= read -r v; do
+    [[ "$v" =~ $version ]] || continue
+    ok=1
+    for c in "${clauses[@]}"; do
+      [[ "$c" =~ $clause ]] || { ok=0; break; }
+      op="${BASH_REMATCH[1]}" want="${BASH_REMATCH[2]}"
+      case "$op" in
+      '==') [[ "$v" == "$want" ]] || ok=0 ;;
+      '!=') [[ "$v" != "$want" ]] || ok=0 ;;
+      '>=') _uv_ver_ge "$v" "$want" || ok=0 ;;
+      '>') [[ "$v" != "$want" ]] && _uv_ver_ge "$v" "$want" || ok=0 ;;
+      '<=') _uv_ver_ge "$want" "$v" || ok=0 ;;
+      '<') [[ "$v" != "$want" ]] && _uv_ver_ge "$want" "$v" || ok=0 ;;
+      '~=') _uv_ver_ge "$v" "$want" && [[ "$v" == "${want%.*}".* ]] || ok=0 ;;
+      esac
+      ((ok)) || break
+    done
+    if ((ok)); then
       echo "$v"
       return 0
     fi
@@ -2525,8 +2763,8 @@ setup_uv() {
   local UVX_BIN="/usr/local/bin/uvx"
   local TMP_DIR=$(mktemp -d)
 
-  # trap for TMP Cleanup
-  trap "rm -rf '$TMP_DIR'" EXIT
+  # RETURN, not EXIT: an EXIT trap here replaced catch_errors' on_exit for the rest of the script
+  trap 'rm -rf "$TMP_DIR"; trap - RETURN' RETURN
 
   # Architecture Detection
   local ARCH=$(uname -m)

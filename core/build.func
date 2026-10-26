@@ -236,7 +236,7 @@ _CS_ENGINE_FILES=(
   api/errorlog.func api/exitcodes.func api/sysinfo.func
   api/telemetry.func
   ui/build-ui.func ui/advanced.func ui/defaults.func
-  ui/menu.func ui/validate.func vm/cloud-init.func
+  ui/menu.func ui/validate.func vm/cloud-init.func vm/common.func
   core/core.func core/dev-mode.func core/error_handler.func
   lxc/install.func lxc/platform.func host/preflight.func
   host/source-origin.func lib/tools.func lib/db.func

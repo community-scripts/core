@@ -141,7 +141,7 @@ echo_default() {
   echo -e "${DISKSIZE}${BOLD}${DGN}Disk Size: ${BGN}${DISK_SIZE} GB${CL}"
   echo -e "${CPUCORE}${BOLD}${DGN}CPU Cores: ${BGN}${CORE_COUNT}${CL}"
   echo -e "${RAMSIZE}${BOLD}${DGN}RAM Size: ${BGN}${RAM_SIZE} MiB${CL}"
-  if [[ "$(dpkg --print-architecture)" == "arm64" ]]; then
+  if [[ "$(_cs_host_arch)" == "arm64" ]]; then
     echo -e "${INFO}${BOLD}${DGN}Architecture: ${BGN}arm64${CL}"
   fi
   if [[ -n "${var_gpu:-}" && "${var_gpu}" == "yes" ]]; then
@@ -209,7 +209,7 @@ install_script() {
   storage_content_check
   diagnostics_check
 
-  if systemctl is-active -q ping-instances.service; then
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active -q ping-instances.service; then
     systemctl -q stop ping-instances.service
   fi
 
@@ -432,8 +432,13 @@ settings_menu() {
 # - Warns if under-provisioned and asks user to continue or abort
 # ------------------------------------------------------------------------------
 check_container_resources() {
-  current_ram=$(awk '/^MemTotal:/ {printf "%d", $2 / 1024}' /proc/meminfo)
-  current_cpu=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)
+  current_ram=$(awk '/^MemTotal:/ {printf "%d", $2 / 1024}' /proc/meminfo 2>/dev/null || true)
+  current_cpu=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || true)
+  # A broken lxcfs mount on the host leaves /proc/meminfo unreadable; that is no reason to stop the update
+  if [[ ! "$current_ram" =~ ^[0-9]+$ || ! "$current_cpu" =~ ^[0-9]+$ ]]; then
+    msg_warn "Could not read this container's RAM or CPU count, skipping the resource check"
+    return 0
+  fi
 
   if [[ "$current_ram" -lt "$var_ram" ]] || [[ "$current_cpu" -lt "$var_cpu" ]]; then
     echo -e "\n${INFO}${HOLD} ${GN}Required: ${var_cpu} CPU, ${var_ram}MB RAM ${CL}| ${RD}Current: ${current_cpu} CPU, ${current_ram}MB RAM${CL}"
@@ -1115,8 +1120,8 @@ check_breaking_change_guard() {
 
 # The update path, shared by the three branches of start() that reach it.
 # exit, not return: returning continues into the ct script's host-only tail.
-# Most ct scripts exit inside update_script, so the three calls after it are
-# unreachable for them.
+# Most ct scripts exit inside update_script, so the two calls after it are
+# unreachable for them; the cleanup therefore runs from on_exit.
 _cs_run_update() {
   ensure_profile_loaded
   ensure_recorded_toolchains
@@ -1126,10 +1131,10 @@ _cs_run_update() {
   check_container_os_guard || exit 0
   check_breaking_change_guard || exit 0
   apt_conffile_guard
+  _CS_UPDATE_CLEANUP=1
   update_script
   run_addon_updates
   update_motd_ip
-  cleanup_lxc
   exit 0
 }
 

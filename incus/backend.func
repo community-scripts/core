@@ -174,25 +174,23 @@ _incus_resolve_launch_image() {
 }
 
 _incus_parse_size_to_bytes() {
-  # Accepts raw bytes or human values like 589.51GiB / 211MiB / 1.5TB
-  local raw="${1:-}" val unit
+  # Integer arithmetic only: BusyBox awk truncates printf "%d" to 32 bit.
+  local raw="${1:-}" int frac unit mult scale=1 i
   raw="${raw// /}"
-  [[ -z "$raw" ]] && return 1
-  if [[ "$raw" =~ ^[0-9]+$ ]]; then
-    echo "$raw"
-    return 0
-  fi
-  val=$(echo "$raw" | sed -E 's/[^0-9.].*$//')
-  unit=$(echo "$raw" | sed -E 's/^[0-9.]+//' | tr '[:lower:]' '[:upper:]')
-  [[ -z "$val" ]] && return 1
+  [[ "$raw" =~ ^([0-9]+)(\.([0-9]+))?([A-Za-z]*)$ ]] || return 1
+  int="${BASH_REMATCH[1]}"
+  frac="${BASH_REMATCH[3]}"
+  unit="${BASH_REMATCH[4]^^}"
   case "$unit" in
-  B | "") echo "$(awk -v v="$val" 'BEGIN{printf "%d", v}')" ;;
-  KB | KIB | K) echo "$(awk -v v="$val" 'BEGIN{printf "%d", v*1024}')" ;;
-  MB | MIB | M) echo "$(awk -v v="$val" 'BEGIN{printf "%d", v*1024*1024}')" ;;
-  GB | GIB | G) echo "$(awk -v v="$val" 'BEGIN{printf "%d", v*1024*1024*1024}')" ;;
-  TB | TIB | T) echo "$(awk -v v="$val" 'BEGIN{printf "%d", v*1024*1024*1024*1024}')" ;;
+  B | "") mult=1 ;;
+  KB | KIB | K) mult=1024 ;;
+  MB | MIB | M) mult=$((1024 * 1024)) ;;
+  GB | GIB | G) mult=$((1024 * 1024 * 1024)) ;;
+  TB | TIB | T) mult=$((1024 * 1024 * 1024 * 1024)) ;;
   *) return 1 ;;
   esac
+  for ((i = 0; i < ${#frac}; i++)); do scale=$((scale * 10)); done
+  echo $((10#$int * mult + 10#${frac:-0} * mult / scale))
 }
 
 incus_storage_pool_free_gb() {
@@ -203,18 +201,25 @@ incus_storage_pool_free_gb() {
   # LC_ALL=C: incus translates this output. A German host reports "Gesamter
   # Speicherplatz" and "Speicherplatz in Benutzung", so the awk below matched
   # nothing and a 357GB pool looked unmeasurable.
+  # Incus reports total and used only; with --bytes they are plain integers, so
+  # the subtraction stays in bash and never goes through awk floats (BusyBox awk
+  # truncates those to 32 bit).
   info=$(LC_ALL=C incus storage info --bytes "$pool" 2>/dev/null || true)
-  free_raw=$(echo "$info" | awk -F': *' '/space free:/ {print $2; exit}')
-  if [[ -n "$free_raw" ]]; then
-    free_bytes="$(_incus_parse_size_to_bytes "$free_raw" 2>/dev/null || true)"
+  free_raw=$(echo "$info" | awk -F': *' '/space free:/ {gsub(/"/, "", $2); print $2; exit}')
+  total_raw=$(echo "$info" | awk -F': *' '/total space:/ {gsub(/"/, "", $2); print $2; exit}')
+  used_raw=$(echo "$info" | awk -F': *' '/space used:/ {gsub(/"/, "", $2); print $2; exit}')
+  if [[ "$free_raw" =~ ^[0-9]+$ ]]; then
+    free_bytes="$free_raw"
+  elif [[ "$total_raw" =~ ^[0-9]+$ && "$used_raw" =~ ^[0-9]+$ && "$total_raw" -ge "$used_raw" ]]; then
+    free_bytes=$((total_raw - used_raw))
   fi
 
   # Older/human output often has only "space used" + "total space" (no free line).
   if [[ -z "${free_bytes:-}" ]]; then
     info=$(LC_ALL=C incus storage info "$pool" 2>/dev/null || true)
-    free_raw=$(echo "$info" | awk -F': *' '/space free:/ {print $2; exit}')
-    total_raw=$(echo "$info" | awk -F': *' '/total space:/ {print $2; exit}')
-    used_raw=$(echo "$info" | awk -F': *' '/space used:/ {print $2; exit}')
+    free_raw=$(echo "$info" | awk -F': *' '/space free:/ {gsub(/"/, "", $2); print $2; exit}')
+    total_raw=$(echo "$info" | awk -F': *' '/total space:/ {gsub(/"/, "", $2); print $2; exit}')
+    used_raw=$(echo "$info" | awk -F': *' '/space used:/ {gsub(/"/, "", $2); print $2; exit}')
     if [[ -n "$free_raw" ]]; then
       free_bytes="$(_incus_parse_size_to_bytes "$free_raw" 2>/dev/null || true)"
     elif [[ -n "$total_raw" && -n "$used_raw" ]]; then
@@ -231,7 +236,7 @@ incus_storage_pool_free_gb() {
   if [[ -z "${free_bytes:-}" ]]; then
     local src
     src="$(LC_ALL=C incus storage get "$pool" source 2>/dev/null || true)"
-    if [[ -n "$src" && -d "$src" ]]; then
+    if [[ "${INCUS_REMOTE:-local}" == "local" && -n "$src" && -d "$src" ]]; then
       free_bytes="$(df -PB1 "$src" 2>/dev/null | awk 'NR==2 {print $4}')"
     fi
   fi
@@ -493,8 +498,9 @@ incus_create_lxc_container() {
   # plus a rollback to reach the state it would have had anyway. Privileged
   # only, and only when the host default is actually below what we want.
   local optional_sysctl_pending=0
+  # The sysctl probe reads this machine; against a remote, just try the setting.
   if [[ "${CT_TYPE:-1}" == "0" ]] &&
-    (($(cat /proc/sys/kernel/keys/maxkeys 2>/dev/null || echo 2000) < 2000)); then
+    { [[ "${INCUS_REMOTE:-local}" != "local" ]] || (($(cat /proc/sys/kernel/keys/maxkeys 2>/dev/null || echo 2000) < 2000)); }; then
     if incus config set "${CT_NAME}" linux.sysctl.kernel.keys.maxkeys=2000 >>"$LOGFILE" 2>&1; then
       optional_sysctl_pending=1
     fi
@@ -879,6 +885,15 @@ incus_configure_device_passthrough() {
     fi
   fi
 
+  if [[ "${ENABLE_FUSE:-no}" == "yes" ]] && ! incus_ct_exec test -c /dev/fuse 2>/dev/null; then
+    if incus config device add "${CT_NAME}" fuse unix-char source=/dev/fuse path=/dev/fuse \
+      >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1; then
+      msg_ok "FUSE device attached"
+    else
+      msg_warn "Could not add FUSE device"
+    fi
+  fi
+
   if [[ -e /dev/apex_0 ]]; then
     msg_custom "🔌" "${BL}" "Detected Coral TPU - configuring passthrough"
     _incus_soft incus config device add "${CT_NAME}" apex0 unix-char source=/dev/apex_0 path=/dev/apex_0 >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
@@ -988,7 +1003,7 @@ incus_set_root_password() {
 
 incus_customize_container() {
   msg_info "Customizing LXC Container"
-  ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+  ARCH="$(_cs_host_arch)"
 
   if [[ "${var_os:-debian}" == "alpine" ]]; then
     sleep 2
@@ -1089,7 +1104,7 @@ INNEREOF" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || { msg_error "Failed to push f
   incus exec "${CT_NAME}" -- bash -c "${_run_env}
 ${_install_script}
 touch /root/.install-${SESSION_ID}.done" 2>&1 |
-    tee >(sed -u 's/.*\r//' >>"${LOGFILE:-$INCUS_BUILD_LOG}")
+    tee >(sed 's/.*\r//' >>"${LOGFILE:-$INCUS_BUILD_LOG}")
   # PIPESTATUS, not $?: the line above turns pipefail off, so $? is tee's
   # status - always 0. Every non-zero exit from the container was discarded
   # here, which is why a half-finished install reported success.
@@ -1216,12 +1231,21 @@ incus_run_install_script_with_recovery() {
 
   echo ""
   local is_oom=false is_network_issue=false is_apt_issue=false is_cmd_not_found=false
-  local error_explanation=""
-  declare -f explain_exit_code >/dev/null 2>&1 && error_explanation="$(explain_exit_code "$install_exit_code")"
+  local error_explanation="" failed_cmd=""
+  [[ -s "${TELEMETRY_ERRINFO:-}" ]] && failed_cmd="$(sed -n 's/^COMMAND=//p' "$TELEMETRY_ERRINFO" | head -n1)"
+  if declare -f _eh_explanation >/dev/null 2>&1; then
+    error_explanation="$(_eh_explanation "$install_exit_code" "$failed_cmd")"
+  elif declare -f explain_exit_code >/dev/null 2>&1; then
+    error_explanation="$(explain_exit_code "$install_exit_code")"
+  fi
 
   [[ $install_exit_code -eq 134 || $install_exit_code -eq 137 || $install_exit_code -eq 243 ]] && is_oom=true
   case "$install_exit_code" in
-  100 | 101 | 102) is_apt_issue=true ;;
+  100 | 101 | 102)
+    if [[ -z "$failed_cmd" ]] || ! declare -f _eh_command_is >/dev/null 2>&1 || _eh_command_is "$failed_cmd" "$(_eh_tools_for APT)"; then
+      is_apt_issue=true
+    fi
+    ;;
   255)
     [[ -f "$combined_log" ]] && grep -qiE 'dpkg|apt-get|broken packages|unmet dependencies' "$combined_log" && is_apt_issue=true
     ;;
@@ -1236,7 +1260,7 @@ incus_run_install_script_with_recovery() {
   if [[ $install_exit_code -eq 1 && -f "$combined_log" ]]; then
     grep -qiE 'E: Unable to|broken packages|unmet dependencies|dpkg --configure' "$combined_log" && is_apt_issue=true
     grep -qiE 'Cannot allocate memory|Out of memory|oom-killer|JavaScript heap' "$combined_log" && is_oom=true
-    grep -qiE 'Could not resolve|DNS|Network is unreachable|Failed to fetch' "$combined_log" && is_network_issue=true
+    grep -qiE 'Could not resolve|DNS resolution failed|Temporary failure resolving|Network is unreachable|Failed to fetch' "$combined_log" && is_network_issue=true
     grep -qiE ': command not found' "$combined_log" && is_cmd_not_found=true
   fi
 

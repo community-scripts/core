@@ -93,7 +93,9 @@ incus_variables() {
   else
     PVEVERSION="Incus"
   fi
-  KERNEL_VERSION=$(uname -r)
+  # The summary names the machine that runs the container, which may be a remote.
+  declare -f incus_target >/dev/null 2>&1 && command -v incus >/dev/null 2>&1 && incus_target
+  KERNEL_VERSION="${INCUS_SERVER_KERNEL:-$(uname -r)}"
   if [[ -n "${var_cpu:-}" && "${var_cpu}" =~ ^[0-9]+$ ]]; then export APP_DEFAULT_CPU="${var_cpu}"; fi
   if [[ -n "${var_ram:-}" && "${var_ram}" =~ ^[0-9]+$ ]]; then export APP_DEFAULT_RAM="${var_ram}"; fi
   if [[ -n "${var_disk:-}" && "${var_disk}" =~ ^[0-9]+$ ]]; then export APP_DEFAULT_DISK="${var_disk}"; fi
@@ -553,7 +555,12 @@ header_info() {
     header_content=$(get_header "$app_name" 2>/dev/null || true)
   fi
   clear 2>/dev/null || true
-  [[ -n "$header_content" ]] && echo "$header_content"
+  if [[ -n "$header_content" ]]; then
+    echo "$header_content"
+  else
+    echo "${_CS_FALLBACK_HEADER:-Community Scripts}"
+    echo "  ${APP:-}"
+  fi
   return 0
 }
 

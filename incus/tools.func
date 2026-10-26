@@ -254,7 +254,6 @@ pkg_clean() {
   case "${PKG_MANAGER:-apt}" in
   apt)
     $STD apt -y autoremove 2>/dev/null || true
-    $STD apt -y autoclean 2>/dev/null || true
     $STD apt -y clean 2>/dev/null || true
     ;;
   apk) $STD apk cache clean 2>/dev/null || true ;;
@@ -376,7 +375,8 @@ header_info() {
   if [[ -n "$header_content" ]]; then
     echo "$header_content"
   else
-    echo -e "${INCUS_HEADER:-Incus :: ${APP:-Container}}"
+    echo "${_CS_FALLBACK_HEADER:-Community Scripts}"
+    echo "  ${APP:-}"
   fi
 }
 

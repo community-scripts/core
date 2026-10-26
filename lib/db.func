@@ -754,6 +754,70 @@ EOF
 #   MONGO_VERSION  - MongoDB version to install (e.g. 7.0, 8.2)
 # ------------------------------------------------------------------------------
 
+mongodb_get_fcv() {
+  local port="${1:-27017}"
+  command -v mongosh >/dev/null 2>&1 || return 1
+  mongosh --quiet --port "$port" \
+    --eval 'db.adminCommand({getParameter: 1, featureCompatibilityVersion: 1}).featureCompatibilityVersion.version' 2>/dev/null |
+    tr -d '[:space:]"' | grep -E '^[0-9]+\.[0-9]+$'
+}
+
+# mongodb_set_fcv <version> [port]
+# Data left at an older featureCompatibilityVersion keeps the next major's
+# binary from starting. Apps with their own mongod (Omada: 27217) call this
+# for that instance once it runs on the new binary.
+mongodb_set_fcv() {
+  local version="$1" port="${2:-27017}" cmd
+  command -v mongosh >/dev/null 2>&1 || {
+    msg_warn "mongosh not found; set featureCompatibilityVersion ${version} by hand"
+    return 1
+  }
+  cmd="db.adminCommand({setFeatureCompatibilityVersion: '${version}'"
+  ((${version%%.*} >= 7)) && cmd+=", confirm: true"
+  cmd+="})"
+  $STD mongosh --quiet --port "$port" --eval "$cmd" || {
+    msg_warn "Could not set featureCompatibilityVersion ${version} on port ${port}"
+    return 1
+  }
+  return 0
+}
+
+_mongodb_in_place_precheck() {
+  local from="$1" to="$2" from_major="${1%%.*}" to_major="${2%%.*}" fcv
+  if ((to_major < from_major)); then
+    msg_error "MongoDB ${from} cannot be downgraded to ${to} in place"
+    return 1
+  fi
+  if ((to_major - from_major > 1)); then
+    msg_error "MongoDB upgrades one major release at a time: ${from} -> ${to} needs $((from_major + 1)).0 first (MONGO_VERSION=$((from_major + 1)).0)"
+    return 1
+  fi
+  fcv="$(mongodb_get_fcv 2>/dev/null)" || fcv=""
+  if [[ -n "$fcv" && "$fcv" != "$from" ]]; then
+    msg_info "Raising featureCompatibilityVersion from ${fcv} to ${from}"
+    mongodb_set_fcv "$from" || return 1
+    msg_ok "Raised featureCompatibilityVersion to ${from}"
+  fi
+  return 0
+}
+
+# apt must be able to replace the mongodb-org packages without removing
+# anything else; a dependency ceiling below the target shows up here.
+_mongodb_in_place_simulate() {
+  local sim collateral
+  sim=$(apt-get -s install -y mongodb-org 2>&1) || {
+    msg_error "apt cannot upgrade mongodb-org in place:"
+    printf '%s\n' "$sim" | grep -E '^(E:|W:| )' | head -n 5
+    return 1
+  }
+  collateral=$(awk '/^Remv /{print $2}' <<<"$sim" | grep -v '^mongodb' || true)
+  if [[ -n "$collateral" ]]; then
+    msg_error "Upgrading mongodb-org in place would remove: ${collateral//$'\n'/ }"
+    return 1
+  fi
+  return 0
+}
+
 setup_mongodb() {
   local MONGO_VERSION="${MONGO_VERSION:-8.0}"
   local DISTRO_ID DISTRO_CODENAME
@@ -818,12 +882,18 @@ setup_mongodb() {
   fi
 
   # Scenario 2: Different version installed - clean upgrade
+  local in_place=0
   if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" != "$MONGO_VERSION" ]]; then
     msg_info "Upgrade MongoDB from $INSTALLED_VERSION to $MONGO_VERSION"
-    remove_old_tool_version "mongodb" || {
-      msg_error "Aborting MongoDB upgrade: another package depends on it (e.g. an app using it)"
-      return 1
-    }
+    if _purge_is_safe 'mongodb*'; then
+      remove_old_tool_version "mongodb" || return 1
+    else
+      # An app package depends on mongodb-org-server (Omada), so the purge
+      # would take it along. MongoDB swaps binaries one major release at a
+      # time, which is what apt does once the new repository is in place.
+      _mongodb_in_place_precheck "$INSTALLED_VERSION" "$MONGO_VERSION" || return 1
+      in_place=1
+    fi
   else
     msg_info "Setup MongoDB $MONGO_VERSION"
   fi
@@ -851,6 +921,15 @@ setup_mongodb() {
     msg_error "APT update failed — invalid MongoDB repo for ${DISTRO_ID}-${DISTRO_CODENAME}?"
     return 100
   }
+
+  if ((in_place)) && ! _mongodb_in_place_simulate; then
+    local old_key="$INSTALLED_VERSION"
+    [[ "$old_key" == 8.[1-9]* ]] && old_key="8.0"
+    manage_tool_repository "mongodb" "$INSTALLED_VERSION" "$MONGO_BASE_URL" \
+      "https://www.mongodb.org/static/pgp/server-${old_key}.asc" >/dev/null 2>&1 || true
+    $STD apt update || true
+    return 1
+  fi
 
   # Install MongoDB with retry logic
   install_packages_with_retry "mongodb-org" || {
@@ -882,6 +961,11 @@ EOF
     msg_warn "Failed to enable mongod service"
   }
   safe_service_restart mongod
+
+  if ((in_place)); then
+    mongodb_set_fcv "$MONGO_VERSION" || true
+    msg_custom "💡" "${YW:-}" "Apps that run their own mongod (Omada: port 27217) need mongodb_set_fcv ${MONGO_VERSION} <port> once they are back up"
+  fi
 
   # Verify MongoDB version
   local INSTALLED_VERSION

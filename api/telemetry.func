@@ -394,7 +394,7 @@ post_update_to_api() {
   # Retry with a smaller error trace (in case the payload was the problem)
   if [[ -n "$error_raw" ]]; then
     local short_error
-    short_error="exit_code=${exit_code} | $(explain_exit_code "$exit_code")"
+    short_error="exit_code=${exit_code} | $(_tm_explain "$exit_code" "${FAILED_COMMAND:-}")"
     [[ -n "${FAILED_COMMAND:-}" ]] && short_error+=" | at line ${FAILED_LINE:-?}: $(printf '%s' "$FAILED_COMMAND" | head -c 200)"
     payload=$(_tm_payload "$pb_status" "$exit_code" "$short_error")
     if _tm_send "$payload" "$STATUS_TIMEOUT" 2; then

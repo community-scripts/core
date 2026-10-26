@@ -92,7 +92,7 @@ _list_os_versions() {
   # Templates are per-architecture. Without this the catalog offers amd64
   # images on an arm64 host, which fail only after the download.
   local arch
-  arch="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+  arch="$(_cs_host_arch)"
   _pveam_available |
     grep -E "_${arch}\.(tar\.zst|tar\.xz|tar\.gz)([[:space:]]|$)" |
     awk '{print $2}' |
@@ -109,7 +109,7 @@ _list_templates() {
   local search="${1:-}" pattern="${2:-}"
   [[ -n "$search" ]] || return 0
   local arch
-  arch="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+  arch="$(_cs_host_arch)"
   _pveam_available |
     grep -E "_${arch}\.(tar\.zst|tar\.xz|tar\.gz)([[:space:]]|$)" |
     awk '{print $2}' |
@@ -128,7 +128,7 @@ resolve_os_version() {
   [[ -n "$ostype" && -n "$want" ]] || return 0
 
   # ARM64 pulls from linuxcontainers.org, the pveam catalog says nothing there
-  [[ "$(dpkg --print-architecture 2>/dev/null)" == "arm64" ]] && return 0
+  [[ "$(_cs_host_arch)" == "arm64" ]] && return 0
 
   local -a versions=()
   mapfile -t versions < <(_list_os_versions "$ostype")

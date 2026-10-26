@@ -2244,9 +2244,11 @@ ensure_usr_local_bin_persist() {
 # for 60 consecutive seconds (i.e. a genuine stall or dead connection).
 # Retries up to 3 times on failure, continuing where the last attempt stopped:
 # starting a 1.5 GB archive over on every stall is how large downloads kept
-# failing. The last attempt goes over IPv4, since a broken IPv6 path is a
-# common cause of stalls. The file is written to <output>.part and moved into
-# place only when complete, so a failure leaves an existing <output> intact.
+# failing. Attempts are 10 s and 20 s apart: back to back, a CDN answering 504
+# for a few seconds used up all three. The last attempt goes over IPv4, since a
+# broken IPv6 path is a common cause of stalls. The file is written to
+# <output>.part and moved into place only when complete, so a failure leaves an
+# existing <output> intact.
 # Returns 0 on success, 7 if all attempts fail.
 # ------------------------------------------------------------------------------
 curl_download() {
@@ -2277,7 +2279,8 @@ curl_download() {
     # 33: the server cannot resume, so the next attempt starts over.
     ((rc == 33)) && rm -f "$part"
     if ((attempt < retries)); then
-      msg_warn "Download failed or stalled (attempt ${attempt}/${retries}), retrying..."
+      msg_warn "Download failed or stalled (attempt ${attempt}/${retries}), retrying in $((attempt * 10))s..."
+      sleep $((attempt * 10))
     fi
     ((attempt++))
   done

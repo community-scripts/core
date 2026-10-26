@@ -29,6 +29,30 @@ follows from there.
 | [`tools/`](../tools/) | `run.sh`, the fork and branch runner | [loading.md](loading.md#running-against-a-fork) |
 | [`images/`](../images/) | Logos used in container MOTD and VM output | — |
 
+### Brand images
+
+[`images/logo.png`](../images/logo.png) is the 512px CS Amber mark shared with
+the frontend and services. [`images/logo-81x112.png`](../images/logo-81x112.png)
+contains the same square mark on a transparent 81x112 canvas, preserving its
+aspect ratio and the existing README, LXC and VM description URLs and dimensions.
+
+New Proxmox LXC and VM descriptions use
+[`images/logo-description.png`](../images/logo-description.png): the transparent
+CS mark above the Community-Scripts wordmark, displayed at 192x112 CSS pixels.
+Its 576x336 PNG provides 3x resolution for HiDPI displays.
+[`images/logo-description.svg`](../images/logo-description.svg) is the vector
+source, with the frontend's Manrope Bold wordmark converted to paths so no font
+download or installed font is required. A fine charcoal outline preserves
+contrast on light backgrounds without adding a tile.
+Render the SVG at 3x its declared dimensions when updating the PNG.
+
+The previous marks are archived as
+[`images/old_logo.png`](../images/old_logo.png) and
+[`images/old_logo-81x112.png`](../images/old_logo-81x112.png). Keep the active
+filenames stable so existing descriptions pick up the new branding without
+being regenerated after these assets are published. Existing descriptions keep
+their original image URL; regenerate a description to use the new wordmark.
+
 ## How it fits together
 
 [loading.md](loading.md) is the one to read first if you are changing anything
@@ -80,6 +104,7 @@ an update before it starts.
 | [`api/sysinfo.func`](../api/sysinfo.func) | Host and container facts, origin detection |
 | [`api/telemetry.func`](../api/telemetry.func) | Payload assembly and delivery |
 | [`vm/cloud-init.func`](../vm/cloud-init.func) | Cloud-init configuration for VMs |
+| [`vm/common.func`](../vm/common.func) | Backend-independent VM script helpers (tools, releases, checksums, first boot, summary) |
 | [`pve/backend.func`](../pve/backend.func) | Container creation via `pct` |
 | [`pve/vm-core.func`](../pve/vm-core.func) | VM creation via `qm` |
 | [`pve/vm-app.func`](../pve/vm-app.func) | Running LXC applications inside a VM |

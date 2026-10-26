@@ -294,18 +294,14 @@ get_image_url() {
 download_and_cache_image() {
   msg_info "Retrieving the URL for the ${OS_DISPLAY} Qcow2 Disk Image"
   URL=$(get_image_url)
-  CACHE_DIR="/var/lib/vz/template/cache"
-  CACHE_FILE="$CACHE_DIR/$(basename "$URL")"
-  mkdir -p "$CACHE_DIR"
+  CACHE_FILE="$(vm_image_cache_path "$URL")"
+  CACHE_DIR="$(dirname "$CACHE_FILE")"
   msg_ok "${CL}${BL}${URL}${CL}"
 
-  if [[ ! -s "$CACHE_FILE" ]]; then
-    curl -f#SL -o "$CACHE_FILE" "$URL"
-    echo -en "\e[1A\e[0K"
-    msg_ok "Downloaded ${CL}${BL}$(basename "$CACHE_FILE")${CL}"
-  else
-    msg_ok "Using cached image ${CL}${BL}$(basename "$CACHE_FILE")${CL}"
-  fi
+  # Through vm_fetch_image: a partial file is never mistaken for the image, and
+  # the vendor checksum is verified where one is published.
+  vm_fetch_image "$URL" "$CACHE_FILE" --cache --min-bytes $((10 * 1024 * 1024)) || exit 1
+  msg_ok "Image ready ${CL}${BL}$(basename "$CACHE_FILE")${CL}"
 }
 
 # ==============================================================================
@@ -318,12 +314,7 @@ download_and_cache_image() {
 # Ensures virt-customize (libguestfs-tools) is installed on the Proxmox host.
 # ------------------------------------------------------------------------------
 ensure_virt_customize() {
-  if ! command -v virt-customize &>/dev/null; then
-    msg_info "Installing libguestfs-tools"
-    apt-get -qq update >/dev/null
-    apt-get -qq install libguestfs-tools -y >/dev/null
-    msg_ok "Installed libguestfs-tools"
-  fi
+  vm_require_tools virt-customize || exit 1
 }
 
 # ------------------------------------------------------------------------------
@@ -467,22 +458,8 @@ create_app_vm() {
   msg_ok "Created VM shell"
 
   # Import disk
-  msg_info "Importing disk into storage ($STORAGE)"
-  if qm disk import --help >/dev/null 2>&1; then
-    IMPORT_CMD=(qm disk import)
-  else
-    IMPORT_CMD=(qm importdisk)
-  fi
-
-  IMPORT_OUT="$("${IMPORT_CMD[@]}" "$VMID" "$WORK_FILE" "$STORAGE" ${DISK_IMPORT:-} 2>&1 || true)"
-  DISK_REF_IMPORTED="$(printf '%s\n' "$IMPORT_OUT" | sed -n "s/.*successfully imported disk '\([^']\+\)'.*/\1/p" | tr -d "\r\"'")"
-  [[ -z "$DISK_REF_IMPORTED" ]] && DISK_REF_IMPORTED="$(pvesm list "$STORAGE" | awk -v id="$VMID" '$5 ~ ("vm-"id"-disk-") {print $1":"$5}' | sort | tail -n1)"
-  [[ -z "$DISK_REF_IMPORTED" ]] && {
-    msg_error "Unable to determine imported disk reference."
-    echo "$IMPORT_OUT"
-    exit 1
-  }
-  msg_ok "Imported disk (${CL}${BL}${DISK_REF_IMPORTED}${CL})"
+  vm_import_disk "$VMID" "$WORK_FILE" "$STORAGE" || exit 1
+  DISK_REF_IMPORTED="$VM_IMPORTED_DISK"
 
   # Clean up work file
   rm -f "$WORK_FILE"
@@ -537,15 +514,12 @@ wait_for_vm_ip() {
     return 0
   fi
 
-  set +e
-  for i in {1..20}; do
-    VM_IP=$(qm guest cmd "$VMID" network-get-interfaces 2>/dev/null |
-      jq -r '.[] | select(.name != "lo") | ."ip-addresses"[]? | select(."ip-address-type" == "ipv4") | ."ip-address"' 2>/dev/null |
-      grep -v "^127\." | head -1) || true
-    [ -n "$VM_IP" ] && break
-    sleep 3
-  done
-  set -e
+  # Matched by the NIC's MAC: the app may run Docker, whose bridge address
+  # used to be reported as the VM's.
+  if load_cloud_init_functions; then
+    VM_IP="$(get_vm_ip "$VMID" 60 "${MAC:-}")" || VM_IP=""
+  fi
+  return 0
 }
 
 # ------------------------------------------------------------------------------
