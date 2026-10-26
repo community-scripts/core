@@ -1702,12 +1702,21 @@ EOF
       fi
 
       if [[ -f /usr/lib/systemd/system/console-getty.service ]]; then
+        # LXC's drop-in of the same name in /run has agetty open the console
+        # itself, because systemd 258+ cannot set /dev/console up as stdin in a
+        # container. Ours replaces it, so it has to keep doing that.
+        local _console_port="-" _console_stdio=""
+        if grep -qs '^StandardInput=null' /run/systemd/system/console-getty.service.d/override.conf; then
+          _console_port="console"
+          _console_stdio=$'StandardInput=null\nStandardOutput=null'
+        fi
         mkdir -p /etc/systemd/system/console-getty.service.d
         cat >/etc/systemd/system/console-getty.service.d/override.conf <<EOF
 [Service]
 Environment=TERM=linux
 ExecStart=
-ExecStart=-/sbin/agetty ${_agetty_opts} 115200,38400,9600 - linux
+ExecStart=-/sbin/agetty ${_agetty_opts} 115200,38400,9600 ${_console_port} linux
+${_console_stdio}
 EOF
         # Enable console-getty for pct console (not enabled by default on Fedora/RHEL)
         systemctl enable console-getty.service &>/dev/null || true
