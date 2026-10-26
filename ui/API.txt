@@ -9,6 +9,7 @@ _cs_host_arch
 _cs_host_version_line
 _cs_live_base
 _cs_os_family
+_cs_reattach_output
 _cs_ref_line
 _cs_run_os_section
 _cs_run_update
@@ -50,6 +51,7 @@ _pve_version
 _pveam_available
 _pveam_update
 _sanitize_value
+_silent_exec
 _stop_container_if_installing
 _telemetry_report_exit
 _tm_clean_log

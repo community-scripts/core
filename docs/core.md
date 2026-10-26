@@ -33,7 +33,8 @@ Worth knowing:
 
 - `silent()` runs a command with its output captured, and records the failing
   command, line and log path so the error handler can report the real failure
-  rather than the wrapper.
+  rather than the wrapper. External commands run with SIGHUP ignored, so a
+  closed console does not kill the apt or npm of the moment.
 - Several host facts are memoised in files under a runtime cache directory
   rather than in shell variables, because every call site is a `$( )` or a
   pipe — that is, a subshell, where a variable assignment would be discarded.
