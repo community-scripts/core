@@ -145,8 +145,22 @@ resolve_os_version() {
     return 0
   fi
 
-  local candidate
-  candidate=$(printf '%s\n' "${versions[@]}" | awk -v want="$want" '
+  # Proxmox does not ship it, but linuxcontainers.org may carry exactly this
+  # release; the template stage falls back there when pveam has nothing.
+  local catalog_index
+  catalog_index="$(mktemp)"
+  if _lxc_catalog_fetch "$catalog_index" 2>/dev/null &&
+    _lxc_catalog_path "$ostype" "$want" "$(_cs_host_arch)" "$catalog_index" >/dev/null 2>&1; then
+    rm -f "$catalog_index"
+    msg_custom "ℹ️" "${YW}" "${ostype^} ${want} is not in this host's template catalog; using the linuxcontainers.org image"
+    return 0
+  fi
+  rm -f "$catalog_index"
+
+  # Nearest only means something between version numbers. A release name such
+  # as tumbleweed or excalibur scored 0 and became the oldest version on offer.
+  local candidate=""
+  [[ "$want" =~ ^[0-9]+(\.[0-9]+)?$ ]] && candidate=$(printf '%s\n' "${versions[@]}" | awk -v want="$want" '
     function num(v,   a) { split(v, a, "."); return a[1] * 10000 + (a[2] + 0) }
     BEGIN { w = num(want); best = ""; bestd = -1 }
     {

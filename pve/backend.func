@@ -2450,6 +2450,119 @@ Continue anyway?" 14 70; then
 
   return 0
 }
+
+# A distro appears in the catalog under whichever variant names it actually
+# builds. Nearly all use "default"; Gentoo publishes only openrc and systemd,
+# so a hardcoded "default" filter made it permanently unfindable. First match
+# wins, so the init system the engine expects leads.
+_lxc_catalog_variants() {
+  case "${1,,}" in
+  gentoo) echo "openrc systemd" ;;
+  *) echo "default" ;;
+  esac
+}
+
+# Pulls the catalog index to $1. Kept apart from the lookup so an unreachable
+# catalog reports as a network failure instead of "no such image".
+_lxc_catalog_fetch() {
+  command -v jq >/dev/null 2>&1 || {
+    $STD apt-get update
+    $STD apt-get install -y jq || return 1
+  }
+  curl -fsSL --max-time 30 -o "${1:?index path}" \
+    "https://images.linuxcontainers.org/streams/v1/images.json"
+}
+
+# No version asked for. The catalog carries no stable/latest marker -- Debian
+# lists forky (14, unreleased) beside trixie -- so picking by build date would
+# hand out a testing release. Use the codenames the UI already defaults to,
+# and otherwise only answer when the distro ships a single release at all.
+_lxc_catalog_default_release() {
+  local os="${1,,}" arch="$2" variant="$3" index="$4"
+  case "$os" in
+  debian)
+    printf '%s' "${DEBIAN_DEFAULT_CODENAME:-}"
+    return
+    ;;
+  ubuntu)
+    printf '%s' "${UBUNTU_DEFAULT_CODENAME:-}"
+    return
+    ;;
+  alpine)
+    printf '%s' "${ALPINE_DEFAULT_VERSION:-}"
+    return
+    ;;
+  esac
+  jq -r --arg os "$os" --arg arch "$arch" --arg variant "$variant" '
+    [ .products[]
+      | select(.arch == $arch and .variant == $variant)
+      | select((.os | ascii_downcase) == $os)
+      | .release ] | unique
+    | if length == 1 then .[0] else empty end
+  ' "$index" 2>/dev/null
+}
+
+# Echoes the catalog path of a usable rootfs image for os/version/arch.
+# Prefers the plain tarball. A squashfs counts as usable -- it just has to be
+# unpacked first -- and is what Nixos ships instead of a tarball.
+# var_version has to keep matching the pveam template name (archlinux-base, devuan-5),
+# and the catalog names those releases differently.
+_lxc_catalog_release_alias() {
+  case "${1,,}:${2}" in
+  archlinux:base) printf 'current' ;;
+  devuan:5 | devuan:5.0) printf 'daedalus' ;;
+  *) printf '%s' "$2" ;;
+  esac
+}
+
+# CentOS publishes 10 as "10-Stream". Only a suffix after a dash counts, so asking for 4
+# never lands on 43.
+_lxc_catalog_suffixed_release() {
+  jq -r --arg os "${1,,}" --arg ver "$2" --arg arch "$3" --arg variant "$4" '
+    [ .products[]
+      | select(.arch == $arch and .variant == $variant)
+      | select((.os | ascii_downcase) == $os)
+      | select(.release | startswith($ver + "-")) | .release ] | unique | last // empty
+  ' "$5" 2>/dev/null
+}
+
+_lxc_catalog_path() {
+  local os="${1,,}" ver="$2" arch="$3" index="${4:?index path}"
+  local variant want path
+  for variant in $(_lxc_catalog_variants "$os"); do
+    want="$(_lxc_catalog_release_alias "$os" "$ver")"
+    [[ -z "$want" ]] && want="$(_lxc_catalog_default_release "$os" "$arch" "$variant" "$index")"
+    [[ -z "$want" ]] && continue
+    path=$(jq -r --arg os "$os" --arg ver "$want" --arg arch "$arch" --arg variant "$variant" '
+      .products | to_entries[]
+      | select(.value.arch == $arch and .value.variant == $variant)
+      | select((.value.os | ascii_downcase) == $os)
+      | select(.value.release == $ver or ((.value.aliases // "") | split(",") | index($os + "/" + $ver)))
+      | .value.versions | to_entries | sort_by(.key) | last | .value.items
+      | (.["root.tar.xz"].path // .["root.squashfs"].path // empty)
+    ' "$index" 2>/dev/null | head -1)
+    if [[ -n "$path" ]]; then
+      printf '%s' "$path"
+      return 0
+    fi
+    want="$(_lxc_catalog_suffixed_release "$os" "$want" "$arch" "$variant" "$index")"
+    [[ -z "$want" ]] && continue
+    path=$(jq -r --arg os "$os" --arg ver "$want" --arg arch "$arch" --arg variant "$variant" '
+      .products | to_entries[]
+      | select(.value.arch == $arch and .value.variant == $variant)
+      | select((.value.os | ascii_downcase) == $os)
+      | select(.value.release == $ver)
+      | .value.versions | to_entries | sort_by(.key) | last | .value.items
+      | (.["root.tar.xz"].path // .["root.squashfs"].path // empty)
+    ' "$index" 2>/dev/null | head -1)
+    if [[ -n "$path" ]]; then
+      printf '%s' "$path"
+      return 0
+    fi
+  done
+  return 1
+}
+
 create_lxc_container() {
   # ------------------------------------------------------------------------------
   # Optional verbose mode (debug tracing)
@@ -2727,118 +2840,6 @@ create_lxc_container() {
   }
 
   ARCH="$(dpkg --print-architecture)"
-
-  # A distro appears in the catalog under whichever variant names it actually
-  # builds. Nearly all use "default"; Gentoo publishes only openrc and systemd,
-  # so a hardcoded "default" filter made it permanently unfindable. First match
-  # wins, so the init system the engine expects leads.
-  _lxc_catalog_variants() {
-    case "${1,,}" in
-    gentoo) echo "openrc systemd" ;;
-    *) echo "default" ;;
-    esac
-  }
-
-  # Pulls the catalog index to $1. Kept apart from the lookup so an unreachable
-  # catalog reports as a network failure instead of "no such image".
-  _lxc_catalog_fetch() {
-    command -v jq >/dev/null 2>&1 || {
-      $STD apt-get update
-      $STD apt-get install -y jq || return 1
-    }
-    curl -fsSL --max-time 30 -o "${1:?index path}" \
-      "https://images.linuxcontainers.org/streams/v1/images.json"
-  }
-
-  # No version asked for. The catalog carries no stable/latest marker -- Debian
-  # lists forky (14, unreleased) beside trixie -- so picking by build date would
-  # hand out a testing release. Use the codenames the UI already defaults to,
-  # and otherwise only answer when the distro ships a single release at all.
-  _lxc_catalog_default_release() {
-    local os="${1,,}" arch="$2" variant="$3" index="$4"
-    case "$os" in
-    debian)
-      printf '%s' "${DEBIAN_DEFAULT_CODENAME:-}"
-      return
-      ;;
-    ubuntu)
-      printf '%s' "${UBUNTU_DEFAULT_CODENAME:-}"
-      return
-      ;;
-    alpine)
-      printf '%s' "${ALPINE_DEFAULT_VERSION:-}"
-      return
-      ;;
-    esac
-    jq -r --arg os "$os" --arg arch "$arch" --arg variant "$variant" '
-      [ .products[]
-        | select(.arch == $arch and .variant == $variant)
-        | select((.os | ascii_downcase) == $os)
-        | .release ] | unique
-      | if length == 1 then .[0] else empty end
-    ' "$index" 2>/dev/null
-  }
-
-  # Echoes the catalog path of a usable rootfs image for os/version/arch.
-  # Prefers the plain tarball. A squashfs counts as usable -- it just has to be
-  # unpacked first -- and is what Nixos ships instead of a tarball.
-  # var_version has to keep matching the pveam template name (archlinux-base, devuan-5),
-  # and the catalog names those releases differently.
-  _lxc_catalog_release_alias() {
-    case "${1,,}:${2}" in
-    archlinux:base) printf 'current' ;;
-    devuan:5 | devuan:5.0) printf 'daedalus' ;;
-    *) printf '%s' "$2" ;;
-    esac
-  }
-
-  # CentOS publishes 10 as "10-Stream". Only a suffix after a dash counts, so asking for 4
-  # never lands on 43.
-  _lxc_catalog_suffixed_release() {
-    jq -r --arg os "${1,,}" --arg ver "$2" --arg arch "$3" --arg variant "$4" '
-      [ .products[]
-        | select(.arch == $arch and .variant == $variant)
-        | select((.os | ascii_downcase) == $os)
-        | select(.release | startswith($ver + "-")) | .release ] | unique | last // empty
-    ' "$5" 2>/dev/null
-  }
-
-  _lxc_catalog_path() {
-    local os="${1,,}" ver="$2" arch="$3" index="${4:?index path}"
-    local variant want path
-    for variant in $(_lxc_catalog_variants "$os"); do
-      want="$(_lxc_catalog_release_alias "$os" "$ver")"
-      [[ -z "$want" ]] && want="$(_lxc_catalog_default_release "$os" "$arch" "$variant" "$index")"
-      [[ -z "$want" ]] && continue
-      path=$(jq -r --arg os "$os" --arg ver "$want" --arg arch "$arch" --arg variant "$variant" '
-        .products | to_entries[]
-        | select(.value.arch == $arch and .value.variant == $variant)
-        | select((.value.os | ascii_downcase) == $os)
-        | select(.value.release == $ver or ((.value.aliases // "") | split(",") | index($os + "/" + $ver)))
-        | .value.versions | to_entries | sort_by(.key) | last | .value.items
-        | (.["root.tar.xz"].path // .["root.squashfs"].path // empty)
-      ' "$index" 2>/dev/null | head -1)
-      if [[ -n "$path" ]]; then
-        printf '%s' "$path"
-        return 0
-      fi
-      want="$(_lxc_catalog_suffixed_release "$os" "$want" "$arch" "$variant" "$index")"
-      [[ -z "$want" ]] && continue
-      path=$(jq -r --arg os "$os" --arg ver "$want" --arg arch "$arch" --arg variant "$variant" '
-        .products | to_entries[]
-        | select(.value.arch == $arch and .value.variant == $variant)
-        | select((.value.os | ascii_downcase) == $os)
-        | select(.value.release == $ver)
-        | .value.versions | to_entries | sort_by(.key) | last | .value.items
-        | (.["root.tar.xz"].path // .["root.squashfs"].path // empty)
-      ' "$index" 2>/dev/null | head -1)
-      if [[ -n "$path" ]]; then
-        printf '%s' "$path"
-        return 0
-      fi
-    done
-    return 1
-  }
 
   # Downloads a linuxcontainers rootfs template to $1.
   # Does Proxmox offer this OS/version/arch? Local first, then the catalog.
