@@ -1647,6 +1647,19 @@ EOF
 # Customizes container for passwordless login and creates update script
 # ------------------------------------------------------------------------------
 customize() {
+  # debugfs and configfs belong to the host, so an unprivileged container is
+  # refused and boots degraded. Proxmox's Debian and Ubuntu templates mask them
+  # already; the others (openSUSE, linuxcontainers.org images) do not.
+  if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+    local _unit
+    for _unit in sys-kernel-debug.mount sys-kernel-config.mount sys-kernel-tracing.mount; do
+      if systemctl is-failed --quiet "$_unit" 2>/dev/null; then
+        systemctl mask "$_unit" &>/dev/null || true
+        systemctl reset-failed "$_unit" &>/dev/null || true
+      fi
+    done
+  fi
+
   if [[ "${PASSWORD:-}" == "" ]]; then
     msg_info "Customizing Container"
 
