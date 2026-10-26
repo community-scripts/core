@@ -108,7 +108,7 @@ _incus_restart_ct() {
 # architecture; the launch then fails with "architecture isn't supported".
 _incus_image_fits_host() {
   local arch
-  arch=$(incus image info "$1" 2>/dev/null | awk '/^Architecture:/ {print $2; exit}' || true)
+  arch=$(LC_ALL=C incus image info "$1" 2>/dev/null | awk '/^Architecture:/ {print $2; exit}' || true)
   [[ -n "$arch" ]] || return 2
   [[ "$arch" == "$(uname -m)" ]]
 }
