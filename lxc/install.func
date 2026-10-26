@@ -1658,6 +1658,19 @@ customize() {
         systemctl reset-failed "$_unit" &>/dev/null || true
       fi
     done
+    # netplan-configure (Ubuntu 26.04) reloads udev after writing its config,
+    # and an unprivileged container has no udev to reload.
+    if systemctl is-failed --quiet netplan-configure.service 2>/dev/null; then
+      mkdir -p /etc/systemd/system/netplan-configure.service.d
+      cat >/etc/systemd/system/netplan-configure.service.d/no-udev.conf <<'EOF'
+[Service]
+ExecStartPost=
+ExecStartPost=-udevadm control --reload
+ExecStartPost=-udevadm trigger --action=add --subsystem-match=net
+EOF
+      systemctl daemon-reload &>/dev/null || true
+      systemctl reset-failed netplan-configure.service &>/dev/null || true
+    fi
   fi
 
   if [[ "${PASSWORD:-}" == "" ]]; then
