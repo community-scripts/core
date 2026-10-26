@@ -232,3 +232,6 @@ jobs:
           check ui/build-ui.func  ui/API.txt     || fail=1
           check api/api.func      api/API.txt    || fail=1
           exit $fail
+
+      - name: Update mode prompt tests
+        run: bash tests/update-mode-prompt.sh

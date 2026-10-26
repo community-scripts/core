@@ -862,11 +862,16 @@ incus_ensure_profile_loaded() {
   [[ -n "${_INCUS_PROFILE_LOADED:-}" ]] && return
   command -v incusd &>/dev/null && return
 
+  local nounset=0
+  [[ $- == *u* ]] && nounset=1
+  set +u
   if [[ -d /etc/profile.d ]]; then
     for script in /etc/profile.d/*.sh; do
-      [[ -r "$script" ]] && source "$script"
+      [[ -r "$script" ]] || continue
+      source "$script" >/dev/null 2>&1 || true
     done
   fi
+  ((nounset)) && set -u
 
   if [[ ":$PATH:" != *":/usr/local/bin:"* ]]; then
     export PATH="/usr/local/bin:$PATH"
@@ -1004,7 +1009,7 @@ incus_instance_field() {
 incus_container_running() {
   local name="$1"
   local status
-  status=$(incus info "$name" 2>/dev/null | awk '/^Status:/ {print $2}') || true
+  status=$(LC_ALL=C incus info "$name" 2>/dev/null | awk '/^Status:/ {print $2}') || true
   # incus info upper-cases the status (cmd/incus/info.go prints
   # strings.ToUpper(inst.Status)) where incus list leaves it title-case, so
   # comparing against either spelling verbatim is wrong for one of them.
