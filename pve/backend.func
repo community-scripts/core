@@ -662,7 +662,6 @@ $PCT_OPTIONS_STRING"
   # Validate storage space only if CONTAINER_STORAGE is already set
   # (Storage selection happens in create_lxc_container for some modes)
   if [[ -n "$CONTAINER_STORAGE" ]]; then
-    msg_info "Validating storage space"
     if ! validate_storage_space "$CONTAINER_STORAGE" "$DISK_SIZE" "no"; then
       local free_space
       free_space=$(pvesm status 2>/dev/null | awk -v s="$CONTAINER_STORAGE" '$1 == s { print $6 }')
@@ -671,7 +670,6 @@ $PCT_OPTIONS_STRING"
       msg_error "Not enough space on '$CONTAINER_STORAGE'. Required: ${DISK_SIZE}GB, Available: ${free_fmt}"
       exit 214
     fi
-    msg_ok "Storage space validated"
     check_storage_health "$CONTAINER_STORAGE" "$DISK_SIZE"
   fi
 
@@ -989,7 +987,7 @@ EOF
   # START CONTAINER AND INSTALL USERLAND
   # ============================================================================
 
-  msg_info "Starting LXC Container"
+  msg_info "Starting container"
   # Checked, and with its own code. Unchecked, a failure here surfaced as pct's
   # generic 255 -- which the exit table reads as DPKG's fatal error, so 197 runs
   # across 70 apps in a fortnight were filed as a package manager problem when
@@ -1004,14 +1002,14 @@ EOF
   # Wait for container to be running
   for i in {1..10}; do
     if pct status "$CTID" | grep -q "status: running"; then
-      msg_ok "Started LXC Container"
+      msg_ok "Container started"
       break
     fi
     sleep 1
     if [ "$i" -eq 10 ]; then
       local ct_status
       ct_status=$(pct status "$CTID" 2>/dev/null || echo "unknown")
-      msg_error "LXC Container did not reach running state (status: ${ct_status})"
+      msg_error "Container did not reach running state (status: ${ct_status})"
       _pct_start_failed "$CTID" "$_start_out"
       exit 117
     fi
@@ -1019,7 +1017,7 @@ EOF
 
   # Wait for network (skip for Alpine initially)
   if [ "$var_os" != "alpine" ]; then
-    msg_info "Waiting for network in LXC container"
+    msg_info "Waiting for the container network"
 
     # Wait for IP assignment (IPv4 or IPv6)
     local ip_in_lxc=""
@@ -1067,7 +1065,7 @@ EOF
     if [ "$ping_success" = false ]; then
       msg_warn "Network configured (IP: $ip_in_lxc) but connectivity test failed - installation will continue"
     else
-      msg_ok "Network in LXC is reachable (ping)"
+      msg_ok "Network reachable (${ip_in_lxc})"
     fi
   fi
   # Function to get correct GID inside container
@@ -1088,7 +1086,7 @@ EOF
     fi
   fi
 
-  msg_info "Customizing LXC Container"
+  msg_info "Customizing container"
 
  set +Eeuo pipefail
  trap - ERR
@@ -1396,12 +1394,12 @@ PROFILE
   fi
 
   if [[ $install_exit_code -eq 0 ]]; then
-    msg_ok "Customized LXC Container"
+    msg_ok "Container customized"
 
     if [[ "${DNS_RETRY_OVERRIDE:-false}" == "true" ]]; then
-      msg_info "Applying DNS retry override in LXC (8.8.8.8, 1.1.1.1)"
+      msg_info "Applying the DNS override (8.8.8.8, 1.1.1.1)"
       pct exec "$CTID" -- bash -c "printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\n' >/etc/resolv.conf" >/dev/null 2>&1 || true
-      msg_ok "DNS override applied in LXC"
+      msg_ok "DNS override applied"
     fi
 
     install_ssh_keys_into_ct
@@ -3079,24 +3077,20 @@ create_lxc_container() {
   if resolve_storage_preselect template "${TEMPLATE_STORAGE:-}"; then
     TEMPLATE_STORAGE="$STORAGE_RESULT"
     TEMPLATE_STORAGE_INFO="$STORAGE_INFO"
-    msg_ok "Storage ${BL}${TEMPLATE_STORAGE}${CL} (${TEMPLATE_STORAGE_INFO}) [Template]"
   else
     _storage_preselect_recover template "${TEMPLATE_STORAGE:-}" || exit 120
     TEMPLATE_STORAGE="$STORAGE_RESULT"
     TEMPLATE_STORAGE_INFO="$STORAGE_INFO"
-    msg_ok "Storage ${BL}${TEMPLATE_STORAGE}${CL} (${TEMPLATE_STORAGE_INFO}) [Template]"
   fi
 
   # Container storage selection
   if resolve_storage_preselect container "${CONTAINER_STORAGE:-}"; then
     CONTAINER_STORAGE="$STORAGE_RESULT"
     CONTAINER_STORAGE_INFO="$STORAGE_INFO"
-    msg_ok "Storage ${BL}${CONTAINER_STORAGE}${CL} (${CONTAINER_STORAGE_INFO}) [Container]"
   else
     _storage_preselect_recover container "${CONTAINER_STORAGE:-}" || exit 119
     CONTAINER_STORAGE="$STORAGE_RESULT"
     CONTAINER_STORAGE_INFO="$STORAGE_INFO"
-    msg_ok "Storage ${BL}${CONTAINER_STORAGE}${CL} (${CONTAINER_STORAGE_INFO}) [Container]"
   fi
 
   msg_info "Validating storage '$CONTAINER_STORAGE'"
@@ -3165,7 +3159,7 @@ create_lxc_container() {
   if [[ "$STORAGE_TYPE" == "lvmthin" ]] && ! _lvmthin_check "$CONTAINER_STORAGE"; then
     exit 214
   fi
-  msg_ok "Storage '$CONTAINER_STORAGE' ($STORAGE_TYPE) validated"
+  msg_ok "Storage '$CONTAINER_STORAGE' ($STORAGE_TYPE) validated${CONTAINER_STORAGE_INFO:+ - ${CONTAINER_STORAGE_INFO}}"
 
   msg_info "Validating template storage '$TEMPLATE_STORAGE'"
   TEMPLATE_TYPE=$(grep -E "^[^:]+: $TEMPLATE_STORAGE$" /etc/pve/storage.cfg | cut -d: -f1 || true)
@@ -3173,7 +3167,7 @@ create_lxc_container() {
   if ! pvesm status -content vztmpl 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$TEMPLATE_STORAGE"; then
     msg_warn "Template storage '$TEMPLATE_STORAGE' may not support 'vztmpl'"
   fi
-  msg_ok "Template storage '$TEMPLATE_STORAGE' validated"
+  msg_ok "Template storage '$TEMPLATE_STORAGE' validated${TEMPLATE_STORAGE_INFO:+ - ${TEMPLATE_STORAGE_INFO}}"
 
   # Cluster quorum (if cluster)
   if [[ -f /etc/pve/corosync.conf ]]; then
@@ -3234,7 +3228,7 @@ create_lxc_container() {
       rm -f "$TEMPLATE_PATH"
       download_catalog_template "$TEMPLATE_PATH"
     else
-      msg_ok "Template ${BL}$TEMPLATE${CL} found locally."
+      msg_ok "Template ${BL}$TEMPLATE${CL} (local)"
     fi
 
   else
@@ -3481,7 +3475,7 @@ create_lxc_container() {
   # ------------------------------------------------------------------------------
   # Create LXC Container
   # ------------------------------------------------------------------------------
-  msg_info "Creating LXC container"
+  msg_info "Creating container"
 
   # Ensure subuid/subgid entries exist
   grep -q "root:100000:65536" /etc/subuid || echo "root:100000:65536" >>/etc/subuid
@@ -3769,7 +3763,7 @@ create_lxc_container() {
     exit 216
   }
 
-  msg_ok "LXC Container ${BL}$CTID${CL} ${GN}was successfully created."
+  msg_ok "Container ${BL}$CTID${CL} created"
 
   if [[ -s "$LOGFILE" && -n "${BUILD_LOG:-}" ]]; then
     {
