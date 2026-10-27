@@ -1114,6 +1114,10 @@ verb_ip6() {
   set_std_mode # Set STD mode based on VERBOSE
 
   if [[ "${IPV6_METHOD:-}" == "disable" ]]; then
+    if [[ ! -d /proc/sys/net/ipv6 ]]; then
+      msg_ok "IPv6 is already disabled by the host kernel"
+      return 0
+    fi
     msg_info "Disabling IPv6 (this may affect some services)"
     mkdir -p /etc/sysctl.d
     cat >/etc/sysctl.d/99-disable-ipv6.conf <<EOF
