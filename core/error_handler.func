@@ -343,6 +343,9 @@ _eh_explanation() {
   if [[ -n "$tools" ]] && ! _eh_command_is "$command" "$tools"; then
     explanation="Command failed with exit status ${exit_code}"
   fi
+  if [[ "$exit_code" == 5 ]] && _eh_command_is "$command" "systemctl"; then
+    explanation="Systemd: unit not found"
+  fi
   printf '%s' "$explanation"
 }
 
@@ -665,16 +668,31 @@ error_handler() {
   command="${command//\$STD/}"
 
   # silent() knows the real failing command; the trap only sees the wrapper.
+  # Its record outlives a failure the caller handled, so it only counts for
+  # the line it came from; otherwise its capture would be sent for this one.
   local from_silent=0
   if [[ -n "${_SILENT_FAILED_RC:-}" ]]; then
-    exit_code="$_SILENT_FAILED_RC"
-    command="$_SILENT_FAILED_CMD"
-    line_number="$_SILENT_FAILED_LINE"
-    from_silent=1
+    if [[ "${_SILENT_FAILED_LINE:-}" == "$line_number" ]]; then
+      exit_code="$_SILENT_FAILED_RC"
+      command="$_SILENT_FAILED_CMD"
+      from_silent=1
+    else
+      if [[ -n "${_SILENT_FAILED_LOG:-}" ]]; then
+        rm -f "${_SILENT_FAILED_LOG}.errinfo" 2>/dev/null
+      fi
+      unset _SILENT_FAILED_LOG
+    fi
     unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE
   fi
 
   [[ "$exit_code" -eq 0 ]] && return 0
+
+  # set -E hands the ERR trap (which passes no arguments) to $(...) and ( ) too.
+  # The calling shell fails on the same error and reports it, so reporting here
+  # as well printed it twice.
+  if ((BASH_SUBSHELL > 0 && $# == 0)); then
+    exit "$exit_code"
+  fi
 
   # Telemetry reads these for the "where"
   FAILED_COMMAND="$command"
@@ -758,16 +776,30 @@ _stop_container_if_installing() {
 # ------------------------------------------------------------------------------
 on_exit() {
   local exit_code=$?
+  [[ "${_CS_HANGUP:-}" == "1" ]] && echo "[INFO] $(date '+%Y-%m-%d %H:%M:%S') on_exit with code ${exit_code} (pid $$)"
 
   # Before anything else: the timings are only useful if they survive a failure.
   declare -f dev_mode_timing_summary >/dev/null 2>&1 && dev_mode_timing_summary
 
   # Here, because most ct scripts exit inside update_script.
   declare -f apt_conffile_report >/dev/null 2>&1 && apt_conffile_report
+  if [[ $exit_code -eq 0 && "${_CS_UPDATE_CLEANUP:-}" == "1" ]] && declare -f cleanup_lxc >/dev/null 2>&1; then
+    _CS_UPDATE_CLEANUP=0
+    cleanup_lxc || true
+  fi
+
+  # fetch_and_deploy_release leaves a pending marker next to the stamp; only a
+  # run that deployed and exits 0 may remove it.
+  if [[ $exit_code -eq 0 && "${_CS_DEPLOYED:-}" == "1" ]]; then
+    rm -f "${HOME:-/root}"/.*.pending 2>/dev/null || true
+  fi
 
   if _is_container_context; then
     if [[ $exit_code -ne 0 ]]; then
       _container_write_failure "$exit_code" "${FAILED_COMMAND:-}" "${FAILED_LINE:-}"
+    elif [[ "${INSTALL_LOG:-}" == *.install-*.log ]]; then
+      # The host reads this when its lxc-attach did not live to see the end.
+      : >"${INSTALL_LOG%.log}.done" 2>/dev/null || true
     fi
   else
     if [[ "${POST_UPDATE_DONE:-}" != "true" ]] && declare -f post_update_to_api >/dev/null 2>&1; then
@@ -846,11 +878,18 @@ on_terminate() {
 # ------------------------------------------------------------------------------
 # on_hangup() - SIGHUP (SSH disconnect, terminal closed)
 #
-# No cursor restore and no message: the terminal that would read them is gone.
+# Not an abort: the run carries on with its output in the active log, and
+# whoever opens a console later finds the result. Writes to the terminal that
+# is gone would fail with EIO and end the script, hence the redirect.
 # ------------------------------------------------------------------------------
 on_hangup() {
   declare -f stop_spinner >/dev/null 2>&1 && { stop_spinner 2>/dev/null || true; }
-  _eh_signal_exit 129
+  local log=""
+  declare -f get_active_logfile >/dev/null 2>&1 && log="$(get_active_logfile 2>/dev/null)"
+  [[ -n "$log" ]] || log="${INSTALL_LOG:-${BUILD_LOG:-/dev/null}}"
+  exec </dev/null >>"$log" 2>&1
+  export _CS_HANGUP=1 CS_ANIMATION_OK=0 _CS_HANGUP_LOG="$log"
+  echo "[WARN] $(date '+%Y-%m-%d %H:%M:%S') The terminal closed; continuing, output follows here. (pid $$, subshell ${BASH_SUBSHELL}, during: ${BASH_COMMAND:-?})"
 }
 
 # ==============================================================================

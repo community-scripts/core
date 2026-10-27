@@ -998,7 +998,7 @@ vm_prompt_gpu() {
   if prompt_confirm "Pass through a GPU?" "n" 60; then
     GPU_PASSTHROUGH="yes"
     local gpus
-    gpus=$(incus info --resources 2>/dev/null | awk '/PCI address:/ {print $NF}' | head -8)
+    gpus=$(LC_ALL=C incus info --resources 2>/dev/null | awk '/PCI address:/ {print $NF}' | head -8)
     if [[ -n "$gpus" ]]; then
       GPU_PCI=$(prompt_input "GPU PCI address (empty = first available)" "" 60)
     fi
@@ -1012,7 +1012,7 @@ vm_prompt_gpu() {
 vm_prompt_usb() {
   USB_DEVICES=""
   local listing
-  listing=$(incus info --resources 2>/dev/null |
+  listing=$(LC_ALL=C incus info --resources 2>/dev/null |
     awk '/^ *USB devices:/,/^ *[A-Z][a-z]+ devices:/' |
     awk '/Vendor ID|Product ID|Vendor:|Product:/ {print}' | head -40)
   if prompt_confirm "Pass through USB devices?" "n" 60; then

@@ -92,7 +92,7 @@ _list_os_versions() {
   # Templates are per-architecture. Without this the catalog offers amd64
   # images on an arm64 host, which fail only after the download.
   local arch
-  arch="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+  arch="$(_cs_host_arch)"
   _pveam_available |
     grep -E "_${arch}\.(tar\.zst|tar\.xz|tar\.gz)([[:space:]]|$)" |
     awk '{print $2}' |
@@ -109,7 +109,7 @@ _list_templates() {
   local search="${1:-}" pattern="${2:-}"
   [[ -n "$search" ]] || return 0
   local arch
-  arch="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+  arch="$(_cs_host_arch)"
   _pveam_available |
     grep -E "_${arch}\.(tar\.zst|tar\.xz|tar\.gz)([[:space:]]|$)" |
     awk '{print $2}' |
@@ -128,7 +128,7 @@ resolve_os_version() {
   [[ -n "$ostype" && -n "$want" ]] || return 0
 
   # ARM64 pulls from linuxcontainers.org, the pveam catalog says nothing there
-  [[ "$(dpkg --print-architecture 2>/dev/null)" == "arm64" ]] && return 0
+  [[ "$(_cs_host_arch)" == "arm64" ]] && return 0
 
   local -a versions=()
   mapfile -t versions < <(_list_os_versions "$ostype")
@@ -145,8 +145,22 @@ resolve_os_version() {
     return 0
   fi
 
-  local candidate
-  candidate=$(printf '%s\n' "${versions[@]}" | awk -v want="$want" '
+  # Proxmox does not ship it, but linuxcontainers.org may carry exactly this
+  # release; the template stage falls back there when pveam has nothing.
+  local catalog_index
+  catalog_index="$(mktemp)"
+  if _lxc_catalog_fetch "$catalog_index" 2>/dev/null &&
+    _lxc_catalog_path "$ostype" "$want" "$(_cs_host_arch)" "$catalog_index" >/dev/null 2>&1; then
+    rm -f "$catalog_index"
+    msg_custom "ℹ️" "${YW}" "${ostype^} ${want} is not in this host's template catalog; using the linuxcontainers.org image"
+    return 0
+  fi
+  rm -f "$catalog_index"
+
+  # Nearest only means something between version numbers. A release name such
+  # as tumbleweed or excalibur scored 0 and became the oldest version on offer.
+  local candidate=""
+  [[ "$want" =~ ^[0-9]+(\.[0-9]+)?$ ]] && candidate=$(printf '%s\n' "${versions[@]}" | awk -v want="$want" '
     function num(v,   a) { split(v, a, "."); return a[1] * 10000 + (a[2] + 0) }
     BEGIN { w = num(want); best = ""; bestd = -1 }
     {
@@ -756,7 +770,7 @@ var_tun=no
 # Advanced Settings (Proxmox-official features)
 var_nesting=1          # Allow nesting (required for Docker/LXC in CT)
 var_keyctl=0           # Allow keyctl() - needed for Docker (systemd-networkd workaround)
-var_mknod=0            # Allow device node creation (requires kernel 5.3+, experimental)
+var_mknod=0            # Allow device node creation
 var_mount_fs=          # Allow specific filesystems: nfs,fuse,ext4,etc (leave empty for defaults)
 var_protection=no      # Prevent accidental deletion of container
 var_timezone=          # Container timezone (e.g. Europe/Berlin, leave empty for host timezone)

@@ -314,14 +314,17 @@ get_active_logfile() {
 # silent()
 #
 # - Executes command with output redirected to active log file
-# - On error: displays last 20 lines of log and exits with original exit code
-# - Temporarily disables error trap to capture exit code correctly
-# - Sources explain_exit_code() for detailed error messages
+# - On error: records the command, line and log, and returns its exit code;
+#   the ERR trap reports it. `$STD cmd || true` used to end the run instead.
+# - Temporarily disables error trap to capture exit code correctly, then
+#   restores the script's own trap
 # ------------------------------------------------------------------------------
 silent() {
   local cmd="$*"
   local caller_line="${BASH_LINENO[0]:-unknown}"
   local logfile="$(get_active_logfile)"
+  local err_trap
+  err_trap="$(trap -p ERR)"
 
   set +Eeuo pipefail
   trap - ERR
@@ -330,40 +333,33 @@ silent() {
   local rc=$?
 
   set -Eeuo pipefail
-  trap 'error_handler' ERR
+  eval "${err_trap:-trap - ERR}"
 
   if [[ $rc -ne 0 ]]; then
-    # Source explain_exit_code if needed
-    if ! declare -f explain_exit_code >/dev/null 2>&1; then
-      if declare -f _cs_source_func >/dev/null 2>&1; then
-        _cs_source_func "core/error_handler.func" 2>/dev/null || true
-      else
-        # shellcheck disable=SC1090
-        source <(curl -fsSL "${_CS_CURL_RETRY[@]}" "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/core/error_handler.func") 2>/dev/null || true
-      fi
-    fi
-
-    local explanation=""
-    if declare -f explain_exit_code >/dev/null 2>&1; then
-      explanation="$(explain_exit_code "$rc")"
-    fi
-
-    printf "\e[?25h"
-    if [[ -n "$explanation" ]]; then
-      msg_error "in line ${caller_line}: exit code ${rc} (${explanation})"
-    else
-      msg_error "in line ${caller_line}: exit code ${rc}"
-    fi
-    msg_custom "→" "${YWB}" "${cmd}"
-
-    if [[ -s "$logfile" ]]; then
-      echo -e "\n${TAB}--- Last 20 lines of log ---"
-      tail -n 20 "$logfile"
-      echo -e "${TAB}----------------------------\n"
-    fi
-
-    exit "$rc"
+    export _SILENT_FAILED_RC="$rc" _SILENT_FAILED_CMD="$cmd" _SILENT_FAILED_LINE="$caller_line" _SILENT_FAILED_LOG="$logfile"
+    return "$rc"
   fi
+  unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG
+}
+
+# The record silent() left behind only counts for the line it came from: a
+# failure the caller handled must not be reported for a later, unrelated one.
+_vm_show_silent_failure() {
+  local explanation=""
+  if ! declare -f explain_exit_code >/dev/null 2>&1 && declare -f _cs_source_func >/dev/null 2>&1; then
+    _cs_source_func "api/exitcodes.func" 2>/dev/null || true
+  fi
+  declare -f explain_exit_code >/dev/null 2>&1 && explanation="$(explain_exit_code "$_SILENT_FAILED_RC")"
+
+  printf "\e[?25h"
+  msg_error "in line ${_SILENT_FAILED_LINE}: exit code ${_SILENT_FAILED_RC}${explanation:+ (${explanation})}"
+  msg_custom "→" "${YWB:-}" "${_SILENT_FAILED_CMD}"
+  if [[ -s "${_SILENT_FAILED_LOG:-}" ]]; then
+    echo -e "\n${TAB}--- Last 20 lines of log ---"
+    tail -n 20 "$_SILENT_FAILED_LOG"
+    echo -e "${TAB}----------------------------\n"
+  fi
+  unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG
 }
 
 # ------------------------------------------------------------------------------
@@ -678,6 +674,11 @@ error_handler() {
   local exit_code="$?"
   local line_number="${1:-unknown}"
   local command="${2:-unknown}"
+
+  if [[ -n "${_SILENT_FAILED_RC:-}" && "${_SILENT_FAILED_LINE:-}" == "$line_number" ]]; then
+    command="$_SILENT_FAILED_CMD"
+    _vm_show_silent_failure
+  fi
 
   if declare -f post_update_to_api >/dev/null 2>&1; then
     post_update_to_api "failed" "$exit_code"
@@ -1670,8 +1671,9 @@ vm_prompt_keyboard() {
 # VM_TIMEZONE, else the host's zone; empty when neither names a known zone.
 vm_timezone_default() {
   local tz="${VM_TIMEZONE:-}"
-  [[ -n "$tz" ]] || tz="$(cat /etc/timezone 2>/dev/null)"
-  [[ -n "$tz" ]] || tz="$(timedatectl show -p Timezone --value 2>/dev/null)"
+  # Debian 13 no longer ships /etc/timezone; a failed read must fall through, not trip the ERR trap
+  [[ -n "$tz" ]] || tz="$(cat /etc/timezone 2>/dev/null || true)"
+  [[ -n "$tz" ]] || tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
   [[ -n "$tz" && -f "/usr/share/zoneinfo/$tz" ]] && printf '%s' "$tz"
   return 0
 }
@@ -2309,6 +2311,10 @@ vm_mark_created() {
 
 vm_post_create_error() {
   local rc=$? line="${1:-unknown}" cmd="${2:-unknown}"
+  if [[ -n "${_SILENT_FAILED_RC:-}" && "${_SILENT_FAILED_LINE:-}" == "$line" ]]; then
+    cmd="$_SILENT_FAILED_CMD"
+    _vm_show_silent_failure
+  fi
   msg_warn "A step after VM creation failed (line ${line}, exit ${rc}): ${cmd}"
   msg_warn "VM ${VMID:-?} is left in place -- finish the remaining configuration by hand."
   declare -f post_update_to_api >/dev/null 2>&1 && post_update_to_api "failed" "$rc"

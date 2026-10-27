@@ -31,10 +31,19 @@ on:
       - "tests/external-installer.sh"
       - "tests/forge-version-key.sh"
       - "tests/nodejs-key-refresh.sh"
+      - "tests/nodejs-in-place.sh"
       - "tests/forge-connection.sh"
       - "tests/failed-command-output.sh"
+      - "tests/stale-silent-record.sh"
       - "tests/exit-code-hints.sh"
       - "tests/forge-release-json.sh"
+      - "tests/install-cleanup.sh"
+      - "tests/console-hangup.sh"
+      - "tests/incus-target.sh"
+      - "tests/incus-storage-space.sh"
+      - "tests/release-stamp-pending.sh"
+      - "tests/pct-start-reason.sh"
+      - "tests/vm-silent.sh"
       - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
@@ -57,10 +66,19 @@ on:
       - "tests/external-installer.sh"
       - "tests/forge-version-key.sh"
       - "tests/nodejs-key-refresh.sh"
+      - "tests/nodejs-in-place.sh"
       - "tests/forge-connection.sh"
       - "tests/failed-command-output.sh"
+      - "tests/stale-silent-record.sh"
       - "tests/exit-code-hints.sh"
       - "tests/forge-release-json.sh"
+      - "tests/install-cleanup.sh"
+      - "tests/console-hangup.sh"
+      - "tests/incus-target.sh"
+      - "tests/incus-storage-space.sh"
+      - "tests/release-stamp-pending.sh"
+      - "tests/pct-start-reason.sh"
+      - "tests/vm-silent.sh"
       - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
@@ -109,17 +127,39 @@ jobs:
       - name: Node.js key refresh tests
         run: bash tests/nodejs-key-refresh.sh
 
+      - name: Node.js in-place upgrade tests
+        run: bash tests/nodejs-in-place.sh
+
       - name: Forge connection diagnosis tests
         run: bash tests/forge-connection.sh
 
       - name: Failed command output tests
         run: bash tests/failed-command-output.sh
+      - name: Stale silent record tests
+        run: bash tests/stale-silent-record.sh
 
       - name: Exit code hint tests
         run: bash tests/exit-code-hints.sh
 
       - name: Forge release lookup tests
         run: bash tests/forge-release-json.sh
+
+      - name: Install cleanup and uv trap tests
+        run: bash tests/install-cleanup.sh
+      - name: Console hangup tests
+        run: bash tests/console-hangup.sh
+
+      - name: Incus target tests
+        run: bash tests/incus-target.sh
+
+      - name: Incus storage space tests
+        run: bash tests/incus-storage-space.sh
+      - name: Release stamp pending marker tests
+        run: bash tests/release-stamp-pending.sh
+      - name: pct start reason tests
+        run: bash tests/pct-start-reason.sh
+      - name: VM silent helper tests
+        run: bash tests/vm-silent.sh
 
       - name: Prefetch lists cover every engine file
         run: |
@@ -192,3 +232,6 @@ jobs:
           check ui/build-ui.func  ui/API.txt     || fail=1
           check api/api.func      api/API.txt    || fail=1
           exit $fail
+
+      - name: Update mode prompt tests
+        run: bash tests/update-mode-prompt.sh

@@ -271,7 +271,22 @@ categorize_error() {
     return
   fi
 
-  local code="$1"
+  local code="$1" command="${2:-${FAILED_COMMAND:-}}" errinfo tool
+  case "$code" in
+  113 | 114 | 122 | 129 | 130 | 143 | 253 | 254) echo "user_aborted"; return ;;
+  134 | 137) echo "resource"; return ;;
+  139 | 141) echo "signal"; return ;;
+  esac
+  # The tool that ran says more than a status several tools share.
+  if [[ -z "$command" ]] && declare -f _tm_find_errinfo >/dev/null 2>&1 && errinfo=$(_tm_find_errinfo); then
+    command=$(sed -n 's/^COMMAND=//p' "$errinfo" | head -n1)
+  fi
+  tool="${command%% *}"
+  tool="${tool##*/}"
+  case "$tool" in
+  systemctl) echo "service"; return ;;
+  pct | qm | pvesm | pvesh | pveam) echo "proxmox"; return ;;
+  esac
   case "$code" in
   6 | 7 | 22 | 35) echo "network" ;;
   10) echo "config" ;;
@@ -284,12 +299,6 @@ categorize_error() {
   150 | 151 | 153 | 154) echo "service" ;;
   170 | 171 | 172 | 173 | 180 | 181 | 182 | 183 | 190 | 191 | 192 | 193) echo "database" ;;
   243 | 245 | 246 | 247 | 248 | 249) echo "runtime" ;;
-  # Kept in step with the aborted branch of post_update_to_api: a code that
-  # makes the run "aborted" must not describe itself as something else here.
-
-  113 | 114 | 122 | 129 | 130 | 143 | 253 | 254) echo "user_aborted" ;;
-  134 | 137) echo "resource" ;;
-  139 | 141) echo "signal" ;;
   1 | 2) echo "shell" ;;
   *) echo "unknown" ;;
   esac

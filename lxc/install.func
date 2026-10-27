@@ -267,7 +267,7 @@ detect_os() {
     OS_FAMILY="suse"
     PKG_MANAGER="zypper"
     ;;
-  arch | archlinux)
+  arch | archlinux | archarm)
     OS_TYPE="arch"
     OS_FAMILY="arch"
     PKG_MANAGER="pacman"
@@ -869,8 +869,8 @@ pkg_clean() {
     $STD apk cache clean
     ;;
   dnf)
-    $STD dnf clean all
     $STD dnf autoremove -y
+    $STD dnf clean all
     ;;
   yum)
     $STD yum clean all
@@ -1114,6 +1114,10 @@ verb_ip6() {
   set_std_mode # Set STD mode based on VERBOSE
 
   if [[ "${IPV6_METHOD:-}" == "disable" ]]; then
+    if [[ ! -d /proc/sys/net/ipv6 ]]; then
+      msg_ok "IPv6 is already disabled by the host kernel"
+      return 0
+    fi
     msg_info "Disabling IPv6 (this may affect some services)"
     mkdir -p /etc/sysctl.d
     cat >/etc/sysctl.d/99-disable-ipv6.conf <<EOF
@@ -1216,7 +1220,7 @@ setting_up_container() {
     # upgrade). The Arch base template ships without an initialized keyring.
     if [[ ! -f /etc/pacman.d/gnupg/pubring.gpg ]] || [[ ! -s /etc/pacman.d/gnupg/pubring.gpg ]]; then
       $STD pacman-key --init
-      $STD pacman-key --populate archlinux
+      $STD pacman-key --populate
     fi
   fi
 
@@ -1271,9 +1275,9 @@ network_check() {
   fi
 
   # Debian's iputils no longer ships a ping6 binary; and missing IPv6 is not an error.
-  local _ping6="ping6"
-  command -v ping6 &>/dev/null || _ping6="ping -6"
-  if $_ping6 -c 1 -W 1 2606:4700:4700::1111 &>/dev/null || $_ping6 -c 1 -W 1 2001:4860:4860::8888 &>/dev/null || $_ping6 -c 1 -W 1 2620:fe::fe &>/dev/null; then
+  local -a _ping6=(ping6)
+  command -v ping6 &>/dev/null || _ping6=(ping -6)
+  if "${_ping6[@]}" -c 1 -W 1 2606:4700:4700::1111 &>/dev/null || "${_ping6[@]}" -c 1 -W 1 2001:4860:4860::8888 &>/dev/null || "${_ping6[@]}" -c 1 -W 1 2620:fe::fe &>/dev/null; then
     msg_ok "IPv6 Internet Connected"
     ipv6_connected=true
   else
@@ -1387,6 +1391,16 @@ EOF
   # Update and upgrade
   pkg_update
   pkg_upgrade
+
+  # PID 1 pins its executor at boot; a systemd upgrade removes the
+  # libsystemd-shared that pinned binary links against, and every service
+  # start then exits 127 (journald, getty) until PID 1 re-executes. Debian's
+  # postinst only tries via deb-systemd-invoke, which policy-rc.d can veto.
+  if [[ -d /run/systemd/system && "$(readlink /proc/1/exe 2>/dev/null)" == *"(deleted)"* ]]; then
+    systemctl daemon-reexec &>/dev/null || true
+    systemctl reset-failed &>/dev/null || true
+    systemctl start systemd-journald.service &>/dev/null || true
+  fi
 
   # Remove Python EXTERNALLY-MANAGED restriction
   rm -rf /usr/lib/python3.*/EXTERNALLY-MANAGED 2>/dev/null || true
@@ -1518,7 +1532,7 @@ EOF
 echo -e "${GATEWAY:-}${YW:-}Provided by: ${GN:-}community-scripts ORG ${YW:-}| GitHub: ${GN:-}https://github.com/community-scripts/ProxmoxVE${CL:-}"
 echo ""
 echo -e "${OS:-}${YW:-}OS: ${GN:-}${os_name} - Version: ${os_version}${CL:-}"
-echo -e "${HOSTNAME:-}${YW:-}Hostname: ${GN:-}\$(hostname)${CL:-}"
+echo -e "${HOSTNAME:-}${YW:-}Hostname: ${GN:-}\$(uname -n)${CL:-}"
 echo -e "${INFO:-}${YW:-}IP Address: ${GN:-}\$(ip -4 route get 1 2>/dev/null | sed -n 's/.* src \\([0-9.]\\+\\).*/\\1/p' | head -1)${CL:-}"
 EOF
 
@@ -1637,6 +1651,32 @@ EOF
 # Customizes container for passwordless login and creates update script
 # ------------------------------------------------------------------------------
 customize() {
+  # debugfs and configfs belong to the host, so an unprivileged container is
+  # refused and boots degraded. Proxmox's Debian and Ubuntu templates mask them
+  # already; the others (openSUSE, linuxcontainers.org images) do not.
+  if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+    local _unit
+    for _unit in sys-kernel-debug.mount sys-kernel-config.mount sys-kernel-tracing.mount; do
+      if systemctl is-failed --quiet "$_unit" 2>/dev/null; then
+        systemctl mask "$_unit" &>/dev/null || true
+        systemctl reset-failed "$_unit" &>/dev/null || true
+      fi
+    done
+    # netplan-configure (Ubuntu 26.04) reloads udev after writing its config,
+    # and an unprivileged container has no udev to reload.
+    if systemctl is-failed --quiet netplan-configure.service 2>/dev/null; then
+      mkdir -p /etc/systemd/system/netplan-configure.service.d
+      cat >/etc/systemd/system/netplan-configure.service.d/no-udev.conf <<'EOF'
+[Service]
+ExecStartPost=
+ExecStartPost=-udevadm control --reload
+ExecStartPost=-udevadm trigger --action=add --subsystem-match=net
+EOF
+      systemctl daemon-reload &>/dev/null || true
+      systemctl reset-failed netplan-configure.service &>/dev/null || true
+    fi
+  fi
+
   if [[ "${PASSWORD:-}" == "" ]]; then
     msg_info "Customizing Container"
 
@@ -1660,29 +1700,40 @@ customize() {
       # above the login. --noissue keeps it from reprinting the issue on respawn.
       local _agetty_opts='--autologin root --noissue --keep-baud'
 
-      # Pin TERM=linux on the getty AND pass 'linux' as the agetty term type.
-      # util-linux >= 2.40 agetty auto-probes the terminal with ESC[6n (CPR) when
-      # the term type is unknown; on the PVE noVNC console (tty1 = container-getty@1)
-      # the response leaks into the shell as "R;80R" garbage. A known TERM stops the
-      # probe. The console-getty-only mitigation in pve/backend.func missed tty1,
-      # which is exactly what noVNC/pct console attaches to.
+      # container-getty@ hands agetty its pty as stdin (TTYPath=/dev/pts/%I,
+      # since systemd 252), so the line is "-" exactly like the stock unit; on
+      # Proxmox the instances are pts/1 and pts/2, i.e. tty1 and tty2. The
+      # override covers every instance. TERM=linux keeps readline from probing.
+      # A dead getty leaves systemd's own size probe (ESC[6n) echoing on the
+      # console as "24;80R"; the cause of the death was the executor, see update_os.
       if [[ -f /usr/lib/systemd/system/container-getty@.service ]]; then
-        mkdir -p /etc/systemd/system/container-getty@1.service.d
-        cat >/etc/systemd/system/container-getty@1.service.d/override.conf <<EOF
+        rm -f /etc/systemd/system/container-getty@1.service.d/override.conf
+        rmdir /etc/systemd/system/container-getty@1.service.d 2>/dev/null || true
+        mkdir -p /etc/systemd/system/container-getty@.service.d
+        cat >/etc/systemd/system/container-getty@.service.d/override.conf <<EOF
 [Service]
 Environment=TERM=linux
 ExecStart=
-ExecStart=-/sbin/agetty ${_agetty_opts} tty%I 115200,38400,9600 - linux
+ExecStart=-/sbin/agetty ${_agetty_opts} - 115200,38400,9600 linux
 EOF
       fi
 
       if [[ -f /usr/lib/systemd/system/console-getty.service ]]; then
+        # LXC's drop-in of the same name in /run has agetty open the console
+        # itself, because systemd 258+ cannot set /dev/console up as stdin in a
+        # container. Ours replaces it, so it has to keep doing that.
+        local _console_port="-" _console_stdio=""
+        if grep -qs '^StandardInput=null' /run/systemd/system/console-getty.service.d/override.conf; then
+          _console_port="console"
+          _console_stdio=$'StandardInput=null\nStandardOutput=null'
+        fi
         mkdir -p /etc/systemd/system/console-getty.service.d
         cat >/etc/systemd/system/console-getty.service.d/override.conf <<EOF
 [Service]
 Environment=TERM=linux
 ExecStart=
-ExecStart=-/sbin/agetty ${_agetty_opts} 115200,38400,9600 - linux
+ExecStart=-/sbin/agetty ${_agetty_opts} 115200,38400,9600 ${_console_port} linux
+${_console_stdio}
 EOF
         # Enable console-getty for pct console (not enabled by default on Fedora/RHEL)
         systemctl enable console-getty.service &>/dev/null || true
@@ -1716,8 +1767,14 @@ EOF
       chmod +x /etc/profile.d/00-lxc-term-size.sh
 
       systemctl daemon-reload
-      # Restart only what's currently active to avoid spawning duplicate gettys
-      systemctl is-active container-getty@1.service &>/dev/null && systemctl restart container-getty@1.service &>/dev/null || true
+      # Each instance owns its own pty; a failed one (Kali) needs reset-failed first.
+      systemctl reset-failed 'container-getty@*.service' &>/dev/null || true
+      # The instances come from container_ttys (pts/1 pts/2 on Proxmox, i.e.
+      # tty1 and tty2); a dead one is unloaded and no glob finds it, so name each.
+      local _t
+      for _t in $(tr '\0' '\n' </proc/1/environ 2>/dev/null | sed -n 's/^container_ttys=//p'); do
+        systemctl restart "container-getty@${_t#pts/}.service" &>/dev/null || true
+      done
       systemctl is-active console-getty.service &>/dev/null && systemctl restart console-getty.service &>/dev/null || true
       touch /root/.hushlogin
       ;;
@@ -1882,14 +1939,4 @@ os_info() {
   echo "OS Version:   $OS_VERSION"
   echo "Pkg Manager:  $PKG_MANAGER"
   echo "Init System:  $INIT_SYSTEM"
-}
-
-# ------------------------------------------------------------------------------
-# cleanup_lxc()
-#
-# Overrides core.func version to support all OS types (not just Alpine/Debian)
-# Cleans package caches and removes unnecessary packages after installation
-# ------------------------------------------------------------------------------
-cleanup_lxc() {
-  pkg_clean
 }

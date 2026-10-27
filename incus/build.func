@@ -65,7 +65,7 @@ incus_variables() {
   NSAPP=$(echo "${APP,,}" | tr -d ' ')
   var_install="${NSAPP}-install"
   INTEGER='^[0-9]+([.][0-9]+)?$'
-  HOST_NAME=$(hostname)
+  HOST_NAME=$(hostname 2>/dev/null || uname -n)
   PVEHOST_NAME="$HOST_NAME"
   DIAGNOSTICS="yes"
   METHOD="default"
@@ -93,7 +93,9 @@ incus_variables() {
   else
     PVEVERSION="Incus"
   fi
-  KERNEL_VERSION=$(uname -r)
+  # The summary names the machine that runs the container, which may be a remote.
+  declare -f incus_target >/dev/null 2>&1 && command -v incus >/dev/null 2>&1 && incus_target
+  KERNEL_VERSION="${INCUS_SERVER_KERNEL:-$(uname -r)}"
   if [[ -n "${var_cpu:-}" && "${var_cpu}" =~ ^[0-9]+$ ]]; then export APP_DEFAULT_CPU="${var_cpu}"; fi
   if [[ -n "${var_ram:-}" && "${var_ram}" =~ ^[0-9]+$ ]]; then export APP_DEFAULT_RAM="${var_ram}"; fi
   if [[ -n "${var_disk:-}" && "${var_disk}" =~ ^[0-9]+$ ]]; then export APP_DEFAULT_DISK="${var_disk}"; fi
@@ -631,8 +633,20 @@ _incus_on_signal() {
   exit "$code"
 }
 
+# A closed console is not an abort. The install runs detached inside the
+# container, so losing the terminal costs the view and the keyboard, not the
+# installation. Writes to the terminal that is gone fail with EIO and would
+# end the run under errexit, hence the redirect.
+_incus_on_hangup() {
+  local log="${LOGFILE:-${_INCUS_HOST_LOGFILE:-${INCUS_BUILD_LOG:-}}}"
+  [[ -n "$log" ]] || log="/tmp/incus-hangup-${SESSION_ID:-$$}.log"
+  exec </dev/null >>"$log" 2>&1
+  export _CS_HANGUP=1 _CS_HANGUP_LOG="$log" CS_STDIN_OK=0
+  echo "[WARN] $(date '+%Y-%m-%d %H:%M:%S') The terminal closed; continuing, output follows here."
+}
+
 trap 'api_exit_script' EXIT
 trap '_incus_on_err' ERR
-trap '_incus_on_signal SIGHUP 129' SIGHUP
+trap '_incus_on_hangup' SIGHUP
 trap '_incus_on_signal SIGINT 130' SIGINT
 trap '_incus_on_signal SIGTERM 143' SIGTERM

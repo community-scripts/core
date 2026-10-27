@@ -233,6 +233,23 @@ incus_root_check() {
 # - Checks incus daemon is running
 # - Exits with error message if Incus is not available
 # ------------------------------------------------------------------------------
+# The client's default remote is where every bare name in this backend goes;
+# IncusOS has no shell, so a switched remote is the only way to drive it.
+incus_target() {
+  INCUS_REMOTE="$(LC_ALL=C incus remote get-default 2>/dev/null || echo local)"
+  local info
+  info="$(LC_ALL=C incus info 2>/dev/null)"
+  # kernel_architecture is a scalar; the architectures list indents by version.
+  INCUS_SERVER_ARCH="$(awk '$1 == "kernel_architecture:" {print $2; exit}' <<<"$info")"
+  [[ -n "$INCUS_SERVER_ARCH" ]] || INCUS_SERVER_ARCH="$(awk '$1 == "architectures:" {a=1; next} a && $1 == "-" {print $2; exit}' <<<"$info")"
+  case "$INCUS_SERVER_ARCH" in
+  x86_64) INCUS_SERVER_ARCH="amd64" ;;
+  aarch64) INCUS_SERVER_ARCH="arm64" ;;
+  esac
+  INCUS_SERVER_KERNEL="$(awk '$1 == "kernel_version:" {print $2; exit}' <<<"$info")"
+  export INCUS_REMOTE INCUS_SERVER_ARCH INCUS_SERVER_KERNEL
+}
+
 incus_check() {
   if ! command -v incus &>/dev/null; then
     incus_msg_error "Incus is not installed on this system."
@@ -280,6 +297,11 @@ incus_check() {
     incus_msg_error "No Incus storage pools found."
     incus_msg_error "Create one with: incus storage create default dir"
     exit 1
+  fi
+
+  incus_target
+  if [[ "$INCUS_REMOTE" != "local" ]]; then
+    incus_msg_custom "ℹ️" "${YW:-}" "Target: Incus remote '${INCUS_REMOTE}' (${INCUS_SERVER_ARCH:-unknown architecture})"
   fi
 }
 
@@ -447,6 +469,7 @@ incus_stop_spinner() {
 # - Displays informational message with spinner animation
 # ------------------------------------------------------------------------------
 incus_msg_info() {
+  declare -f _cs_reattach_output >/dev/null 2>&1 && _cs_reattach_output
   local msg="$1"
   [[ -z "$msg" ]] && return
 
@@ -485,6 +508,7 @@ incus_msg_info() {
 # incus_msg_ok()
 # ------------------------------------------------------------------------------
 incus_msg_ok() {
+  declare -f _cs_reattach_output >/dev/null 2>&1 && _cs_reattach_output
   local msg="$1"
   [[ -z "$msg" ]] && return
   incus_stop_spinner
@@ -501,6 +525,7 @@ incus_msg_ok() {
 # incus_msg_error()
 # ------------------------------------------------------------------------------
 incus_msg_error() {
+  declare -f _cs_reattach_output >/dev/null 2>&1 && _cs_reattach_output
   incus_stop_spinner
   local msg="$1"
   echo -e "${BFR:-}${CROSS:-✖️}${RD}${msg}${CL}" >&2
@@ -511,6 +536,7 @@ incus_msg_error() {
 # incus_msg_warn()
 # ------------------------------------------------------------------------------
 incus_msg_warn() {
+  declare -f _cs_reattach_output >/dev/null 2>&1 && _cs_reattach_output
   incus_stop_spinner
   local msg="$1"
   # Same layout as core.func msg_warn (INFO already includes TAB padding).
@@ -522,6 +548,7 @@ incus_msg_warn() {
 # incus_msg_custom()
 # ------------------------------------------------------------------------------
 incus_msg_custom() {
+  declare -f _cs_reattach_output >/dev/null 2>&1 && _cs_reattach_output
   local symbol="${1:-"[*]"}"
   local color="${2:-"\e[36m"}"
   local msg="${3:-}"
@@ -835,11 +862,16 @@ incus_ensure_profile_loaded() {
   [[ -n "${_INCUS_PROFILE_LOADED:-}" ]] && return
   command -v incusd &>/dev/null && return
 
+  local nounset=0
+  [[ $- == *u* ]] && nounset=1
+  set +u
   if [[ -d /etc/profile.d ]]; then
     for script in /etc/profile.d/*.sh; do
-      [[ -r "$script" ]] && source "$script"
+      [[ -r "$script" ]] || continue
+      source "$script" >/dev/null 2>&1 || true
     done
   fi
+  ((nounset)) && set -u
 
   if [[ ":$PATH:" != *":/usr/local/bin:"* ]]; then
     export PATH="/usr/local/bin:$PATH"
@@ -977,7 +1009,7 @@ incus_instance_field() {
 incus_container_running() {
   local name="$1"
   local status
-  status=$(incus info "$name" 2>/dev/null | awk '/^Status:/ {print $2}') || true
+  status=$(LC_ALL=C incus info "$name" 2>/dev/null | awk '/^Status:/ {print $2}') || true
   # incus info upper-cases the status (cmd/incus/info.go prints
   # strings.ToUpper(inst.Status)) where incus list leaves it title-case, so
   # comparing against either spelling verbatim is wrong for one of them.

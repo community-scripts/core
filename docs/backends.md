@@ -16,6 +16,14 @@ wizard calls.
 | [`vm-core.func`](../pve/vm-core.func) | VM creation via `qm`, including disk import and template handling |
 | [`vm-app.func`](../pve/vm-app.func) | Deploys an application that normally goes into an LXC container into a full VM instead |
 
+A closed console is not an abort. The hangup reaches the host script and the
+install inside the container; both carry on with their output in their logs
+(`on_hangup`), the long-running commands on either side run through
+`_cs_shield_hangup` so the signal cannot reach them, and when
+lxc-attach dies with the terminal the host waits for the container's
+`.done`/`.failed` markers (`_pve_wait_for_detached_install`) before it
+reports. Ctrl-C still aborts.
+
 ## `incus/` — Incus
 
 | File | Purpose |
@@ -70,6 +78,32 @@ from `/etc/localtime`, or from `Etc/UTC`.
 **The version line is not "PVE Version".** `_cs_host_version_line()` in
 [`core/core.func`](../core/core.func) renders "Incus Version 6.x" on an Incus
 host and "PVE Version …" on Proxmox VE, from the same `PVEVERSION` value.
+
+A closed console is not an abort here either, but it takes a different route.
+`incus exec` ends as soon as its client goes away and takes the command with
+it, which `lxc-attach` does not do. The install therefore runs detached inside
+the container, writing to its own log, and the host only watches it: input
+reaches it through a fifo for as long as there is a console, and once there is
+none the reads return EOF and the prompts take their defaults.
+`_incus_wait_for_detached_install` then waits for the `.done`/`.failed`
+markers before the host reports.
+
+### Driving a remote server
+
+The `incus` client always talks to a remote; `local:` is only the default.
+Every call in this backend uses bare names, so switching the default remote
+points the whole flow at another server:
+
+    incus remote add incusos https://<server>:8443 --token <token>
+    incus remote switch incusos
+    bash -c "$(curl -fsSL .../ct/<app>.sh)"
+
+The machine running the script needs bash, curl, newt (for whiptail) and the
+client; a BusyBox userland such as Alpine is fine. The backend
+takes the server's architecture from `incus info` and names the target when
+it is not `local`. This is the way in for IncusOS, which has no shell of its
+own. Pool free space comes from `incus storage info`; the local `df` fallback
+is skipped for a remote.
 
 ## VM scripts on the two backends
 

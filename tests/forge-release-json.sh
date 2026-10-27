@@ -74,6 +74,22 @@ MOCK_DEPS_RC=1 run
 expect "a missing jq stops the lookup" 100 "$?"
 expect "nothing is fetched without jq" 0 "$(grep -c curl "$CALLS")"
 
+# VM scripts load forge.func without system.func.
+(
+  unset -f ensure_dependencies
+  MOCK_BODY='[{"tag_name":"v1.0.0","draft":false,"prerelease":false}]' run
+)
+expect "without system.func the lookup uses the jq that is there" 0 "$?"
+expect "without system.func the release resolves" v1.0.0 "$(jq -r .tag_name "$OUT")"
+
+(
+  unset -f ensure_dependencies
+  PATH="$TEST_DIR/no-bin"
+  run
+)
+expect "without system.func a missing jq stops the lookup" 100 "$?"
+expect "without system.func nothing is fetched without jq" 0 "$(grep -c curl "$CALLS")"
+
 MOCK_BODY='[{"tag_name":"v1.0.0","draft":false,"prerelease":false},{"tag_name":"v2.0.0-rc.1","draft":false,"prerelease":true}]' run
 expect "the release list still resolves" 0 "$?"
 expect "the stable release wins" v1.0.0 "$(jq -r .tag_name "$OUT")"
