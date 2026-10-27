@@ -1009,7 +1009,7 @@ EOF
     if [ "$i" -eq 10 ]; then
       local ct_status
       ct_status=$(pct status "$CTID" 2>/dev/null || echo "unknown")
-      msg_error "LXC Container did not reach running state (status: ${ct_status})"
+      msg_error "Container did not reach running state (status: ${ct_status})"
       _pct_start_failed "$CTID" "$_start_out"
       exit 117
     fi
@@ -1397,9 +1397,9 @@ PROFILE
     msg_ok "Container customized"
 
     if [[ "${DNS_RETRY_OVERRIDE:-false}" == "true" ]]; then
-      msg_info "Applying DNS retry override in LXC (8.8.8.8, 1.1.1.1)"
+      msg_info "Applying the DNS override (8.8.8.8, 1.1.1.1)"
       pct exec "$CTID" -- bash -c "printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\n' >/etc/resolv.conf" >/dev/null 2>&1 || true
-      msg_ok "DNS override applied in LXC"
+      msg_ok "DNS override applied"
     fi
 
     install_ssh_keys_into_ct
@@ -3475,7 +3475,7 @@ create_lxc_container() {
   # ------------------------------------------------------------------------------
   # Create LXC Container
   # ------------------------------------------------------------------------------
-  msg_info "Creating LXC container"
+  msg_info "Creating container"
 
   # Ensure subuid/subgid entries exist
   grep -q "root:100000:65536" /etc/subuid || echo "root:100000:65536" >>/etc/subuid

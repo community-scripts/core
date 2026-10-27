@@ -396,7 +396,7 @@ incus_create_lxc_container() {
     msg_custom "ℹ️" "${YW}" "Image ${image_name} not cached, pulling"
   fi
 
-  msg_info "Creating LXC Container"
+  msg_info "Creating container"
   incus_log_section "Container Creation: ${CT_NAME}"
 
   local launch_args=()
@@ -1091,7 +1091,7 @@ ${FUNCTIONS_FILE_PATH}
 INNEREOF" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || { msg_error "Failed to push functions"; exit 1; }
 
   if [[ "${DNS_RETRY_OVERRIDE:-}" == "true" ]]; then
-    msg_info "Applying DNS override inside LXC"
+    msg_info "Applying the DNS override (8.8.8.8, 1.1.1.1)"
     incus_ct_exec bash -c "echo -e 'nameserver 8.8.8.8\nnameserver 1.1.1.1' >/etc/resolv.conf" || true
     msg_ok "DNS override applied"
   fi
