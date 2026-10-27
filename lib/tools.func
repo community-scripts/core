@@ -66,8 +66,12 @@ _tools_source_part() {
     return
   fi
 
-  # Inside the container there is no resolver: fall back to the engine base,
-  # which the backends export alongside the scripts base.
+  # Inside the container: install.func's prefetched copy, else the engine base.
+  if [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -s "${COMMUNITY_SCRIPTS_CORE_DIR}/lib/${part}.func" ]]; then
+    # shellcheck disable=SC1090
+    source "${COMMUNITY_SCRIPTS_CORE_DIR}/lib/${part}.func"
+    return
+  fi
   local base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
   if command -v curl >/dev/null 2>&1; then
     # shellcheck disable=SC1090
