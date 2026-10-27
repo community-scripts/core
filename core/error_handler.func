@@ -570,6 +570,11 @@ error_handler() {
 
   [[ "$exit_code" -eq 0 ]] && return 0
 
+  # apt, pip and the like exit normally after a Ctrl-C reached them; the run was still interrupted.
+  if [[ -n "$capture" && -s "$capture" ]] && grep -qE 'received signal 2|KeyboardInterrupt' "$capture"; then
+    exit_code=130
+  fi
+
   # set -E hands the ERR trap (which passes no arguments) to $(...) and ( ) too.
   # The calling shell fails on the same error and reports it.
   if ((BASH_SUBSHELL > 0 && $# == 0)); then

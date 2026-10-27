@@ -51,6 +51,11 @@ out="$(error_handler 100 'return 100')"
 expect "a passed-up failure reports silent's command and line" 1 "$(grep -c 'REPORT 100|apt install -y intel-basekit|5' <<<"$out")"
 expect "and keeps its capture" 1 "$(ls "$ERRINFO" 2>/dev/null | wc -l)"
 
+# A Ctrl-C that apt survived is still an interrupt.
+printf '%s\n' 'EXIT_CODE=100' 'LINE=7' 'COMMAND=apt-get -y dist-upgrade' '--- OUTPUT ---' 'E: Sub-process /usr/bin/apt-listchanges --apt || test $? -lt 10 received signal 2.' >"$ERRINFO"
+line=$LINENO; export _SILENT_FAILED_RC=100 _SILENT_FAILED_CMD='apt-get -y dist-upgrade' _SILENT_FAILED_LINE="$line" _SILENT_FAILED_LOG="$LOG"; out="$(error_handler 100 'silent apt-get -y dist-upgrade' 2>/dev/null; true)"
+expect "an apt run that received SIGINT is reported as 130" 1 "$(grep -c 'REPORT 130|' <<<"$out")"
+
 # Without a record, "return N" is replaced by the call on that source line.
 printf '%s\n' 'setup_thing() {' '  fetch_release foo' '}' >"$TEST_DIR/lib.sh"
 unset _SILENT_FAILED_RC
