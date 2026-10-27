@@ -211,6 +211,9 @@ _pve_wait_for_detached_install() {
     fi
     pid="$(pct exec "$CTID" -- cat "${base}.pid" 2>/dev/null | tr -d '[:space:]')"
     if [[ "$pid" =~ ^[0-9]+$ ]] && ! pct exec "$CTID" -- kill -0 "$pid" 2>/dev/null; then
+      # It may have written its marker between the checks above and exiting.
+      pct exec "$CTID" -- test -f "${base}.failed" 2>/dev/null && return 1
+      pct exec "$CTID" -- test -f "${base}.done" 2>/dev/null && return 0
       echo "[WARN] Install process ${pid} is gone without reporting; processes left in the container:"
       pct exec "$CTID" -- ps -eo pid,ppid,stat,etime,cmd 2>/dev/null | head -n 40
       return 199
@@ -510,6 +513,7 @@ build_container() {
   export REPO_SLUG="${REPO_SLUG:-}"
   # Virtualization platform for telemetry (container has no pveversion)
   export TELEMETRY_PLATFORM="pve"
+  export TELEMETRY_URL TELEMETRY_PAYLOAD_VERSION
   export CACHER="$APT_CACHER"
   export CACHER_IP="$APT_CACHER_IP"
   if [[ -n "${HTTP_PROXY:-}" ]]; then
@@ -1517,6 +1521,16 @@ $_install_script"
       fi
     fi
 
+    # The checks below look at what the failing step printed, not the whole run.
+    local failure_log="/tmp/.failure-${SESSION_ID:-$$}.log"
+    if [[ -s "${TELEMETRY_ERRINFO:-}" ]]; then
+      awk 'f{print} /^--- OUTPUT ---$/{f=1}' "$TELEMETRY_ERRINFO" >"$failure_log" 2>/dev/null
+    elif [[ -s "$combined_log" ]] && declare -f _tm_focus >/dev/null 2>&1; then
+      _tm_focus <"$combined_log" >"$failure_log" 2>/dev/null
+    else
+      cp "$combined_log" "$failure_log" 2>/dev/null
+    fi
+
     set +Eeuo pipefail
     trap - ERR
 
@@ -1526,20 +1540,20 @@ $_install_script"
     local is_cmd_not_found=false
     local is_disk_full=false
 
-    if [[ $install_exit_code -eq 1 && -f "$combined_log" ]]; then
-      if grep -qiE 'E: Unable to|E: Package|E: Failed to fetch|dpkg.*error|broken packages|unmet dependencies|dpkg --configure -a' "$combined_log"; then
+    if [[ $install_exit_code -eq 1 && -f "$failure_log" ]]; then
+      if grep -qiE 'E: Unable to|E: Package|E: Failed to fetch|dpkg.*error|broken packages|unmet dependencies|dpkg --configure -a' "$failure_log"; then
         is_apt_issue=true
       fi
-      if grep -qiE 'Cannot allocate memory|Out of memory|oom-killer|Killed process|JavaScript heap' "$combined_log"; then
+      if grep -qiE 'Cannot allocate memory|Out of memory|oom-killer|Killed process|JavaScript heap' "$failure_log"; then
         is_oom=true
       fi
-      if grep -qiE 'Could not resolve|DNS resolution failed|Connection refused|Network is unreachable|No route to host|Temporary failure resolving|Failed to fetch' "$combined_log"; then
+      if grep -qiE 'Could not resolve|DNS resolution failed|Connection refused|Network is unreachable|No route to host|Temporary failure resolving|Failed to fetch' "$failure_log"; then
         is_network_issue=true
       fi
-      if grep -qiE ': command not found|No such file or directory.*/s?bin/' "$combined_log"; then
+      if grep -qiE ': command not found|No such file or directory.*/s?bin/' "$failure_log"; then
         is_cmd_not_found=true
       fi
-      if grep -qiE 'ENOSPC|no space left on device|Disk quota exceeded|errno -28' "$combined_log"; then
+      if grep -qiE 'ENOSPC|no space left on device|Disk quota exceeded|errno -28' "$failure_log"; then
         is_disk_full=true
       fi
     fi
@@ -1606,7 +1620,7 @@ $_install_script"
       fi
       ;;
     255)
-      if [[ -f "$combined_log" ]] && grep -qiE 'dpkg|apt-get|apt\.conf|broken packages|unmet dependencies|E: Sub-process|E: Failed' "$combined_log"; then
+      if [[ -f "$failure_log" ]] && grep -qiE 'dpkg|apt-get|apt\.conf|broken packages|unmet dependencies|E: Sub-process|E: Failed' "$failure_log"; then
         is_apt_issue=true
       fi
       ;;
@@ -1615,7 +1629,7 @@ $_install_script"
     if [[ $install_exit_code -eq 228 || $install_exit_code -eq 23 ]]; then
       is_disk_full=true
     fi
-    if [[ -f "$combined_log" ]] && grep -qiE 'ENOSPC|no space left on device|No space left on device|Disk quota exceeded|errno -28' "$combined_log"; then
+    if [[ -f "$failure_log" ]] && grep -qiE 'ENOSPC|no space left on device|No space left on device|Disk quota exceeded|errno -28' "$failure_log"; then
       is_disk_full=true
     fi
 
@@ -1626,12 +1640,12 @@ $_install_script"
     case "$install_exit_code" in
     6 | 7 | 22 | 28 | 35 | 52 | 56 | 57 | 75 | 78) is_network_issue=true ;;
     100)
-      if [[ -f "$combined_log" ]] && grep -qiE 'Failed to fetch|Could not resolve|Connection failed|Network is unreachable|Temporary failure resolving' "$combined_log"; then
+      if [[ -f "$failure_log" ]] && grep -qiE 'Failed to fetch|Could not resolve|Connection failed|Network is unreachable|Temporary failure resolving' "$failure_log"; then
         is_network_issue=true
       fi
       ;;
     128)
-      if [[ -f "$combined_log" ]] && grep -qiE 'RPC failed|early EOF|fetch-pack|HTTP/2 stream|Could not resolve host|Temporary failure resolving|Failed to fetch|Connection reset|Network is unreachable' "$combined_log"; then
+      if [[ -f "$failure_log" ]] && grep -qiE 'RPC failed|early EOF|fetch-pack|HTTP/2 stream|Could not resolve host|Temporary failure resolving|Failed to fetch|Connection reset|Network is unreachable' "$failure_log"; then
         is_network_issue=true
       fi
       ;;
@@ -1662,8 +1676,8 @@ $_install_script"
 
     if [[ "$is_cmd_not_found" == true ]]; then
       local missing_cmd=""
-      if [[ -f "$combined_log" ]]; then
-        missing_cmd=$(grep -oiE '[a-zA-Z0-9_.-]+: command not found' "$combined_log" 2>/dev/null | tail -1 | sed 's/: command not found//') || true
+      if [[ -f "$failure_log" ]]; then
+        missing_cmd=$(grep -oiE '[a-zA-Z0-9_.-]+: command not found' "$failure_log" 2>/dev/null | tail -1 | sed 's/: command not found//') || true
       fi
       if [[ -n "$missing_cmd" ]]; then
         echo -e "${TAB}${INFO} Missing command: ${GN}${missing_cmd}${CL}"
@@ -1846,7 +1860,8 @@ $_install_script"
           if [[ -n "${SESSION_ID:-}" ]]; then
             local retry_error_flag="/root/.install-${SESSION_ID}.failed"
             if pct exec "$CTID" -- test -f "$retry_error_flag" 2>/dev/null; then
-              apt_retry_code=$(pct exec "$CTID" -- cat "$retry_error_flag" 2>/dev/null || echo "1")
+              apt_retry_code=$(pct exec "$CTID" -- cat "$retry_error_flag" 2>/dev/null | tr -d '[:space:]') || true
+              [[ "$apt_retry_code" =~ ^[0-9]+$ ]] || apt_retry_code=199
               pct exec "$CTID" -- rm -f "$retry_error_flag" 2>/dev/null || true
             fi
           fi

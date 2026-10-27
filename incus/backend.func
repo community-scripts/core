@@ -1170,7 +1170,8 @@ mkfifo ${_base}.in" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
   if [[ -n "${SESSION_ID:-}" ]]; then
     local error_flag="/root/.install-${SESSION_ID}.failed"
     if incus_ct_exec test -f "$error_flag" 2>/dev/null; then
-      install_exit_code=$(incus_ct_exec cat "$error_flag" 2>/dev/null || echo "1")
+      install_exit_code=$(incus_ct_exec cat "$error_flag" 2>/dev/null | tr -d '[:space:]') || true
+      [[ "$install_exit_code" =~ ^[0-9]+$ ]] || install_exit_code=199
       incus_ct_exec rm -f "$error_flag" 2>/dev/null || true
     fi
   fi
@@ -1187,7 +1188,7 @@ mkfifo ${_base}.in" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
       msg_error "Install script stopped before it finished - nothing reported it"
       [[ "${_CS_HANGUP:-}" == "1" ]] && msg_custom "ℹ️" "${YW}" "The console was closed; the install ran on detached, so look at its log for the reason"
       msg_custom "ℹ️" "${YW}" "Output: incus exec ${CT_NAME} -- tail -50 /root/.install-${SESSION_ID}.log"
-      install_exit_code=1
+      install_exit_code=199
     fi
   fi
   incus_ct_exec rm -f "${_base}.sh" "${_base}.run" "${_base}.watch" "${_base}.in" "${_base}.pid" "${_base}.out" >/dev/null 2>&1 || true
@@ -1472,7 +1473,7 @@ incus_run_install_script_with_recovery() {
 # everything the install side reads is passed here, quoted with %q.
 _incus_build_install_env() {
   local -a env=(
-    DIAGNOSTICS="${DIAGNOSTICS:-yes}"
+    DIAGNOSTICS="${DIAGNOSTICS:-no}"
     RANDOM_UUID="${RANDOM_UUID}"
     EXECUTION_ID="${EXECUTION_ID}"
     SESSION_ID="${SESSION_ID}"
@@ -1504,6 +1505,8 @@ _incus_build_install_env() {
     REPO_SOURCE="${REPO_SOURCE:-}"
     REPO_SLUG="${REPO_SLUG:-}"
     TELEMETRY_PLATFORM="incus"
+    TELEMETRY_URL="${TELEMETRY_URL:-}"
+    TELEMETRY_PAYLOAD_VERSION="${TELEMETRY_PAYLOAD_VERSION:-}"
     CS_ANIMATION_OK="${_incus_tty_out:-0}"
     CS_STDIN_OK="${_incus_tty_in:-0}"
   )

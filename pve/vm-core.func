@@ -71,6 +71,10 @@ SPINNER_MSG=""
 [[ -n "${_CORE_FUNC_LOADED:-}" ]] && return
 _CORE_FUNC_LOADED=1
 
+BUILD_LOG="${BUILD_LOG:-/tmp/cs-vm-$$.log}"
+TELEMETRY_TYPE="vm"
+export BUILD_LOG
+
 COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}"
 
 load_api_functions() {
@@ -302,12 +306,12 @@ default_vars() {
 # - Fallback to /tmp/build-<timestamp>.log if not set
 # ------------------------------------------------------------------------------
 get_active_logfile() {
-  if [[ -n "${BUILD_LOG:-}" ]]; then
-    echo "$BUILD_LOG"
-  else
-    # Fallback for legacy scripts
-    echo "/tmp/build-$(date +%Y%m%d_%H%M%S).log"
-  fi
+  echo "${BUILD_LOG:-/tmp/cs-vm-$$.log}"
+}
+
+# One log per run: msg_* and silent() write to it, telemetry reads the failing step from it.
+_vm_log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >>"$(get_active_logfile)" 2>/dev/null || true
 }
 
 # ------------------------------------------------------------------------------
@@ -329,6 +333,8 @@ silent() {
   set +Eeuo pipefail
   trap - ERR
 
+  local start_bytes=0
+  [[ -f "$logfile" ]] && start_bytes=$(stat -c%s "$logfile" 2>/dev/null || echo 0)
   "$@" >>"$logfile" 2>&1
   local rc=$?
 
@@ -337,9 +343,20 @@ silent() {
 
   if [[ $rc -ne 0 ]]; then
     export _SILENT_FAILED_RC="$rc" _SILENT_FAILED_CMD="$cmd" _SILENT_FAILED_LINE="$caller_line" _SILENT_FAILED_LOG="$logfile"
+    {
+      echo "EXIT_CODE=${rc}"
+      echo "LINE=${caller_line}"
+      echo "COMMAND=$(printf '%s' "$cmd" | tr '\n' ' ' | head -c 300)"
+      echo "FUNCTION=${FUNCNAME[1]:-}"
+      echo "STEP=${CS_STEP:-}"
+      echo "PHASE=host"
+      echo "--- OUTPUT ---"
+      tail -c +"$((start_bytes + 1))" "$logfile" 2>/dev/null | tail -n 200 | head -c 32768
+    } >"${logfile}.errinfo" 2>/dev/null || true
     return "$rc"
   fi
   unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG
+  rm -f "${logfile}.errinfo" 2>/dev/null || true
 }
 
 # The record silent() left behind only counts for the line it came from: a
@@ -360,6 +377,19 @@ _vm_show_silent_failure() {
     echo -e "${TAB}----------------------------\n"
   fi
   unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG
+}
+
+# _vm_take_silent_failure <line> - 0 and the capture handed to telemetry when silent() failed on that line
+_vm_take_silent_failure() {
+  if [[ -n "${_SILENT_FAILED_RC:-}" && "${_SILENT_FAILED_LINE:-}" == "$1" ]]; then
+    _SILENT_FAILED_CMD_SEEN="$_SILENT_FAILED_CMD"
+    [[ -s "${_SILENT_FAILED_LOG:-}.errinfo" ]] && TELEMETRY_ERRINFO="${_SILENT_FAILED_LOG}.errinfo"
+    _vm_show_silent_failure
+    return 0
+  fi
+  [[ -n "${_SILENT_FAILED_LOG:-}" ]] && rm -f "${_SILENT_FAILED_LOG}.errinfo" 2>/dev/null
+  unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG
+  return 1
 }
 
 # ------------------------------------------------------------------------------
@@ -610,12 +640,15 @@ spinner_guard() {
 
 msg_info() {
   local msg="${1:-Information message}"
+  CS_STEP="$msg"
+  CS_ERROR_MSG=""
 
   # Only show each message once unless reset
   if [[ -n "${MSG_INFO_SHOWN["$msg"]+x}" ]]; then
     return
   fi
   MSG_INFO_SHOWN["$msg"]=1
+  _vm_log "[INFO] $msg"
 
   spinner_guard
   start_spinner "$msg"
@@ -623,21 +656,23 @@ msg_info() {
 
 msg_ok() {
   local msg="${1:-Operation completed successfully}"
+  CS_STEP_DONE="$msg"
+  CS_STEP=""
+  CS_ERROR_MSG=""
   stop_spinner
   printf "\r\e[2K%s %b\n" "${CM}" "${GN}${msg}${CL}" >&2
+  _vm_log "[OK] $msg"
 
-  # Remove from shown messages to allow it to be shown again.
-  #
-  # The key has to be the one msg_info stored. It was sanitised here and raw
-  # there, so the two never matched: nothing was ever removed, and a message
-  # was suppressed for the rest of the run after its first appearance.
+  # The key has to be the one msg_info stored.
   unset 'MSG_INFO_SHOWN['"$msg"']' 2>/dev/null || true
 }
 
 msg_error() {
   local msg="${1:-An error occurred}"
+  [[ -z "${CS_ERROR_MSG:-}" && -z "${_EH_REPORTING:-}" ]] && CS_ERROR_MSG="$msg"
   stop_spinner
   printf "\r\e[2K%s %b\n" "${CROSS}" "${RD}${msg}${CL}" >&2
+  _vm_log "[ERROR] $msg"
 }
 
 msg_warn() {
@@ -675,10 +710,10 @@ error_handler() {
   local line_number="${1:-unknown}"
   local command="${2:-unknown}"
 
-  if [[ -n "${_SILENT_FAILED_RC:-}" && "${_SILENT_FAILED_LINE:-}" == "$line_number" ]]; then
-    command="$_SILENT_FAILED_CMD"
-    _vm_show_silent_failure
-  fi
+  _EH_REPORTING=1
+  _vm_take_silent_failure "$line_number" && command="$_SILENT_FAILED_CMD_SEEN"
+  FAILED_COMMAND="$command" FAILED_LINE="$line_number" FAILED_FUNCTION="${FUNCNAME[1]:-}"
+  export FAILED_COMMAND FAILED_LINE FAILED_FUNCTION
 
   if declare -f post_update_to_api >/dev/null 2>&1; then
     post_update_to_api "failed" "$exit_code"
@@ -752,12 +787,12 @@ cleanup() {
   if [[ -n "${TEMP_DIR:-}" && -d "$TEMP_DIR" ]]; then
     rm -rf "$TEMP_DIR"
   fi
-  # Report final telemetry status if post_to_api_vm was called but no update was sent
-  if [[ "${POST_TO_API_DONE:-}" == "true" && "${POST_UPDATE_DONE:-}" != "true" ]]; then
-    if declare -f post_update_to_api >/dev/null 2>&1; then
-      if [[ $exit_code -ne 0 ]]; then
-        post_update_to_api "failed" "$exit_code"
-      elif [[ -n "${VMID:-}" ]] && qm config "$VMID" &>/dev/null; then
+  # The final status nobody sent yet; post_update_to_api decides whether an early failure counts.
+  if [[ "${POST_UPDATE_DONE:-}" != "true" ]] && declare -f post_update_to_api >/dev/null 2>&1; then
+    if [[ $exit_code -ne 0 ]]; then
+      post_update_to_api "failed" "$exit_code"
+    elif [[ -n "${POST_TO_API_DONE:-}" ]]; then
+      if [[ -n "${VMID:-}" ]] && qm config "$VMID" &>/dev/null; then
         # Clean exit with the VM in place: a script that never said so itself.
         post_update_to_api "done" "none"
       else
@@ -2311,10 +2346,10 @@ vm_mark_created() {
 
 vm_post_create_error() {
   local rc=$? line="${1:-unknown}" cmd="${2:-unknown}"
-  if [[ -n "${_SILENT_FAILED_RC:-}" && "${_SILENT_FAILED_LINE:-}" == "$line" ]]; then
-    cmd="$_SILENT_FAILED_CMD"
-    _vm_show_silent_failure
-  fi
+  _EH_REPORTING=1
+  _vm_take_silent_failure "$line" && cmd="$_SILENT_FAILED_CMD_SEEN"
+  FAILED_COMMAND="$cmd" FAILED_LINE="$line" FAILED_FUNCTION="${FUNCNAME[1]:-}"
+  export FAILED_COMMAND FAILED_LINE FAILED_FUNCTION
   msg_warn "A step after VM creation failed (line ${line}, exit ${rc}): ${cmd}"
   msg_warn "VM ${VMID:-?} is left in place -- finish the remaining configuration by hand."
   declare -f post_update_to_api >/dev/null 2>&1 && post_update_to_api "failed" "$rc"

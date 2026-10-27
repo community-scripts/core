@@ -969,6 +969,12 @@ _cs_shield_hangup() {
   )
 }
 
+# A silent() failure its step handled is history once a step starts or ends.
+_cs_drop_silent_record() {
+  [[ -n "${_SILENT_FAILED_LOG:-}" ]] && rm -f "${_SILENT_FAILED_LOG}.errinfo" 2>/dev/null
+  unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG
+}
+
 silent() {
   _cs_reattach_output
   # A failure the caller handled (a retry loop) must not be reported for a later, unrelated error.
@@ -1027,32 +1033,19 @@ silent() {
     export _SILENT_FAILED_LINE="$caller_line"
     export _SILENT_FAILED_LOG="$logfile"
 
-    # ── Structured error capture (.errinfo) ──
-    # Extract exactly THIS command's output (from the recorded byte offset),
-    # strip ANSI/progress noise, keep the last 60 lines. This file is the
-    # primary source for the telemetry error trace - self-contained, no
-    # api.func dependency (containers don't source api.func).
-    local flat_cmd
-    flat_cmd=$(printf '%s' "$cmd" | tr '\n' ' ' | head -c 300)
     {
       echo "EXIT_CODE=${rc}"
       echo "LINE=${caller_line}"
-      echo "COMMAND=${flat_cmd}"
+      echo "COMMAND=$(printf '%s' "$cmd" | tr '\n' ' ' | head -c 300)"
+      echo "FUNCTION=${FUNCNAME[1]:-}"
+      echo "STEP=${CS_STEP:-}"
       echo "--- OUTPUT ---"
       if [[ -s "$logfile" ]]; then
-        local segment
-        segment=$(tail -c +"$((start_bytes + 1))" "$logfile" 2>/dev/null |
-          sed 's/\r$//' |
-          sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' |
-          grep -avE '^(Get:|Hit:|Ign:|Fetched |Reading package lists|Reading state information|Building dependency tree|Selecting previously|Preparing to unpack|Unpacking |Processing triggers for|\(Reading database|[0-9]+%[[:space:]]*\[)' |
-          grep -avE '^[[:space:]]*$' |
-          tail -n 60)
-        # If the noise filter swallowed everything, fall back to the raw tail
-        if [[ -z "$segment" ]]; then
-          segment=$(tail -c +"$((start_bytes + 1))" "$logfile" 2>/dev/null |
-            sed 's/\r$//' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | tail -n 60)
+        if declare -f _tm_clean_log >/dev/null 2>&1; then
+          tail -c +"$((start_bytes + 1))" "$logfile" 2>/dev/null | _tm_clean_log | tail -n 60 | head -c 10240
+        else
+          tail -c +"$((start_bytes + 1))" "$logfile" 2>/dev/null | sed 's/\r$//; s/\x1b\[[0-9;]*[a-zA-Z]//g' | tail -n 200 | head -c 32768
         fi
-        printf '%s' "$segment" | head -c 10240
       fi
     } >"$errinfo" 2>/dev/null || true
 
@@ -1279,6 +1272,10 @@ msg_info() {
   _cs_reattach_output
   local msg="$1"
   [[ -z "$msg" ]] && return
+  # Read by the error handler and telemetry: which step failed, and what it said.
+  CS_STEP="$(strip_ansi "$msg")"
+  CS_ERROR_MSG=""
+  _cs_drop_silent_record
 
   if ! declare -p MSG_INFO_SHOWN &>/dev/null || ! declare -A MSG_INFO_SHOWN &>/dev/null; then
     declare -gA MSG_INFO_SHOWN=()
@@ -1338,6 +1335,10 @@ msg_ok() {
   _cs_reattach_output
   local msg="$1"
   [[ -z "$msg" ]] && return
+  CS_STEP_DONE="$(strip_ansi "$msg")"
+  CS_STEP=""
+  CS_ERROR_MSG=""
+  _cs_drop_silent_record
   stop_spinner
   ((${#_MSG_BLOCKS[@]})) && unset '_MSG_BLOCKS[-1]'
   clear_line
@@ -1362,6 +1363,7 @@ msg_error() {
   stop_spinner
   _MSG_BLOCKS=()
   local msg="$1"
+  [[ -z "${CS_ERROR_MSG:-}" && -z "${_EH_REPORTING:-}" ]] && CS_ERROR_MSG="$(strip_ansi "$msg")"
   echo -e "${BFR:-}${CROSS:-✖️}${RD}${msg}${CL}" >&2
   log_msg "[ERROR] $msg"
 }

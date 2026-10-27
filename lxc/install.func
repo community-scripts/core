@@ -78,11 +78,11 @@ _cs_curl_retry() {
   return "$rc"
 }
 
-# The engine reaches a container in nine pieces. The host's prefetch cannot
-# help here — a container has its own filesystem — so fetch them concurrently
-# on this side too. verify-split-files.yml checks the list is complete.
+# The host's prefetch cannot reach a container's filesystem, so fetch the
+# engine concurrently on this side too. verify-split-files.yml checks the list.
 _CS_CT_ENGINE_FILES=(
   core/core.func core/error_handler.func
+  api/exitcodes.func api/errorlog.func
   lib/tools.func lib/alpine.func lib/db.func lib/forge.func
   lib/hwaccel.func lib/runtime.func lib/system.func
 )
@@ -110,7 +110,7 @@ _cs_ct_prefetch_engine() {
 
   local args=() rel core_base
   core_base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
-  mkdir -p "${dir}/core" "${dir}/lib" 2>/dev/null || true
+  mkdir -p "${dir}/core" "${dir}/api" "${dir}/lib" 2>/dev/null || true
   for rel in "${_CS_CT_ENGINE_FILES[@]}"; do
     args+=(-o "${dir}/${rel}" "${core_base}/${rel}")
   done
@@ -313,9 +313,14 @@ _bootstrap_die() {
 
 _bootstrap_source() {
   local rel="${1:?func path}" probe="${2:?probe function}" content
-  content="$(_cs_engine_read "$rel")" && [[ -n "$content" ]] ||
-    _bootstrap_die "Failed to download ${rel}"
-  source /dev/stdin <<<"$content"
+  # From the file when prefetched, so the error handler can read a failing line back.
+  if [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -s "${COMMUNITY_SCRIPTS_CORE_DIR}/${rel}" ]]; then
+    source "${COMMUNITY_SCRIPTS_CORE_DIR}/${rel}"
+  else
+    content="$(_cs_engine_read "$rel")" && [[ -n "$content" ]] ||
+      _bootstrap_die "Failed to download ${rel}"
+    source /dev/stdin <<<"$content"
+  fi
   declare -f "$probe" >/dev/null 2>&1 ||
     _bootstrap_die "${rel} loaded but incomplete (missing ${probe})"
 }
@@ -372,9 +377,16 @@ _bootstrap() {
   # (the host is the single telemetry reporter).
   export TELEMETRY_CONTEXT="container"
 
+  # lxc-attach carries the host's engine directory over; it does not exist in here.
+  if [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && ! -d "${COMMUNITY_SCRIPTS_CORE_DIR}" ]]; then
+    unset COMMUNITY_SCRIPTS_CORE_DIR
+  fi
+
   # Source core functions
   _cs_ct_prefetch_engine || true
   _bootstrap_source core/core.func load_functions
+  _bootstrap_source api/exitcodes.func explain_exit_code
+  _bootstrap_source api/errorlog.func _tm_focus
   _bootstrap_source core/error_handler.func catch_errors
   # The dev helpers are worth a round trip only when a flag is set: core.func's
   # timing hooks no-op without them, and error_handler's exit path asks for the
@@ -419,13 +431,10 @@ post_progress_to_api() {
   local progress_status="${1:-configuring}"
 
   # The only telemetry a container sends; terminal statuses come from the host.
-  # execution_id and repo attribution let the server correlate these rows.
-  # TELEMETRY_URL rather than the literal address: hardcoding it meant an
-  # endpoint override worked everywhere except inside the container.
   curl -fsS -m 5 -X POST "${TELEMETRY_URL:-https://telemetry.community-scripts.org/telemetry}" \
     -H "Content-Type: application/json" \
-    -A "community-scripts-core/${TELEMETRY_PAYLOAD_VERSION:-2}" \
-    -d "{\"payload_version\":${TELEMETRY_PAYLOAD_VERSION:-2},\"random_id\":\"${RANDOM_UUID}\",\"execution_id\":\"${EXECUTION_ID:-${RANDOM_UUID}}\",\"type\":\"lxc\",\"nsapp\":\"${app:-unknown}\",\"status\":\"${progress_status}\",\"platform\":\"${TELEMETRY_PLATFORM:-}\",\"repo_source\":\"${REPO_SOURCE:-}\",\"repo_slug\":\"${REPO_SLUG:-}\"}" &>/dev/null || true
+    -A "community-scripts-core/${TELEMETRY_PAYLOAD_VERSION:-3}" \
+    -d "{\"payload_version\":${TELEMETRY_PAYLOAD_VERSION:-3},\"random_id\":\"${RANDOM_UUID}\",\"execution_id\":\"${EXECUTION_ID:-${RANDOM_UUID}}\",\"type\":\"lxc\",\"nsapp\":\"${app:-unknown}\",\"status\":\"${progress_status}\",\"platform\":\"${TELEMETRY_PLATFORM:-}\",\"repo_source\":\"${REPO_SOURCE:-}\",\"repo_slug\":\"${REPO_SLUG:-}\"}" &>/dev/null || true
 }
 
 # ==============================================================================
@@ -1416,12 +1425,16 @@ EOF
   alpine) tools_name="lib/alpine.func" ;;
   *) tools_name="lib/tools.func" ;;
   esac
-  tools_content=$(_cs_engine_read "${tools_name}")
-  if [[ -z "$tools_content" ]]; then
-    msg_error "Failed to download ${tools_name}"
-    exit 115
+  if [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -s "${COMMUNITY_SCRIPTS_CORE_DIR}/${tools_name}" ]]; then
+    source "${COMMUNITY_SCRIPTS_CORE_DIR}/${tools_name}"
+  else
+    tools_content=$(_cs_engine_read "${tools_name}")
+    if [[ -z "$tools_content" ]]; then
+      msg_error "Failed to download ${tools_name}"
+      exit 115
+    fi
+    source /dev/stdin <<<"$tools_content"
   fi
-  source /dev/stdin <<<"$tools_content"
   if ! declare -f fetch_and_deploy_gh_release >/dev/null 2>&1; then
     msg_error "tools.func loaded but incomplete — missing expected functions"
     exit 115
