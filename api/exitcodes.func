@@ -3,45 +3,25 @@
 # License: MIT | https://raw.githubusercontent.com/community-scripts/core/main/LICENSE
 
 # ==============================================================================
-# API/EXIT CODE EXPLANATIONS
+# API/EXIT CODES
 # ==============================================================================
-# Part of the telemetry layer. Load api/api.func -- it sources every part --
-# rather than this file directly; the split is for maintenance only and no
-# function name or behaviour changed with it.
-#
-# Turns a numeric exit status into a sentence, and sorts it into a category
-# for the telemetry field. Almost entirely a lookup table, and the authoritative
-# copy of it.
-#
-# Two things have to move with it. core/error_handler.func carries a fallback
-# table for the container case, where this file is not loaded; and the aborted
-# branch of post_update_to_api has to agree with the user_aborted codes below,
-# or a run is filed as one thing and described as another. The pointer here used
-# to name docs/exit_codes.md, which does not exist.
-
+# Exit status -> description and telemetry category. Loaded through api/api.func
+# on the host and by lxc/install.func inside the container. The abort codes in
+# categorize_error must match post_update_to_api in api/telemetry.func.
 # ==============================================================================
 
 [[ -n "${_API_EXITCODES_LOADED:-}" ]] && return 0
 _API_EXITCODES_LOADED=1
 
-# ------------------------------------------------------------------------------
-# explain_exit_code()
-#
-# - Maps numeric exit codes to human-readable error descriptions
-# - Canonical source of truth for ALL exit code mappings
-# - Used by both api.func (telemetry) and error_handler.func (error display)
-# ------------------------------------------------------------------------------
+# explain_exit_code <code>
 explain_exit_code() {
   local code="$1"
   case "$code" in
   # --- Generic / Shell ---
-  # Reached through the aborted branch of post_update_to_api: a clean exit that
-  # never reported success is someone backing out of a dialog. Every one of
-  # those records read "Unknown error".
   0) echo "Cancelled before completion (no error)" ;;
-  1) echo "The command failed; its output says why" ;;
-  2) echo "The command failed with status 2 (a usage error for most tools); its output says why" ;;
-  3) echo "The command failed with status 3; its output says why" ;;
+  1) echo "General error" ;;
+  2) echo "Invalid usage or arguments" ;;
+  3) echo "Command-specific error" ;;
   10) echo "Docker / privileged mode required (unsupported environment)" ;;
 
   # --- curl / wget errors ---
@@ -103,7 +83,7 @@ explain_exit_code() {
   112) echo "Proxmox: Invalid install menu option" ;;
   113) echo "LXC: Under-provisioned — user aborted update" ;;
   114) echo "LXC: Storage too low — user aborted update" ;;
-  115) echo "Download: install.func download failed or incomplete" ;;
+  115) echo "Engine or install script could not be downloaded" ;;
   116) echo "Proxmox: Default bridge vmbr0 not found" ;;
   117) echo "LXC: Container did not reach running state" ;;
   118) echo "LXC: No IP assigned to container after timeout" ;;
@@ -114,7 +94,7 @@ explain_exit_code() {
   123) echo "LXC: Local IP detection failed" ;;
 
   # --- BSD sysexits.h (64-78) ---
-  64) echo "Usage error (wrong arguments)" ;;
+  64) echo "Missing or invalid input (a required setting was not given)" ;;
   65) echo "Data format error (bad input data)" ;;
   66) echo "Input file not found (cannot open input)" ;;
   67) echo "User not found (addressee unknown)" ;;
@@ -177,12 +157,6 @@ explain_exit_code() {
   193) echo "MongoDB: Fatal query error" ;;
 
   # --- Engine (199) ---
-  # Not a failure of the install. It means the engine reported a terminal status
-  # without a code to go with it -- the flag file was unreadable, or a caller
-  # passed nothing. It used to be reported as 1, which is also what bash returns
-  # for any ordinary command failure, so a lost code and a real general error
-  # were the same number.
-
   199) echo "Engine: exit code not reported" ;;
 
   # --- Proxmox Custom Codes (200-231) ---
@@ -200,11 +174,6 @@ explain_exit_code() {
   213) echo "Proxmox: Storage type does not support 'rootdir' content" ;;
   214) echo "Proxmox: Not enough storage space" ;;
   215) echo "Proxmox: Container created but not listed (ghost state)" ;;
-  # 197 runs across 70 apps in a fortnight failed here and were filed as a
-  # package manager problem: pct returns 255, and 255 is DPKG's fatal error. A
-  # container that will not start is not a dependency problem, and calling it one
-  # sends everybody looking in the wrong place.
-  227) echo "Proxmox: Container created but failed to start" ;;
   216) echo "Proxmox: RootFS entry missing in config" ;;
   217) echo "Proxmox: Storage not accessible" ;;
   218) echo "Proxmox: Template file corrupted or incomplete" ;;
@@ -216,6 +185,7 @@ explain_exit_code() {
   224) echo "Proxmox: PBS storage is for backups only" ;;
   225) echo "Proxmox: No template available for OS/Version" ;;
   226) echo "Proxmox: VM disk import or post-creation setup failed" ;;
+  227) echo "Proxmox: Container created but failed to start" ;;
   228) echo "Proxmox: Cluster filesystem /etc/pve not available" ;;
   231) echo "Proxmox: LXC stack too old for the template, or its upgrade failed" ;;
 
@@ -252,19 +222,8 @@ explain_exit_code() {
   esac
 }
 
-# ------------------------------------------------------------------------------
-# categorize_error()
-#
-# - Maps exit codes to error categories for dashboard grouping
-# - Can be overridden via ERROR_CATEGORY_OVERRIDE (log-based subclassification)
-# ------------------------------------------------------------------------------
-
-# ------------------------------------------------------------------------------
-# categorize_error()
-#
-# - Maps exit codes to error categories for dashboard grouping
-# - Can be overridden via ERROR_CATEGORY_OVERRIDE (log-based subclassification)
-# ------------------------------------------------------------------------------
+# categorize_error <code> [command]
+# ERROR_CATEGORY_OVERRIDE wins; the tool that ran beats a code several tools share.
 categorize_error() {
   if [[ -n "${ERROR_CATEGORY_OVERRIDE:-}" ]]; then
     echo "$ERROR_CATEGORY_OVERRIDE"
@@ -277,7 +236,6 @@ categorize_error() {
   134 | 137) echo "resource"; return ;;
   139 | 141) echo "signal"; return ;;
   esac
-  # The tool that ran says more than a status several tools share.
   if [[ -z "$command" ]] && declare -f _tm_find_errinfo >/dev/null 2>&1 && errinfo=$(_tm_find_errinfo); then
     command=$(sed -n 's/^COMMAND=//p' "$errinfo" | head -n1)
   fi
@@ -304,14 +262,3 @@ categorize_error() {
   esac
 }
 
-# ==============================================================================
-# SECTION 2: JSON & LOG HELPERS
-# ==============================================================================
-
-# ------------------------------------------------------------------------------
-# json_escape()
-#
-# - Escapes a string for safe JSON embedding
-# - Strips ANSI escape sequences and non-printable control characters
-# - Uses jq when available (guaranteed correct), falls back to awk
-# ------------------------------------------------------------------------------
