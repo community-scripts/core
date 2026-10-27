@@ -377,6 +377,11 @@ _bootstrap() {
   # (the host is the single telemetry reporter).
   export TELEMETRY_CONTEXT="container"
 
+  # lxc-attach carries the host's engine directory over; it does not exist in here.
+  if [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && ! -d "${COMMUNITY_SCRIPTS_CORE_DIR}" ]]; then
+    unset COMMUNITY_SCRIPTS_CORE_DIR
+  fi
+
   # Source core functions
   _cs_ct_prefetch_engine || true
   _bootstrap_source core/core.func load_functions

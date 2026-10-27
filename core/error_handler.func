@@ -147,15 +147,18 @@ _eh_ok() {
 # _eh_command_word <command> - the program a command line runs, without
 # assignments, wrappers or a path: "FOO=1 $STD /usr/bin/npm ci" -> npm
 _eh_command_word() {
-  local word
-  for word in $1; do
-    [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] && continue
-    case "$word" in
-    sudo | env | command | exec | nohup | time | silent | _cs_shield_hangup | '$STD' | -*) continue ;;
-    esac
-    printf '%s' "${word##*/}"
-    return
+  local -a words=()
+  local word found=""
+  read -ra words <<<"$1" || true
+  for word in "${words[@]}"; do
+    if [[ -z "$found" && ! "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      case "$word" in
+      sudo | env | command | exec | nohup | time | silent | _cs_shield_hangup | '$STD' | -*) ;;
+      *) found="${word##*/}" ;;
+      esac
+    fi
   done
+  printf '%s' "$found"
 }
 
 # ------------------------------------------------------------------------------
@@ -165,46 +168,36 @@ _eh_command_word() {
 # holds when that tool ran: cargo's 101 is a panic, not an APT error. Otherwise
 # the sentence names the program that failed.
 # ------------------------------------------------------------------------------
+# Runs inside the ERR trap: no early returns, every test inside an if.
 _eh_explanation() {
-  local exit_code="$1" command="$2" explanation tools word
-  if declare -f explain_exit_code >/dev/null 2>&1; then
-    explanation="$(explain_exit_code "$exit_code")"
-  else
-    explanation="Exit status ${exit_code}"
-  fi
+  local exit_code="$1" command="$2" explanation="" tools word
   word="$(_eh_command_word "$command")"
 
-  case "$command" in
-  "(("*)
-    [[ "$exit_code" == 1 ]] && { printf 'Arithmetic expression evaluated to 0'; return; }
-    ;;
-  "[["* | "[ "* | "test "*)
-    [[ "$exit_code" == 1 ]] && { printf 'Test condition was false'; return; }
-    ;;
-  esac
-  if [[ "$command" =~ ^[A-Za-z_][A-Za-z0-9_]*=\$\( ]]; then
-    printf 'Command substitution exited with status %s' "$exit_code"
-    return
-  fi
-  if [[ "$exit_code" == 1 && "$word" =~ ^(grep|egrep|fgrep|zgrep|rg)$ ]]; then
-    printf '%s found no match' "$word"
-    return
-  fi
-  if [[ "$exit_code" == 5 ]] && _eh_command_is "$command" "systemctl"; then
-    printf 'Systemd: unit not found'
-    return
-  fi
-  if [[ "$word" == "return" || "$word" == "exit" ]]; then
-    printf 'Exit status %s' "$exit_code"
-    return
-  fi
-
-  tools="$(_eh_tools_for "${explanation%%:*}")"
-  if [[ -n "$tools" ]] && ! _eh_command_is "$command" "$tools"; then
-    explanation="${word:+${word} exited with status ${exit_code}}"
-    explanation="${explanation:-Exit status ${exit_code}}"
-  elif [[ "$exit_code" =~ ^[123]$ && -n "$word" ]]; then
-    explanation="${word} exited with status ${exit_code}"
+  if [[ "$exit_code" == 1 && "$command" == "(("* ]]; then
+    explanation="Arithmetic expression evaluated to 0"
+  elif [[ "$exit_code" == 1 && ("$command" == "[["* || "$command" == "[ "* || "$command" == "test "*) ]]; then
+    explanation="Test condition was false"
+  elif [[ "$command" =~ ^[A-Za-z_][A-Za-z0-9_]*=\$\( ]]; then
+    explanation="Command substitution exited with status ${exit_code}"
+  elif [[ "$exit_code" == 1 && "$word" =~ ^(grep|egrep|fgrep|zgrep|rg)$ ]]; then
+    explanation="${word} found no match"
+  elif [[ "$exit_code" == 5 ]] && _eh_command_is "$command" "systemctl"; then
+    explanation="Systemd: unit not found"
+  elif [[ "$word" == "return" || "$word" == "exit" ]]; then
+    explanation="Exit status ${exit_code}"
+  else
+    if declare -f explain_exit_code >/dev/null 2>&1; then
+      explanation="$(explain_exit_code "$exit_code")"
+    else
+      explanation="Exit status ${exit_code}"
+    fi
+    tools="$(_eh_tools_for "${explanation%%:*}")"
+    if [[ -n "$tools" ]] && ! _eh_command_is "$command" "$tools"; then
+      explanation="${word:+${word} exited with status ${exit_code}}"
+      explanation="${explanation:-Exit status ${exit_code}}"
+    elif [[ "$exit_code" =~ ^[123]$ && -n "$word" ]]; then
+      explanation="${word} exited with status ${exit_code}"
+    fi
   fi
   printf '%s' "$explanation"
 }
