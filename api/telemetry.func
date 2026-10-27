@@ -214,10 +214,6 @@ post_update_to_api() {
   [[ "${DIAGNOSTICS:-no}" == "no" ]] && return 0
   [[ -z "${RANDOM_UUID:-}" ]] && return 0
 
-  # Unset: no install was ever reported (an update run, or an exit before the
-  # install began). "false" means the send failed and is still worth a status.
-  [[ -z "${POST_TO_API_DONE:-}" ]] && return 0
-
   local exit_code=0
   if [[ "$raw_exit_code" =~ ^[0-9]+$ ]]; then
     exit_code="$raw_exit_code"
@@ -245,6 +241,17 @@ post_update_to_api() {
     pb_status="unknown"
     ;;
   esac
+
+  # Unset: no install was reported yet. A host run that failed in its checks
+  # (storage, ID, template) reports one now; an update run inside a container
+  # or a cancelled dialog does not. "false" means that send failed.
+  if [[ -z "${POST_TO_API_DONE:-}" ]]; then
+    if [[ "$pb_status" == "failed" && -n "${NSAPP:-}" ]] &&
+      ! { declare -f _is_container_context >/dev/null 2>&1 && _is_container_context; }; then
+      post_to_api
+    fi
+    [[ -z "${POST_TO_API_DONE:-}" ]] && return 0
+  fi
 
   if [[ "$pb_status" == "failed" || "$pb_status" == "unknown" ]]; then
     _tm_error_context "$exit_code"

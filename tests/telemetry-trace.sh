@@ -27,9 +27,9 @@ expect() {
 }
 json_field() {
   if command -v jq >/dev/null 2>&1; then
-    jq -r --arg k "$2" '.[$k] | tostring' "$1"
+    jq -r --arg k "$2" '.[$k] | tostring' "$1" | tr -d '\r'
   else
-    python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))[sys.argv[2]]; print(v if not isinstance(v,bool) else str(v).lower())' "$1" "$2"
+    python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))[sys.argv[2]]; print(v if not isinstance(v,bool) else str(v).lower())' "$1" "$2" | tr -d '\r'
   fi
 }
 reset() {
@@ -39,7 +39,10 @@ reset() {
   unset TM_ERR_CODE TM_ERR_EXPLANATION
   POST_TO_API_DONE=true POST_UPDATE_DONE=false
 }
-_tm_send() { printf '%s' "$1" >"$SENT"; }
+_tm_send() {
+  printf '%s' "$1" >"$SENT"
+  json_field "$SENT" status >>"$TEST_DIR/statuses"
+}
 telemetry_collect_sysinfo() { :; }
 DIAGNOSTICS=yes RANDOM_UUID=00000000-0000-4000-8000-000000000000 SESSION_ID=test NSAPP=demo
 BUILD_LOG="$LOG" INSTALL_LOG="$TEST_DIR/none.log"
@@ -107,6 +110,19 @@ reset
 POST_UPDATE_DONE=true
 post_update_to_api failed 1
 expect "one terminal event per execution" no "$([[ -f "$SENT" ]] && echo yes || echo no)"
+
+# --- a host check failing before the install was reported ---
+reset
+unset POST_TO_API_DONE
+: >"$TEST_DIR/statuses"
+CS_ERROR_MSG="Not enough space on 'local'. Required: 500GB, Available: 23.2GB"
+post_update_to_api failed 214
+expect "an early host failure is reported with its install record" "installing failed" "$(paste -sd' ' "$TEST_DIR/statuses")"
+reset
+unset POST_TO_API_DONE
+: >"$TEST_DIR/statuses"
+post_update_to_api failed 130
+expect "an early abort is not" "" "$(paste -sd' ' "$TEST_DIR/statuses")"
 
 # --- JSON stays valid with awkward text ---
 reset

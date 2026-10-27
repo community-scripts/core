@@ -72,6 +72,7 @@ SPINNER_MSG=""
 _CORE_FUNC_LOADED=1
 
 BUILD_LOG="${BUILD_LOG:-/tmp/cs-vm-$$.log}"
+TELEMETRY_TYPE="vm"
 export BUILD_LOG
 
 COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main}"

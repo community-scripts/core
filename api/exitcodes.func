@@ -247,7 +247,7 @@ categorize_error() {
   esac
   case "$code" in
   6 | 7 | 22 | 35) echo "network" ;;
-  10) echo "config" ;;
+  10 | 64) echo "config" ;;
   28 | 124 | 211) echo "timeout" ;;
   214 | 217 | 219 | 224) echo "storage" ;;
   100 | 101 | 102 | 127 | 160 | 161 | 162 | 255) echo "dependency" ;;
