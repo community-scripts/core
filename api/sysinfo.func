@@ -5,12 +5,8 @@
 # ==============================================================================
 # API/SYSTEM AND ORIGIN DETECTION
 # ==============================================================================
-# Part of the telemetry layer. Load api/api.func -- it sources every part --
-# rather than this file directly; the split is for maintenance only and no
-# function name or behaviour changed with it.
-#
-# What the host is: repo the script came from, GPU, CPU, RAM, architecture.
-# Read once and cached in TM_* variables.
+# Where the script came from and what it runs on. Loaded through api/api.func;
+# read once per run.
 # ==============================================================================
 
 [[ -n "${_API_SYSINFO_LOADED:-}" ]] && return 0
@@ -120,18 +116,6 @@ detect_repo_source() {
 # Run detection immediately when api.func is sourced
 detect_repo_source
 
-# ==============================================================================
-# SECTION 1: ERROR CODE DESCRIPTIONS & CATEGORIES
-# ==============================================================================
-
-# ------------------------------------------------------------------------------
-# explain_exit_code()
-#
-# - Maps numeric exit codes to human-readable error descriptions
-# - Canonical source of truth for ALL exit code mappings
-# - Used by both api.func (telemetry) and error_handler.func (error display)
-# ------------------------------------------------------------------------------
-
 # ------------------------------------------------------------------------------
 # detect_gpu() - GPU vendor, model, passthrough type
 # ------------------------------------------------------------------------------
@@ -168,10 +152,6 @@ detect_gpu() {
 # ------------------------------------------------------------------------------
 # detect_cpu() - CPU vendor and model
 # ------------------------------------------------------------------------------
-
-# ------------------------------------------------------------------------------
-# detect_cpu() - CPU vendor and model
-# ------------------------------------------------------------------------------
 detect_cpu() {
   CPU_VENDOR="unknown"
   CPU_MODEL=""
@@ -199,10 +179,6 @@ detect_cpu() {
 # ------------------------------------------------------------------------------
 # detect_ram() - RAM speed via dmidecode (empty in nested VMs)
 # ------------------------------------------------------------------------------
-
-# ------------------------------------------------------------------------------
-# detect_ram() - RAM speed via dmidecode (empty in nested VMs)
-# ------------------------------------------------------------------------------
 detect_ram() {
   RAM_SPEED=""
 
@@ -215,10 +191,6 @@ detect_ram() {
 
   export RAM_SPEED
 }
-
-# ------------------------------------------------------------------------------
-# detect_arm() - true when running on arm64 hardware
-# ------------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------------
 # detect_arm() - true when running on arm64 hardware
@@ -238,14 +210,6 @@ detect_arm() {
 # - Sets: CPU_VENDOR, CPU_MODEL, GPU_VENDOR, GPU_MODEL, GPU_PASSTHROUGH,
 #   RAM_SPEED, HAS_ARM, TM_ARCH, TM_PVE_VERSION
 # ------------------------------------------------------------------------------
-
-# ------------------------------------------------------------------------------
-# telemetry_collect_sysinfo()
-#
-# - Collects ALL system metadata exactly once (cached via _TM_SYSINFO_DONE)
-# - Sets: CPU_VENDOR, CPU_MODEL, GPU_VENDOR, GPU_MODEL, GPU_PASSTHROUGH,
-#   RAM_SPEED, HAS_ARM, TM_ARCH, TM_PVE_VERSION
-# ------------------------------------------------------------------------------
 telemetry_collect_sysinfo() {
   [[ "${_TM_SYSINFO_DONE:-}" == "true" ]] && return 0
 
@@ -253,6 +217,7 @@ telemetry_collect_sysinfo() {
   [[ -z "${CPU_VENDOR:-}" ]] && detect_cpu
   [[ -z "${RAM_SPEED+x}" ]] && detect_ram
   [[ -z "${HAS_ARM:-}" ]] && detect_arm
+  [[ -z "${KERNEL_VERSION:-}" ]] && KERNEL_VERSION="$(uname -r 2>/dev/null)"
 
   # One vocabulary: dpkg says amd64/arm64, uname says x86_64/aarch64, so which a
   # run reported depended on whether dpkg existed. Normalised to dpkg's spelling,
@@ -278,15 +243,6 @@ telemetry_collect_sysinfo() {
   fi
 
   _TM_SYSINFO_DONE=true
-  export TM_ARCH TM_PVE_VERSION TM_PLATFORM _TM_SYSINFO_DONE
+  export TM_ARCH TM_PVE_VERSION TM_PLATFORM KERNEL_VERSION _TM_SYSINFO_DONE
 }
 
-# ==============================================================================
-# SECTION 5: PAYLOAD BUILDER & SENDER
-# ==============================================================================
-
-# ------------------------------------------------------------------------------
-# _tm_enabled()
-#
-# - Central gate: curl present, DIAGNOSTICS=yes, RANDOM_UUID set
-# ------------------------------------------------------------------------------
