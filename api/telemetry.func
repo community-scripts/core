@@ -149,8 +149,25 @@ _tm_send() {
 # PUBLIC API
 # ==============================================================================
 
+# _tm_quiet <function> [args] - a sender with errexit and the caller's ERR trap
+# off. A failing command in here would otherwise re-enter the error handler,
+# which reports again.
+_tm_quiet() {
+  local - err_trap rc=0
+  err_trap="$(trap -p ERR)"
+  set +eE +o pipefail
+  trap - ERR
+  "$@" || rc=$?
+  [[ -n "$err_trap" ]] && eval "$err_trap"
+  return "$rc"
+}
+
+post_to_api() { _tm_quiet _tm_post_install "$@"; }
+post_progress_to_api() { _tm_quiet _tm_post_progress "$@"; }
+post_update_to_api() { _tm_quiet _tm_post_update "$@"; }
+
 # post_to_api - the "installing" record; once per execution, retried 3x
-post_to_api() {
+_tm_post_install() {
   [[ "${POST_TO_API_DONE:-}" == "true" ]] && return 0
   _tm_enabled || return 0
 
@@ -183,7 +200,7 @@ post_to_api_vm() {
 }
 
 # post_progress_to_api [status] - "validation"/"configuring" ping, full payload, one attempt
-post_progress_to_api() {
+_tm_post_progress() {
   _tm_enabled || return 0
 
   local progress_status="${1:-configuring}"
@@ -199,7 +216,7 @@ post_progress_to_api() {
 # the outcome changed, e.g. a retry succeeded). status: done|success, failed,
 # aborted. exit_code "none" means 0; anything else non-numeric becomes 199.
 # ------------------------------------------------------------------------------
-post_update_to_api() {
+_tm_post_update() {
   command -v curl &>/dev/null || return 0
 
   local status="${1:-failed}"
@@ -315,7 +332,7 @@ _tm_post_run() {
 
 # post_tool_to_api <name> [status] [exit_code] - a PVE host tool ran
 post_tool_to_api() {
-  _tm_post_run "${TELEMETRY_TOOL_TYPE:-pve}" "$@"
+  _tm_quiet _tm_post_run "${TELEMETRY_TOOL_TYPE:-pve}" "$@"
 }
 
 # post_addon_to_api <name> [status] [exit_code] - an add-on ran inside a container
@@ -325,7 +342,7 @@ post_addon_to_api() {
     os_type=$(grep "^ID=" /etc/os-release | cut -d= -f2 | tr -d '"' || true)
     os_version=$(grep "^VERSION_ID=" /etc/os-release | cut -d= -f2 | tr -d '"' || true)
   fi
-  var_os="$os_type" var_version="$os_version" _tm_post_run addon "$@"
+  var_os="$os_type" var_version="$os_version" _tm_quiet _tm_post_run addon "$@"
 }
 
 # telemetry_new_attempt - a retry from the recovery menu becomes its own execution
@@ -388,7 +405,7 @@ start_install_timer() {
 get_install_duration() {
   if [[ -z "${INSTALL_START_TIME:-}" ]]; then
     echo "0"
-    return
+    return 0
   fi
   local now
   now=$(date +%s)

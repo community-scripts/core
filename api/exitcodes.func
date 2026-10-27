@@ -227,14 +227,14 @@ explain_exit_code() {
 categorize_error() {
   if [[ -n "${ERROR_CATEGORY_OVERRIDE:-}" ]]; then
     echo "$ERROR_CATEGORY_OVERRIDE"
-    return
+    return 0
   fi
 
   local code="$1" command="${2:-${FAILED_COMMAND:-}}" errinfo tool
   case "$code" in
-  113 | 114 | 122 | 129 | 130 | 143 | 253 | 254) echo "user_aborted"; return ;;
-  134 | 137) echo "resource"; return ;;
-  139 | 141) echo "signal"; return ;;
+  113 | 114 | 122 | 129 | 130 | 143 | 253 | 254) echo "user_aborted"; return 0 ;;
+  134 | 137) echo "resource"; return 0 ;;
+  139 | 141) echo "signal"; return 0 ;;
   esac
   if [[ -z "$command" ]] && declare -f _tm_find_errinfo >/dev/null 2>&1 && errinfo=$(_tm_find_errinfo); then
     command=$(sed -n 's/^COMMAND=//p' "$errinfo" | head -n1)
@@ -242,8 +242,8 @@ categorize_error() {
   tool="${command%% *}"
   tool="${tool##*/}"
   case "$tool" in
-  systemctl) echo "service"; return ;;
-  pct | qm | pvesm | pvesh | pveam) echo "proxmox"; return ;;
+  systemctl) echo "service"; return 0 ;;
+  pct | qm | pvesm | pvesh | pveam) echo "proxmox"; return 0 ;;
   esac
   case "$code" in
   6 | 7 | 22 | 35) echo "network" ;;

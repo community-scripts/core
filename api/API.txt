@@ -9,7 +9,11 @@ _tm_format_error
 _tm_one_line
 _tm_payload
 _tm_pick_logfile
+_tm_post_install
+_tm_post_progress
 _tm_post_run
+_tm_post_update
+_tm_quiet
 _tm_send
 _tm_step_output
 build_error_string

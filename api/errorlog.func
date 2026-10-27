@@ -34,7 +34,7 @@ json_escape() {
 
   if command -v jq &>/dev/null; then
     printf '%s' "$input" | jq -Rs '.' | sed 's/^"//;s/"$//'
-    return
+    return 0
   fi
 
   printf '%s' "$input" |

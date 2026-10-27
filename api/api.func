@@ -41,13 +41,13 @@ _api_source_part() {
 
   if declare -f _cs_source_func >/dev/null 2>&1; then
     _cs_source_func "api/${part}.func"
-    return
+    return 0
   fi
 
   if [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -s "${COMMUNITY_SCRIPTS_CORE_DIR}/api/${part}.func" ]]; then
     # shellcheck disable=SC1090
     source "${COMMUNITY_SCRIPTS_CORE_DIR}/api/${part}.func"
-    return
+    return 0
   fi
   local base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
   if command -v curl >/dev/null 2>&1; then

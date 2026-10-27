@@ -787,12 +787,12 @@ cleanup() {
   if [[ -n "${TEMP_DIR:-}" && -d "$TEMP_DIR" ]]; then
     rm -rf "$TEMP_DIR"
   fi
-  # Report final telemetry status if post_to_api_vm was called but no update was sent
-  if [[ "${POST_TO_API_DONE:-}" == "true" && "${POST_UPDATE_DONE:-}" != "true" ]]; then
-    if declare -f post_update_to_api >/dev/null 2>&1; then
-      if [[ $exit_code -ne 0 ]]; then
-        post_update_to_api "failed" "$exit_code"
-      elif [[ -n "${VMID:-}" ]] && qm config "$VMID" &>/dev/null; then
+  # The final status nobody sent yet; post_update_to_api decides whether an early failure counts.
+  if [[ "${POST_UPDATE_DONE:-}" != "true" ]] && declare -f post_update_to_api >/dev/null 2>&1; then
+    if [[ $exit_code -ne 0 ]]; then
+      post_update_to_api "failed" "$exit_code"
+    elif [[ -n "${POST_TO_API_DONE:-}" ]]; then
+      if [[ -n "${VMID:-}" ]] && qm config "$VMID" &>/dev/null; then
         # Clean exit with the VM in place: a script that never said so itself.
         post_update_to_api "done" "none"
       else
