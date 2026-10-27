@@ -958,7 +958,11 @@ _cs_reattach_output() {
   exec </dev/null >>"$log" 2>&1
 }
 
-_silent_exec() {
+# A closed console sends SIGHUP to every process in the foreground group, and a
+# program that does not handle it dies. Run the long ones through here: the
+# subshell sets the signal to ignore, which exec carries into the program, so
+# it finishes even though the terminal is gone.
+_cs_shield_hangup() {
   (
     trap '' HUP
     exec "$@"
@@ -999,7 +1003,7 @@ silent() {
   local rc run=("$@")
   case "$(type -t "$1" 2>/dev/null)" in
   function | builtin | "") ;;
-  *) run=(_silent_exec "$@") ;;
+  *) run=(_cs_shield_hangup "$@") ;;
   esac
   if [[ "${VERBOSE:-no}" == "yes" ]]; then
     # Not a pipe: the command must stay in this shell so functions keep their side effects.

@@ -16,9 +16,10 @@ wizard calls.
 | [`vm-core.func`](../pve/vm-core.func) | VM creation via `qm`, including disk import and template handling |
 | [`vm-app.func`](../pve/vm-app.func) | Deploys an application that normally goes into an LXC container into a full VM instead |
 
-A closed console is not an abort. SIGHUP reaches the host script and the
+A closed console is not an abort. The hangup reaches the host script and the
 install inside the container; both carry on with their output in their logs
-(`on_hangup`), external commands under `$STD` ignore the signal, and when
+(`on_hangup`), the long-running commands on either side run through
+`_cs_shield_hangup` so the signal cannot reach them, and when
 lxc-attach dies with the terminal the host waits for the container's
 `.done`/`.failed` markers (`_pve_wait_for_detached_install`) before it
 reports. Ctrl-C still aborts.

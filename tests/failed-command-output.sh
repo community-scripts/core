@@ -2,7 +2,7 @@
 set -uo pipefail
 
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-eval "$(awk '/^(silent|set_std_mode|_silent_exec|_cs_reattach_output)[(][)] [{]/,/^}/' "$CORE_DIR/core/core.func")"
+eval "$(awk '/^(silent|set_std_mode|_cs_shield_hangup|_cs_reattach_output)[(][)] [{]/,/^}/' "$CORE_DIR/core/core.func")"
 eval "$(awk '/^_eh_print_failed_output[(][)] [{]/,/^}/' "$CORE_DIR/core/error_handler.func")"
 
 TEST_DIR="$(mktemp -d)"

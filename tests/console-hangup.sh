@@ -6,7 +6,7 @@
 set -uo pipefail
 
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-eval "$(awk '/^(silent|_silent_exec|_cs_reattach_output)[(][)] [{]/,/^}/' "$CORE_DIR/core/core.func")"
+eval "$(awk '/^(silent|_cs_shield_hangup|_cs_reattach_output)[(][)] [{]/,/^}/' "$CORE_DIR/core/core.func")"
 eval "$(awk '/^(on_hangup|on_exit|_eh_quiet_spinner)[(][)] [{]/,/^}/' "$CORE_DIR/core/error_handler.func")"
 eval "$(awk '/^_pve_wait_for_detached_install[(][)] [{]/,/^}/' "$CORE_DIR/pve/backend.func")"
 
@@ -53,7 +53,7 @@ rc=$?
 expect "the shell survives the hangup" 0 "$rc"
 expect "nothing more reaches the terminal" "" "$out"
 expect "later output lands in the log" 1 "$(grep -c 'after hangup' "$LOG")"
-expect "the hangup is noted in the log" 1 "$(grep -c SIGHUP "$LOG")"
+expect "the hangup is noted in the log" 1 "$(grep -c 'The terminal closed' "$LOG")"
 expect "the run knows it is detached" 1 "$(grep -c 'flag=1' "$LOG")"
 
 # on_exit(): a clean install leaves .done for the host; a failed one does not.
@@ -136,6 +136,34 @@ expect "and not back to the original target" 0 "$(grep -c 'after the redirected 
 ( unset _CS_HANGUP; _CS_HANGUP_LOG="$AFTER"; _cs_reattach_output; echo "no hangup" ) >"$TEST_DIR/orig2.log" 2>&1
 expect "without a hangup nothing is redirected" 0 "$(grep -c 'no hangup' "$AFTER" 2>/dev/null)"
 expect "it stays where it was" 1 "$(grep -c 'no hangup' "$TEST_DIR/orig2.log" 2>/dev/null)"
+
+# The telemetry service decides what counts as a user abort by searching the
+# log text, so a word in one of our own messages is enough to file a failure
+# as "the operator pressed Ctrl-C". A closed console is not that, and 81 of
+# 300 aborted records were this message rather than a person.
+CLASSIFIER_TOKENS="sigint ctrl+c ctrl-c sighup aborted by user user abort cancelled by user no changes have been made"
+hangup_text="$(awk '/^on_hangup[(][)] [{]/,/^}/' "$CORE_DIR/core/error_handler.func")
+$(awk '/^_incus_on_hangup[(][)] [{]/,/^}/' "$CORE_DIR/incus/build.func")"
+hits=0
+while IFS= read -r token; do
+  [[ -n "$token" ]] || continue
+  if printf '%s' "${hangup_text,,}" | grep -qF "$token"; then
+    echo "  token in a hangup message: $token" >&2
+    hits=$((hits + 1))
+  fi
+done <<<"$(printf '%s
+' $CLASSIFIER_TOKENS | sed 's/^ *//')"
+expect "no hangup message reads as a user abort" 0 "$hits"
+expect "both hangup handlers were found" 2 "$(grep -c 'continuing, output follows here' <<<"$hangup_text")"
+
+# The helper the long host commands go through has to survive the signal.
+: >"$LOG"
+_cs_shield_hangup sh -c 'kill -HUP $$; echo shielded >>"'"$LOG"'"'
+expect "a shielded command survives SIGHUP" 0 "$?"
+expect "and ran to the end" 1 "$(grep -c shielded "$LOG")"
+unshielded_rc=0
+{ sh -c 'kill -HUP $$; echo unshielded' >/dev/null 2>&1 || unshielded_rc=$?; } 2>/dev/null
+expect "without the shield the same command dies" 129 "$unshielded_rc"
 
 echo "$passed passed, $failed failed"
 ((failed == 0))
