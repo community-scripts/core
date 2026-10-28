@@ -1433,8 +1433,12 @@ PROFILE
     # The install owns the terminal now; a block left open on the host would resume its spinner over it.
     stop_spinner
     _MSG_BLOCKS=()
-    msg_custom "ℹ️" "${YW}" "Closing this console does not abort the install; it finishes on its own (Ctrl-C does abort)."
-    msg_custom "   " "${YW}" "Follow it with: pct exec ${CTID} -- tail -f /root/.install-${SESSION_ID}.log"
+    # Not is_verbose_mode: that also answers yes when stderr is not a terminal,
+    # which is where nobody reads this.
+    if [[ "${VERBOSE:-${var_verbose:-no}}" != "no" ]]; then
+      msg_custom "ℹ️" "${YW}" "Closing this console does not abort the install; it finishes on its own (Ctrl-C does abort)."
+      msg_custom "   " "${YW}" "Follow it with: pct exec ${CTID} -- tail -f /root/.install-${SESSION_ID}.log"
+    fi
     lxc-attach -n "$CTID" -- bash -c "printf '%s' \$\$ >/root/.install-${SESSION_ID}.pid
 $_install_script"
     local lxc_exit=$?
