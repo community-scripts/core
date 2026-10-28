@@ -2245,8 +2245,16 @@ _offer_storage_content() {
 # content switched off, which can be switched on in place.
 # ------------------------------------------------------------------------------
 storage_content_check() {
-  check_storage_support "vztmpl" || _offer_storage_content "vztmpl" || exit 120
-  check_storage_support "rootdir" || _offer_storage_content "rootdir" || exit 119
+  _probe_has_storage "vztmpl" || check_storage_support "vztmpl" || _offer_storage_content "vztmpl" || exit 120
+  _probe_has_storage "rootdir" || check_storage_support "rootdir" || _offer_storage_content "rootdir" || exit 119
+}
+
+# The probe started at load answers yes; a no is asked again live, since
+# _offer_storage_content may change it and nothing else reads the probe.
+_probe_has_storage() {
+  local out
+  out="$(_cs_probe_read "$1")" || return 1
+  awk 'NR > 1 && $1 != "" { found = 1 } END { exit !found }' <<<"$out"
 }
 
 select_storage() {

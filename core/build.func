@@ -268,7 +268,7 @@ _cs_prefetch_engine() {
     [[ -d "$base" && -w "$base" ]] || continue
     # An EXIT trap would be the obvious cleanup, but core.func and api.func
     # install their own later and the last one wins. Sweep instead.
-    find "$base" -maxdepth 1 \( -name 'cs-engine.*' -o -name 'cs-pveam.*'       -o -name 'cs-pveversion.*' \) -mmin +60 -exec rm -rf {} + 2>/dev/null || true
+    find "$base" -maxdepth 1 \( -name 'cs-engine.*' -o -name 'cs-pveam.*'       -o -name 'cs-pveversion.*' -o -name 'cs-probe.*' \) -mmin +60 -exec rm -rf {} + 2>/dev/null || true
     dir="$(mktemp -d "${base}/cs-engine.XXXXXX" 2>/dev/null)" && break
     dir=""
   done
@@ -305,6 +305,37 @@ _cs_prefetch_engine() {
   return 0
 }
 
+# The checks before the settings menu wait on pveversion, pvesm and pvesh, each
+# a Perl start of up to a second. Start them now, while the engine downloads and
+# the header loads; _cs_probe_read hands the checks what they printed.
+_cs_probe() {
+  local dir="$1" name="$2"
+  shift 2
+  : >"${dir}/${name}.out"
+  ("$@" >"${dir}/${name}.out" 2>/dev/null
+  echo "$?" >"${dir}/${name}.tmp" && mv -f "${dir}/${name}.tmp" "${dir}/${name}.rc") </dev/null &
+}
+
+_cs_start_host_probes() {
+  command -v pveversion >/dev/null 2>&1 || return 0
+  [[ "$(id -u)" == "0" ]] || return 0
+  local base dir=""
+  for base in /dev/shm "${TMPDIR:-/tmp}" /tmp; do
+    [[ -d "$base" && -w "$base" ]] || continue
+    dir="$(mktemp -d "${base}/cs-probe.XXXXXX" 2>/dev/null)" && break
+    dir=""
+  done
+  [[ -n "$dir" ]] || return 0
+  _cs_probe "$dir" pveversion pveversion
+  _cs_probe "$dir" vztmpl pvesm status -content vztmpl
+  _cs_probe "$dir" rootdir pvesm status -content rootdir
+  _cs_probe "$dir" nextid pvesh get /cluster/nextid
+  [[ -f /etc/pve/corosync.conf ]] && _cs_probe "$dir" pvecm pvecm status
+  CS_PROBE_DIR="$dir"
+  return 0
+}
+
+_cs_start_host_probes
 _cs_prefetch_engine || true
 
 _cs_source_func "lxc/platform.func"

@@ -117,7 +117,12 @@ unset POST_TO_API_DONE
 : >"$TEST_DIR/statuses"
 CS_ERROR_MSG="Not enough space on 'local'. Required: 500GB, Available: 23.2GB"
 post_update_to_api failed 214
-expect "an early host failure is reported with its install record" "installing failed" "$(paste -sd' ' "$TEST_DIR/statuses")"
+expect "a failed check sends nothing" "" "$(paste -sd' ' "$TEST_DIR/statuses")"
+reset
+POST_TO_API_DONE=false
+: >"$TEST_DIR/statuses"
+post_update_to_api failed 214
+expect "a failure after an install record that did not go out still does" failed "$(paste -sd' ' "$TEST_DIR/statuses")"
 reset
 unset POST_TO_API_DONE
 : >"$TEST_DIR/statuses"
@@ -133,11 +138,18 @@ expect "message with quotes and backslashes round-trips" 'quote " backslash \ ta
 
 # --- tools and add-ons carry the same fields ---
 reset
-CS_ERROR_MSG="No LXC containers found" CS_STEP="Scanning containers"
-post_tool_to_api demo-tool failed 234
+CS_ERROR_MSG="Backup of CT 105 failed" CS_STEP="Backing up containers"
+post_tool_to_api demo-tool failed 235
 expect "tool failures stay failures" failed "$(json_field "$SENT" status)"
 expect "tool type" pve "$(json_field "$SENT" type)"
-expect "tool message" "No LXC containers found" "$(json_field "$SENT" error_message)"
+expect "tool message" "Backup of CT 105 failed" "$(json_field "$SENT" error_message)"
+reset
+CS_ERROR_MSG="No LXC containers found"
+post_tool_to_api demo-tool failed 234
+expect "a tool without anything to work on sends nothing" no "$([[ -f "$SENT" ]] && echo yes || echo no)"
+reset
+post_addon_to_api demo-addon failed 10
+expect "an add-on whose prerequisite is missing sends nothing" no "$([[ -f "$SENT" ]] && echo yes || echo no)"
 
 printf '%s passed, %s failed\n' "$passed" "$failed"
 ((failed == 0))

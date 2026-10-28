@@ -15,9 +15,16 @@ terminal status: it writes `/root/.install-<SESSION_ID>.failed` and an
 `.errinfo` capture, which the host picks up after `lxc-attach` returns. See
 [`core/error_handler.func`](../core/error_handler.func).
 
-A host run that fails before its install record went out (storage, ID or
-template checks) sends that record first, then the failure. Cancelled dialogs
-and update runs inside a container send nothing.
+Telemetry starts with the install record (`post_to_api`, `post_to_api_vm`),
+which the build sends once the checks and dialogs are behind it. A run that
+ends before that sends nothing: a host that is not ready is not a failed
+install. Tools and add-ons have no such point, so a failure with a
+"requirement not met" code (10, 103, 104, 106, 232, 233, 234, 236, 238) sends
+nothing either. Update runs inside a container send nothing.
+
+The checks wait on `pveversion`, `pvesm status` and `pvesh`. `core/build.func`
+starts these in the background before it downloads the engine, and the checks
+read their output through `_cs_probe_read`.
 
 ## What a failure carries (payload version 3)
 

@@ -10,6 +10,8 @@ _cs_host_arch
 _cs_host_version_line
 _cs_live_base
 _cs_os_family
+_cs_probe_read
+_cs_pveversion_out
 _cs_reattach_output
 _cs_ref_line
 _cs_run_os_section
@@ -73,6 +75,7 @@ _tm_post_progress
 _tm_post_run
 _tm_post_update
 _tm_quiet
+_tm_requirement_code
 _tm_send
 _tm_step_output
 _vars_file_value
