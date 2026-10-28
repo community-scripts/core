@@ -38,6 +38,7 @@ on:
       - "tests/exit-code-hints.sh"
       - "tests/telemetry-trace.sh"
       - "tests/forge-release-json.sh"
+      - "tests/container-identity.sh"
       - "tests/install-cleanup.sh"
       - "tests/console-hangup.sh"
       - "tests/incus-target.sh"
@@ -74,6 +75,7 @@ on:
       - "tests/exit-code-hints.sh"
       - "tests/telemetry-trace.sh"
       - "tests/forge-release-json.sh"
+      - "tests/container-identity.sh"
       - "tests/install-cleanup.sh"
       - "tests/console-hangup.sh"
       - "tests/incus-target.sh"
@@ -101,6 +103,9 @@ jobs:
             bash -n "$f" || { echo "::error file=$f::syntax error"; fail=1; }
           done < <(find $ENGINE_DIRS -name '*.func' -type f)
           exit $fail
+
+      - name: Container identity regression tests
+        run: bash tests/container-identity.sh
 
       - name: ISO storage regression tests
         run: bash tests/vm-iso-storage.sh

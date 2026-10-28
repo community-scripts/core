@@ -202,6 +202,7 @@ resolve_os_version() {
   return 0
 }
 base_settings() {
+  _identity_policy || exit 208
   # Default Settings
   CT_TYPE=${var_unprivileged:-"1"}
 
@@ -258,14 +259,17 @@ base_settings() {
 
   # Validate and set Container ID
   local requested_id="${var_ctid:-$NEXTID}"
-  if ! validate_container_id "$requested_id"; then
+  if [[ -n "${var_ctid_min:-}${var_ctid_max:-}" ]]; then
+    requested_id=$(_identity_select_id "${var_ctid:-}" "${var_ctid:+explicit}") || exit 109
+  elif ! validate_container_id "$requested_id"; then
     # Only show warning if user manually specified an ID (not auto-assigned)
     if [[ -n "${var_ctid:-}" ]]; then
       msg_warn "Container ID $requested_id is already in use. Using next available ID: $(get_valid_container_id "$requested_id")"
     fi
-    requested_id=$(get_valid_container_id "$requested_id")
+    requested_id=$(get_valid_container_id "$requested_id") || exit 109
   fi
   CT_ID="$requested_id"
+  _identity_assert_id "$CT_ID" || exit 208
 
   # Validate and set Hostname/FQDN
   local requested_hostname="${var_hostname:-$NSAPP}"
@@ -296,6 +300,17 @@ base_settings() {
   IPV6_METHOD=${var_ipv6_method:-"none"}
   IPV6_STATIC=${var_ipv6_static:-""}
   GATE=${var_gateway:-""}
+  MAC=${var_mac:-""}
+  if _identity_enabled; then
+    IPV6_ADDR="${var_ipv6_static:-}"
+    _identity_apply_templates || exit 208
+    if [[ "$IPV6_METHOD" == static && -n "$IPV6_ADDR" ]]; then
+      _identity_validate_address ipv6 "$IPV6_ADDR" || {
+        _identity_error "invalid static IPv6 address"
+        exit 208
+      }
+    fi
+  fi
 
   # Guard against invalid gateway combinations from defaults/app vars:
   # - DHCP must not force a static gateway
@@ -342,7 +357,6 @@ base_settings() {
   [[ -n "$_sd_val" ]] && SD="-searchdomain=$_sd_val" || SD=""
   _ns_val="${var_ns:-""}"
   [[ -n "$_ns_val" ]] && NS="-nameserver=$_ns_val" || NS=""
-  MAC=${var_mac:-""}
   VLAN=${var_vlan:-""}
   SSH=${var_ssh:-"no"}
   SSH_AUTHORIZED_KEY=${var_ssh_authorized_key:-""}
@@ -418,11 +432,16 @@ load_vars_file() {
   local protected="${3:-}"  # space-separated var_* keys the user genuinely exported before this file loaded; never overwritten
   [ -f "$file" ] || return 0
   msg_info "Loading defaults from ${file}"
+  local identity_file_options=0
+  if _identity_enabled || grep -Eq '^[[:space:]]*var_(ctid_min|ctid_max|mac_template|net_template|ipv6_template)=' "$file"; then
+    identity_file_options=1
+  fi
 
   # Allowed var_* keys
   local VAR_WHITELIST=(
     var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
     var_gateway var_hostname var_ipv6_method var_mac var_mknod var_mount_fs var_mtu
+    var_ctid_min var_ctid_max var_mac_template var_net_template var_ipv6_template var_ipv6_static
     var_net var_nesting var_ns var_os var_post_install var_protection var_pw var_ram var_sdn_vnet var_searchdomain var_tags var_timezone var_tun var_unprivileged
     var_verbose var_version var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
   )
@@ -452,6 +471,12 @@ load_vars_file() {
 
       [[ "$var_key" != var_* ]] && continue
       _is_whitelisted "$var_key" || continue
+      [[ "$var_key" == var_ipv6_static && "$identity_file_options" == 0 ]] && continue
+      # Environment identity settings win even over force-loaded app defaults.
+      # Check before validation so ignored lower-priority values cannot fail a run.
+      if [[ " $_IDENTITY_ENV_KEYS " == *" $var_key "* && "$identity_file_options" == 1 ]]; then
+        continue
+      fi
 
       # Strip inline comments (anything after unquoted #)
       # Only strip if not inside quotes
@@ -472,6 +497,24 @@ load_vars_file() {
       # Validate values before setting (skip empty values - they use defaults)
       if [[ -n "$var_val" ]]; then
         case "$var_key" in
+        var_ctid_min | var_ctid_max)
+          _identity_decimal_id "$var_val" || {
+            _identity_error "invalid $var_key in $file"
+            return 1
+          }
+          ;;
+        var_mac_template | var_net_template | var_ipv6_template)
+          _identity_template_syntax "$var_val" || {
+            _identity_error "invalid $var_key in $file"
+            return 1
+          }
+          ;;
+        var_ipv6_static)
+          _identity_validate_address ipv6 "$var_val" || {
+            _identity_error "invalid var_ipv6_static in $file"
+            return 1
+          }
+          ;;
         var_mac)
           if ! validate_mac_address "$var_val"; then
             msg_warn "Invalid MAC address '$var_val' in $file, ignoring"
@@ -598,8 +641,8 @@ load_vars_file() {
           fi
           ;;
         var_ipv6_method)
-          if [[ "$var_val" != "auto" && "$var_val" != "dhcp" && "$var_val" != "static" && "$var_val" != "none" ]]; then
-            msg_warn "Invalid IPv6 method '$var_val' in $file (must be auto/dhcp/static/none), ignoring"
+          if [[ "$var_val" != "auto" && "$var_val" != "dhcp" && "$var_val" != "static" && "$var_val" != "none" && "$var_val" != "disable" ]]; then
+            msg_warn "Invalid IPv6 method '$var_val' in $file (must be auto/dhcp/static/none/disable), ignoring"
             continue
           fi
           ;;
@@ -676,6 +719,7 @@ default_var_settings() {
   local VAR_WHITELIST=(
     var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
     var_gateway var_hostname var_ipv6_method var_mac var_mknod var_mount_fs var_mtu
+    var_ctid_min var_ctid_max var_mac_template var_net_template var_ipv6_template var_ipv6_static
     var_net var_nesting var_ns var_os var_post_install var_protection var_pw var_ram var_sdn_vnet var_searchdomain var_tags var_timezone var_tun var_unprivileged
     var_verbose var_version var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
   )
@@ -819,7 +863,7 @@ EOF
   # Later steps need the file they are reading from: a storage named here that
   # no longer holds the content has to be corrected in this file, not a guess.
   export CS_DEFAULT_VARS_FILE="$dv"
-  load_vars_file "$dv" "no" "${!_HARD_ENV[*]}"
+  load_vars_file "$dv" "no" "${!_HARD_ENV[*]}" || return 1
 
   # 3) Map var_verbose → VERBOSE
   if [[ -n "${var_verbose:-}" ]]; then
@@ -868,6 +912,7 @@ if ! declare -p VAR_WHITELIST >/dev/null 2>&1; then
   declare -ag VAR_WHITELIST=(
     var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
     var_gateway var_hostname var_ipv6_method var_mac var_mknod var_mount_fs var_mtu
+    var_ctid_min var_ctid_max var_mac_template var_net_template var_ipv6_template var_ipv6_static
     var_net var_nesting var_ns var_os var_post_install var_protection var_pw var_ram var_sdn_vnet var_searchdomain var_tags var_timezone var_tun var_unprivileged
     var_verbose var_version var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
   )
@@ -995,6 +1040,7 @@ _build_current_app_vars_tmp() {
   _mtu=""
   _vlan=""
   _mac=""
+  if _identity_enabled; then _mac="${MAC:-}"; fi
   case "${MTU:-}" in
   ,mtu=*) _mtu=$(echo "$MTU" | sed 's/^,mtu=//') ;;
   esac
@@ -1046,7 +1092,22 @@ _build_current_app_vars_tmp() {
   _tpl_storage="${TEMPLATE_STORAGE:-${var_template_storage:-}}"
   _ct_storage="${CONTAINER_STORAGE:-${var_container_storage:-}}"
 
+  if [[ -n "${_IDENTITY_GENERATED_MAC:-}" && "${MAC#*,hwaddr=}" == "$_IDENTITY_GENERATED_MAC" ]]; then _mac=""; fi
+  if [[ -n "${_IDENTITY_GENERATED_NET:-}" && "$_net" == "$_IDENTITY_GENERATED_NET" ]]; then _net=""; fi
+
   {
+    local identity_key
+    for identity_key in var_ctid_min var_ctid_max var_mac_template var_net_template var_ipv6_template; do
+      if [[ "$identity_key" == var_mac_template && -n "${var_mac_template:-}" && -z "${MAC:-}" ]]; then
+        printf 'var_mac_template=\n'
+        continue
+      fi
+      [[ -n "${!identity_key:-}" ]] && printf '%s=%s\n' "$identity_key" "${!identity_key}"
+    done
+    # An explicit DHCP/manual IPv6 wizard choice must survive a template reload.
+    if [[ -n "${var_ipv6_template:-}" && "$_ipv6_method" == static && "$_ipv6_static" == "${_IDENTITY_GENERATED_IPV6:-}" ]]; then
+      _ipv6_method=""
+    fi
     echo "# App-specific defaults for ${APP} (${NSAPP})"
     echo "# Generated on $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     echo
@@ -1065,7 +1126,9 @@ _build_current_app_vars_tmp() {
     [ -n "$_ns" ] && echo "var_ns=$(_sanitize_value "$_ns")"
 
     [ -n "$_ipv6_method" ] && echo "var_ipv6_method=$(_sanitize_value "$_ipv6_method")"
-    # var_ipv6_static removed - static IPs are unique, can't be default
+    if _identity_enabled && [[ "$_ipv6_method" == static && -n "$_ipv6_static" ]]; then
+      printf 'var_ipv6_static=%s\n' "$_ipv6_static"
+    fi
 
     [ -n "$_ssh" ] && echo "var_ssh=$(_sanitize_value "$_ssh")"
     [ -n "$_ssh_auth" ] && echo "var_ssh_authorized_key=$(_sanitize_value "$_ssh_auth")"
