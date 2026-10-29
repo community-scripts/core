@@ -235,7 +235,13 @@ telemetry_collect_sysinfo() {
   TM_PLATFORM="${TELEMETRY_PLATFORM:-}"
   TM_PVE_VERSION=""
   if command -v pveversion &>/dev/null; then
-    TM_PVE_VERSION=$(pveversion 2>/dev/null | awk -F'[/ ]' '{print $2}') || true
+    # Every payload is built in $( ), so _TM_SYSINFO_DONE never reaches the
+    # caller and this ran once per send; _pve_version caches in a file.
+    if declare -f _pve_version >/dev/null 2>&1; then
+      TM_PVE_VERSION="$(_pve_version)"
+    else
+      TM_PVE_VERSION=$(pveversion 2>/dev/null | awk -F'[/ ]' '{print $2}') || true
+    fi
     TM_PLATFORM="${TM_PLATFORM:-pve}"
   elif command -v incus &>/dev/null; then
     TM_PVE_VERSION="incus-$(incus version 2>/dev/null | head -1 | awk '{print $NF}')" || true

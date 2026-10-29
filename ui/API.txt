@@ -10,6 +10,7 @@ _cs_host_arch
 _cs_host_version_line
 _cs_live_base
 _cs_os_family
+_cs_probe_drop
 _cs_probe_read
 _cs_pveversion_out
 _cs_reattach_output
@@ -79,6 +80,7 @@ _tm_requirement_code
 _tm_send
 _tm_step_output
 _vars_file_value
+_vmid_config_exists
 _write_storage_to_vars
 advanced_settings
 apt_conffile_guard

@@ -2084,13 +2084,13 @@ resolve_storage_preselect() {
   *) return 1 ;;
   esac
   [[ -z "$preselect" ]] && return 1
-  if ! pvesm status -content "$required_content" | awk 'NR>1{print $1}' | grep -qx -- "$preselect"; then
+  if ! _pvesm_status "$required_content" | awk 'NR>1{print $1}' | grep -qx -- "$preselect"; then
     msg_warn "Preselected storage '${preselect}' does not support content '${required_content}' (or not found)"
     return 1
   fi
 
   local line total used free
-  line="$(pvesm status | awk -v s="$preselect" 'NR>1 && $1==s {print $0}')"
+  line="$(_pvesm_status | awk -v s="$preselect" 'NR>1 && $1==s {print $0}')"
   if [[ -z "$line" ]]; then
     STORAGE_INFO="n/a"
   else
@@ -2172,13 +2172,24 @@ fix_gpu_gids() {
   fi
 }
 
+# _pvesm_status [content] - `pvesm status [-content <content>]`, from the probe
+# core/build.func started at load (all, vztmpl, rootdir) while it holds.
+# _offer_storage_content drops the probes when it changes a storage.
+_pvesm_status() {
+  if [[ -n "${1:-}" ]]; then
+    _cs_probe_read "$1" || pvesm status -content "$1"
+  else
+    _cs_probe_read pvesm || pvesm status
+  fi
+}
+
 check_storage_support() {
   local CONTENT="$1" VALID=0
   while IFS= read -r line; do
     local STORAGE_NAME
     STORAGE_NAME=$(awk '{print $1}' <<<"$line")
     [[ -n "$STORAGE_NAME" ]] && VALID=1
-  done < <(pvesm status -content "$CONTENT" 2>/dev/null | awk 'NR>1')
+  done < <(_pvesm_status "$CONTENT" 2>/dev/null | awk 'NR>1')
   [[ $VALID -eq 1 ]]
 }
 
@@ -2228,7 +2239,8 @@ _offer_storage_content() {
 
   current="$(_storage_content_of "$choice")"
   [[ "$current" == "none" ]] && current=""
-  if pvesm set "$choice" --content "${current:+${current},}${content}" >/dev/null 2>&1 && check_storage_support "$content"; then
+  if pvesm set "$choice" --content "${current:+${current},}${content}" >/dev/null 2>&1 &&
+    _cs_probe_drop "$content" pvesm && check_storage_support "$content"; then
     msg_ok "Enabled ${label} on storage '${choice}'"
     return 0
   fi
@@ -2245,16 +2257,8 @@ _offer_storage_content() {
 # content switched off, which can be switched on in place.
 # ------------------------------------------------------------------------------
 storage_content_check() {
-  _probe_has_storage "vztmpl" || check_storage_support "vztmpl" || _offer_storage_content "vztmpl" || exit 120
-  _probe_has_storage "rootdir" || check_storage_support "rootdir" || _offer_storage_content "rootdir" || exit 119
-}
-
-# The probe started at load answers yes; a no is asked again live, since
-# _offer_storage_content may change it and nothing else reads the probe.
-_probe_has_storage() {
-  local out
-  out="$(_cs_probe_read "$1")" || return 1
-  awk 'NR > 1 && $1 != "" { found = 1 } END { exit !found }' <<<"$out"
+  check_storage_support "vztmpl" || _offer_storage_content "vztmpl" || exit 120
+  check_storage_support "rootdir" || _offer_storage_content "rootdir" || exit 119
 }
 
 select_storage() {
@@ -2303,7 +2307,7 @@ select_storage() {
     STORAGE_MAP["$DISPLAY"]="$TAG"
     MENU+=("$DISPLAY" "$INFO" "OFF")
     ((${#DISPLAY} > COL_WIDTH)) && COL_WIDTH=${#DISPLAY}
-  done < <(pvesm status -content "$CONTENT" | awk 'NR>1')
+  done < <(_pvesm_status "$CONTENT" | awk 'NR>1')
 
   if [[ ${#MENU[@]} -eq 0 ]]; then
     msg_error "No storage found for content type '$CONTENT'."
@@ -2447,7 +2451,7 @@ validate_storage_space() {
 
   # Get full storage line from pvesm status
   local storage_line
-  storage_line=$(pvesm status 2>/dev/null | awk -v s="$storage" '$1 == s {print $0}')
+  storage_line=$(_pvesm_status 2>/dev/null | awk -v s="$storage" '$1 == s {print $0}')
 
   if [[ -z "$storage_line" ]]; then
     [[ "$show_dialog" == "yes" ]] && whiptail --msgbox "⚠️  Warning: Storage '$storage' not found!
@@ -2503,7 +2507,7 @@ check_storage_health() {
   [[ -z "$storage" ]] && return 0
 
   local storage_line storage_type total_kb avail_kb used_pct free_gb_fmt
-  storage_line=$(pvesm status 2>/dev/null | awk -v s="$storage" '$1 == s {print $0}')
+  storage_line=$(_pvesm_status 2>/dev/null | awk -v s="$storage" '$1 == s {print $0}')
   [[ -z "$storage_line" ]] && return 0
 
   storage_type=$(awk '{print $2}' <<<"$storage_line")
@@ -3077,7 +3081,7 @@ create_lxc_container() {
     msg_error "ID cannot be less than 100."
     exit 205
   }
-  if qm status "$CTID" &>/dev/null || pct status "$CTID" &>/dev/null; then
+  if _vmid_config_exists "$CTID"; then
     msg_warn "Container/VM ID $CTID is already in use (detected late). Reassigning..."
     CTID=$(get_valid_container_id "$((CTID + 1))")
     export CTID
@@ -3175,7 +3179,7 @@ create_lxc_container() {
     ;;
   esac
 
-  if ! pvesm status -content rootdir 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$CONTAINER_STORAGE"; then
+  if ! _pvesm_status rootdir 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$CONTAINER_STORAGE"; then
     msg_error "Storage '$CONTAINER_STORAGE' ($STORAGE_TYPE) does not support 'rootdir' content."
     msg_custom "💡" "${YW}" "Enable 'Disk image' (rootdir) for storage '${CONTAINER_STORAGE}' in:"
     msg_custom "   " "${YW}" "Datacenter → Storage → ${CONTAINER_STORAGE} → Edit → Content"
@@ -3191,7 +3195,7 @@ create_lxc_container() {
   msg_info "Validating template storage '$TEMPLATE_STORAGE'"
   TEMPLATE_TYPE=$(grep -E "^[^:]+: $TEMPLATE_STORAGE$" /etc/pve/storage.cfg | cut -d: -f1 || true)
 
-  if ! pvesm status -content vztmpl 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$TEMPLATE_STORAGE"; then
+  if ! _pvesm_status vztmpl 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$TEMPLATE_STORAGE"; then
     msg_warn "Template storage '$TEMPLATE_STORAGE' may not support 'vztmpl'"
   fi
   msg_ok "Template storage '$TEMPLATE_STORAGE' validated${TEMPLATE_STORAGE_INFO:+ - ${TEMPLATE_STORAGE_INFO}}"

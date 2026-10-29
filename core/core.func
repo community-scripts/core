@@ -563,6 +563,15 @@ _cs_probe_read() {
   cat "${dir}/$1.out"
 }
 
+# _cs_probe_drop <name>... - forget probes whose answer a change made stale
+_cs_probe_drop() {
+  local name
+  for name in "$@"; do
+    rm -f "${CS_PROBE_DIR:-/nonexistent}/${name}.out" "${CS_PROBE_DIR:-/nonexistent}/${name}.rc" 2>/dev/null
+  done
+  return 0
+}
+
 _cs_pveversion_out() {
   _cs_probe_read pveversion || pveversion 2>/dev/null
 }
@@ -584,7 +593,9 @@ _pve_version() {
 # reports it verbatim as pve_version. A fixed "PVE Version" prefix therefore
 # printed "PVE Version Incus 7.3" on Incus hosts.
 _cs_host_version_line() {
-  local v="${PVEVERSION:-unknown}"
+  local v="${PVEVERSION:-}"
+  [[ -z "$v" ]] && command -v pveversion >/dev/null 2>&1 && v="$(_pve_version)"
+  v="${v:-unknown}"
   if [[ "$v" == Incus* ]]; then
     v="${v#Incus}"
     v="${v# }"
@@ -661,11 +672,11 @@ _cs_scripts_ref_line() {
 _pveam_available() {
   local dir cache
   dir="$(_cs_runtime_cache_dir)" || {
-    pveam available -section system 2>/dev/null
-    return
+    _cs_probe_read pveam || pveam available -section system 2>/dev/null
+    return 0
   }
   cache="${dir}/cs-pveam.$$"
-  [[ -s "$cache" ]] || pveam available -section system 2>/dev/null >"$cache"
+  [[ -s "$cache" ]] || { _cs_probe_read pveam || pveam available -section system 2>/dev/null; } >"$cache"
   cat "$cache" 2>/dev/null
 }
 
@@ -674,6 +685,7 @@ _pveam_available() {
 _pveam_update() {
   local dir
   dir="$(_cs_runtime_cache_dir)" && rm -f "${dir}/cs-pveam.$$"
+  _cs_probe_drop pveam
   if command -v timeout &>/dev/null; then
     timeout 30 pveam update >/dev/null 2>&1 || return 1
   else

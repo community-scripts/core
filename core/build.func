@@ -305,9 +305,9 @@ _cs_prefetch_engine() {
   return 0
 }
 
-# The checks before the settings menu wait on pveversion, pvesm and pvesh, each
-# a Perl start of up to a second. Start them now, while the engine downloads and
-# the header loads; _cs_probe_read hands the checks what they printed.
+# The checks, the settings and the storage dialogs wait on pveversion, pvesm,
+# pveam and pvesh, each a Perl start of up to a second. Start them now, while the
+# engine downloads and the header loads; _cs_probe_read hands over what they printed.
 _cs_probe() {
   local dir="$1" name="$2"
   shift 2
@@ -327,8 +327,10 @@ _cs_start_host_probes() {
   done
   [[ -n "$dir" ]] || return 0
   _cs_probe "$dir" pveversion pveversion
+  _cs_probe "$dir" pvesm pvesm status
   _cs_probe "$dir" vztmpl pvesm status -content vztmpl
   _cs_probe "$dir" rootdir pvesm status -content rootdir
+  _cs_probe "$dir" pveam pveam available -section system
   _cs_probe "$dir" nextid pvesh get /cluster/nextid
   [[ -f /etc/pve/corosync.conf ]] && _cs_probe "$dir" pvecm pvecm status
   CS_PROBE_DIR="$dir"
