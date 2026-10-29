@@ -1006,10 +1006,10 @@ advanced_settings() {
         --title "CONSOLE MODE" \
         --ok-button "Next" --cancel-button "Back" \
         --default-item "${_ct_cmode:-tty}" \
-        --menu "\nHow the Proxmox web console attaches to the container.\n\nshell has no login prompt - console access alone is root.\n\n(App default: ${var_cmode:-tty})" 18 74 3 \
-        "tty" "Login prompt on a virtual terminal (Proxmox default)" \
-        "console" "Login prompt on /dev/console" \
-        "shell" "Root shell, no login prompt (multiline paste works)" \
+        --menu "\nHow the Proxmox web console attaches to the container.\n\nWithout var_pw we autologin root on tty and console, so all three\nmodes land in a root shell. With var_pw set, only shell skips the\nlogin prompt.\n\n(App default: ${var_cmode:-tty})" 20 76 3 \
+        "tty" "Virtual terminal, /dev/tty1 (Proxmox default)" \
+        "console" "/dev/console, same as pct console" \
+        "shell" "Attach a root shell directly (multiline paste works)" \
         3>&1 1>&2 2>&3); then
         [[ "$result" == "tty" ]] && result=""
         _ct_cmode="$result"
