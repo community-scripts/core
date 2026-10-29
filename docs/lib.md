@@ -58,7 +58,7 @@ migration depends on the old version.
 
 Language runtimes and the application-level installers: `setup_nodejs`,
 `setup_uv`, `setup_php`, `setup_go`, `setup_ruby`, `setup_rust`,
-`setup_java`, `setup_dotnet`, `setup_composer`, `setup_ffmpeg`,
+`setup_java`, `setup_java_memory`, `setup_dotnet`, `setup_composer`, `setup_ffmpeg`,
 `setup_imagemagick`, `setup_yq`, `setup_adminer`.
 
 ### Docker inside LXC
@@ -101,6 +101,30 @@ inherited, and `/sys/devices/system/cpu/online` is bound for glibc's
   `runtime: runc`. Tools that read the Docker API instead (Portainer's
   dashboard, Arcane's Docker info panel) are unaffected, and `/proc/stat` (CPU)
   is not cgroup-scoped.
+
+### Java inside LXC
+
+Proxmox sets a CT's memory limit one cgroup above the CT's cgroup root, so
+inside the CT `memory.max` reads `max`. The JVM then finds no container limit
+and sizes its heap from the host's RAM: a 2 GB CT on a 48 GB host gets a 12 GB
+default heap, and `-XX:MaxRAMPercentage=75` gives 36 GB. Incus exposes the limit
+at the CT's cgroup root, where the JVM finds it on its own.
+
+`setup_java_memory <unit>...` gives each systemd unit a drop-in,
+`/etc/systemd/system/<unit>.service.d/java-memory.conf`. On every start it reads
+`MemTotal` from `/proc/meminfo`, which lxcfs reports as the CT's limit, and
+passes it as `JAVA_TOOL_OPTIONS=-XX:MaxRAM=<kB>k`. Call it after creating the
+unit in the install script and again in `update_script` so existing installs
+get it.
+
+- `MaxRAM` only replaces the RAM figure the JVM's defaults are computed from.
+  `-XX:MaxRAMPercentage`, `-Xmx` and an explicit `-XX:MaxRAM` on the command
+  line still apply and win over it.
+- After `pct set --memory`, restarting the service is enough.
+- It is a no-op unless `/sys/fs/cgroup/memory.max` reads `max`, lxcfs serves
+  `/proc/meminfo` and systemd runs, so it leaves Incus, VMs and Alpine alone.
+- It owns `JAVA_TOOL_OPTIONS` for the unit: a value set with `Environment=` in
+  the unit is replaced.
 
 ## [`db.func`](../lib/db.func)
 
