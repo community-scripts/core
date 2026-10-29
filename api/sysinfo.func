@@ -236,9 +236,12 @@ telemetry_collect_sysinfo() {
   TM_PVE_VERSION=""
   if command -v pveversion &>/dev/null; then
     # Every payload is built in $( ), so _TM_SYSINFO_DONE never reaches the
-    # caller and this ran once per send; _pve_version caches in a file.
+    # caller and this ran once per send; _pve_version caches in a file, and
+    # the VM engine, which lacks it, keeps what its pve_check read.
     if declare -f _pve_version >/dev/null 2>&1; then
       TM_PVE_VERSION="$(_pve_version)"
+    elif [[ "${PVEVERSION:-}" =~ ^[0-9] ]]; then
+      TM_PVE_VERSION="$PVEVERSION"
     else
       TM_PVE_VERSION=$(pveversion 2>/dev/null | awk -F'[/ ]' '{print $2}') || true
     fi

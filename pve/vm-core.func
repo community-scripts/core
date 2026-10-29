@@ -792,7 +792,7 @@ cleanup() {
     if [[ $exit_code -ne 0 ]]; then
       post_update_to_api "failed" "$exit_code"
     elif [[ -n "${POST_TO_API_DONE:-}" ]]; then
-      if [[ -n "${VMID:-}" ]] && qm config "$VMID" &>/dev/null; then
+      if [[ -n "${VMID:-}" && -f "/etc/pve/qemu-server/${VMID}.conf" ]]; then
         # Clean exit with the VM in place: a script that never said so itself.
         post_update_to_api "done" "none"
       else
@@ -816,6 +816,8 @@ check_root() {
 pve_check() {
   local pve_ver
   pve_ver="$(declare -f _pve_version >/dev/null 2>&1 && _pve_version || pveversion | awk -F'/' '{print $2}' | awk -F'-' '{print $1}')"
+  # Telemetry builds each payload in a subshell and would start pveversion again.
+  PVEVERSION="${PVEVERSION:-$pve_ver}"
 
   if [[ "$pve_ver" =~ ^8\.([0-9]+) ]]; then
     local minor="${BASH_REMATCH[1]}"
