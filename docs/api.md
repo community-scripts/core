@@ -22,9 +22,14 @@ install. Tools and add-ons have no such point, so a failure with a
 "requirement not met" code (10, 103, 104, 106, 232, 233, 234, 236, 238) sends
 nothing either. Update runs inside a container send nothing.
 
-The checks wait on `pveversion`, `pvesm status` and `pvesh`. `core/build.func`
-starts these in the background before it downloads the engine, and the checks
-read their output through `_cs_probe_read`.
+The checks, the settings and the storage dialogs wait on `pveversion`,
+`pvesm status` (all, `vztmpl`, `rootdir`), `pveam available` and `pvesh`.
+`core/build.func` starts these in the background before it downloads the
+engine, `variables` adds pve-container's verdict on the release, and the
+readers take them through `_cs_probe_read` / `_cs_probe_rc` (`_pvesm_status`
+for storage). `_offer_storage_content` and `_pveam_update` drop what they
+change with `_cs_probe_drop`. Guest IDs are checked against the configs under
+`/etc/pve/nodes`, which pmxcfs keeps for every node.
 
 ## What a failure carries (payload version 3)
 
