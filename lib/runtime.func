@@ -1347,6 +1347,24 @@ setup_java() {
   msg_ok "Setup Temurin JDK $JAVA_VERSION"
 }
 
+setup_java_memory() {
+  [[ -r /sys/fs/cgroup/memory.max && "$(</sys/fs/cgroup/memory.max)" == max ]] || return 0
+  grep -qs ' /proc/meminfo fuse\.lxcfs ' /proc/mounts || return 0
+  [[ -d /run/systemd/system ]] || return 0
+
+  local unit
+  for unit in "$@"; do
+    mkdir -p "/etc/systemd/system/${unit}.service.d"
+    cat <<'EOF' >"/etc/systemd/system/${unit}.service.d/java-memory.conf"
+[Service]
+ExecStartPre=-+/bin/sh -c 'm=$$(sed -n "s/^MemTotal: *\([0-9]*\) kB/\1/p" /proc/meminfo); if [ -n "$$m" ]; then echo "JAVA_TOOL_OPTIONS=-XX:MaxRAM=$${m}k" >/run/%N-java-memory.env; else rm -f /run/%N-java-memory.env; fi'
+EnvironmentFile=-/run/%N-java-memory.env
+EOF
+  done
+  systemctl daemon-reload
+  msg_ok "Sized Java heap from container memory"
+}
+
 # ------------------------------------------------------------------------------
 # Installs a local IP updater script using networkd-dispatcher.
 #
