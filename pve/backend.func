@@ -620,6 +620,19 @@ $PCT_OPTIONS_STRING"
   -protection 1"
   fi
 
+  # Console mode (if var_cmode was set); pct takes shell, console or tty
+  if [ -n "${CT_CMODE:-}" ]; then
+    case "$CT_CMODE" in
+    shell | console | tty)
+      PCT_OPTIONS_STRING="$PCT_OPTIONS_STRING
+  -cmode $CT_CMODE"
+      ;;
+    *)
+      msg_warn "Console mode '${CT_CMODE}' is not shell, console or tty; the container keeps the Proxmox default (tty)."
+      ;;
+    esac
+  fi
+
   # pct takes UTC or a zone.tab name only; aliases resolve, "host" is read here
   if [ -n "${CT_TIMEZONE:-}" ]; then
     local _pct_timezone

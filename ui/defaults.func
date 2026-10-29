@@ -366,6 +366,7 @@ base_settings() {
   ENABLE_MKNOD=${var_mknod:-"0"}
   ALLOW_MOUNT_FS=${var_mount_fs:-""}
   PROTECT_CT=${var_protection:-"no"}
+  CT_CMODE=${var_cmode:-""}
   CT_TIMEZONE=${var_timezone:-"$timezone"}
   [[ "${CT_TIMEZONE:-}" == Etc/* ]] && CT_TIMEZONE="host" # pct doesn't accept Etc/* zones
 
@@ -421,7 +422,7 @@ load_vars_file() {
 
   # Allowed var_* keys
   local VAR_WHITELIST=(
-    var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
+    var_apt_cacher var_apt_cacher_ip var_brg var_cmode var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
     var_gateway var_hostname var_ipv6_method var_mac var_mknod var_mount_fs var_mtu
     var_net var_nesting var_ns var_os var_post_install var_protection var_pw var_ram var_sdn_vnet var_searchdomain var_tags var_timezone var_tun var_unprivileged
     var_verbose var_version var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
@@ -597,6 +598,12 @@ load_vars_file() {
             continue
           fi
           ;;
+        var_cmode)
+          if [[ "$var_val" != "shell" && "$var_val" != "console" && "$var_val" != "tty" ]]; then
+            msg_warn "Invalid console mode '$var_val' for $var_key in $file (must be shell/console/tty), ignoring"
+            continue
+          fi
+          ;;
         var_ipv6_method)
           if [[ "$var_val" != "auto" && "$var_val" != "dhcp" && "$var_val" != "static" && "$var_val" != "none" ]]; then
             msg_warn "Invalid IPv6 method '$var_val' in $file (must be auto/dhcp/static/none), ignoring"
@@ -674,7 +681,7 @@ default_var_settings() {
   # Allowed var_* keys (alphabetically sorted)
   # Note: Removed var_ctid (can only exist once), var_ipv6_static (static IPs are unique)
   local VAR_WHITELIST=(
-    var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
+    var_apt_cacher var_apt_cacher_ip var_brg var_cmode var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
     var_gateway var_hostname var_ipv6_method var_mac var_mknod var_mount_fs var_mtu
     var_net var_nesting var_ns var_os var_post_install var_protection var_pw var_ram var_sdn_vnet var_searchdomain var_tags var_timezone var_tun var_unprivileged
     var_verbose var_version var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
@@ -774,6 +781,7 @@ var_mknod=0            # Allow device node creation
 var_mount_fs=          # Allow specific filesystems: nfs,fuse,ext4,etc (leave empty for defaults)
 var_protection=no      # Prevent accidental deletion of container
 var_timezone=          # Container timezone (e.g. Europe/Berlin, leave empty for host timezone)
+var_cmode=             # Console mode: shell, console or tty (leave empty for the Proxmox default)
 var_tags=community-script
 var_verbose=no
 
@@ -866,7 +874,7 @@ get_app_defaults_path() {
 if ! declare -p VAR_WHITELIST >/dev/null 2>&1; then
   # Note: Removed var_ctid (can only exist once), var_ipv6_static (static IPs are unique)
   declare -ag VAR_WHITELIST=(
-    var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
+    var_apt_cacher var_apt_cacher_ip var_brg var_cmode var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
     var_gateway var_hostname var_ipv6_method var_mac var_mknod var_mount_fs var_mtu
     var_net var_nesting var_ns var_os var_post_install var_protection var_pw var_ram var_sdn_vnet var_searchdomain var_tags var_timezone var_tun var_unprivileged
     var_verbose var_version var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
@@ -1031,6 +1039,7 @@ _build_current_app_vars_tmp() {
   _mknod="${ENABLE_MKNOD:-0}"
   _mount_fs="${ALLOW_MOUNT_FS:-}"
   _protect="${PROTECT_CT:-no}"
+  _cmode="${CT_CMODE:-}"
   _timezone="${CT_TIMEZONE:-}"
   _tags="${TAGS:-}"
   _verbose="${VERBOSE:-no}"
@@ -1084,6 +1093,7 @@ _build_current_app_vars_tmp() {
     [ -n "$_mknod" ] && echo "var_mknod=$(_sanitize_value "$_mknod")"
     [ -n "$_mount_fs" ] && echo "var_mount_fs=$(_sanitize_value "$_mount_fs")"
     [ -n "$_protect" ] && echo "var_protection=$(_sanitize_value "$_protect")"
+    [ -n "$_cmode" ] && echo "var_cmode=$(_sanitize_value "$_cmode")"
     [ -n "$_timezone" ] && echo "var_timezone=$(_sanitize_value "$_timezone")"
     [ -n "$_tags" ] && echo "var_tags=$(_sanitize_value "$_tags")"
     [ -n "$_verbose" ] && echo "var_verbose=$(_sanitize_value "$_verbose")"
