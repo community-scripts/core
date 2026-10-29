@@ -1276,6 +1276,7 @@ Advanced:
   [[ "${ENABLE_MKNOD:-0}" == "1" ]] && echo -e "${CONTAINERTYPE}${BOLD}${DGN}Mknod: ${BGN}Enabled${CL}"
   [[ -n "${ALLOW_MOUNT_FS:-}" ]] && echo -e "${CONTAINERTYPE}${BOLD}${DGN}Mount FS: ${BGN}${ALLOW_MOUNT_FS}${CL}"
   [[ "${PROTECT_CT:-no}" == "yes" || "${PROTECT_CT:-no}" == "1" ]] && echo -e "${CONTAINERTYPE}${BOLD}${DGN}Protection: ${BGN}Enabled${CL}"
+  [[ -n "${CT_CMODE:-}" ]] && echo -e "${INFO}${BOLD}${DGN}Console Mode: ${BGN}$CT_CMODE${CL}"
   [[ -n "${CT_TIMEZONE:-}" ]] && echo -e "${INFO}${BOLD}${DGN}Timezone: ${BGN}$CT_TIMEZONE${CL}"
   [[ "$APT_CACHER" == "yes" ]] && echo -e "${INFO}${BOLD}${DGN}APT Cacher: ${BGN}$APT_CACHER_IP${CL}"
   [[ -n "${HTTP_PROXY:-}" ]] && echo -e "${INFO}${BOLD}${DGN}HTTP Proxy: ${BGN}$HTTP_PROXY${CL}"
