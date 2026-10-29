@@ -553,14 +553,21 @@ _cs_runtime_cache_dir() {
 # load, once it has finished; fails when there is none or it failed, and the
 # caller runs the command itself. Polls a file, so it works inside $( ) too.
 _cs_probe_read() {
+  local rc
+  rc="$(_cs_probe_rc "$1")" && [[ "$rc" == "0" ]] || return 1
+  cat "${CS_PROBE_DIR}/$1.out"
+}
+
+# _cs_probe_rc <name> - a finished probe's exit code, for checks that answer
+# with one; fails when there is no such probe
+_cs_probe_rc() {
   local dir="${CS_PROBE_DIR:-}" n=0
   [[ -n "$dir" && -f "${dir}/$1.out" ]] || return 1
   while [[ ! -f "${dir}/$1.rc" ]]; do
     ((n++ < 1200)) || return 1
     sleep 0.05
   done
-  [[ "$(<"${dir}/$1.rc")" == "0" ]] || return 1
-  cat "${dir}/$1.out"
+  cat "${dir}/$1.rc"
 }
 
 # _cs_probe_drop <name>... - forget probes whose answer a change made stale

@@ -313,7 +313,11 @@ lxc_os_supported() {
 lxc_os_support_check() {
   local os="${var_os:-}" ver="${var_version:-}" rc=0
   [[ -n "$os" && -n "$ver" ]] || return 0
-  lxc_os_supported "$os" "$ver" || rc=$?
+  # variables() asked in the background; a release changed since is asked now.
+  rc="$(_cs_probe_rc "lxcos-${os}-${ver}")" || {
+    rc=0
+    lxc_os_supported "$os" "$ver" || rc=$?
+  }
   [[ $rc -eq 1 ]] || return 0
 
   local installed candidate="" older="" v
@@ -3981,6 +3985,10 @@ ensure_log_on_host() {
 
   # Try pulling from container and creating combined log
   if [[ -n "${CTID:-}" && -n "${SESSION_ID:-}" ]] && command -v pct &>/dev/null; then
+    # A run that failed before pct create has no container to pull from, and
+    # each pull below waited up to 8 s to find that out.
+    local has_ct=0
+    [[ -f "/etc/pve/lxc/${CTID}.conf" ]] && has_ct=1
     local host_combined=""
     if [[ -n "${combined_log:-}" && -s "${combined_log}" ]]; then
       host_combined="$combined_log"
@@ -4012,7 +4020,7 @@ ensure_log_on_host() {
       fi
       # Pull INSTALL_LOG from container (with timeout to prevent hangs on dead containers)
       local temp_log="/tmp/.install-temp-${SESSION_ID}.log"
-      if timeout 8 pct pull "$CTID" "/root/.install-${SESSION_ID}.log" "$temp_log" 2>/dev/null; then
+      if ((has_ct)) && timeout 8 pct pull "$CTID" "/root/.install-${SESSION_ID}.log" "$temp_log" 2>/dev/null; then
         {
           echo "================================================================================"
           echo "PHASE 2: APPLICATION INSTALLATION (Container)"
@@ -4026,7 +4034,7 @@ ensure_log_on_host() {
     # Also pull the structured error capture for the telemetry error trace
     if [[ -z "${TELEMETRY_ERRINFO:-}" || ! -s "${TELEMETRY_ERRINFO:-}" ]]; then
       local host_errinfo="/tmp/.errinfo-${SESSION_ID}"
-      if timeout 8 pct pull "$CTID" "/root/.install-${SESSION_ID}.log.errinfo" "$host_errinfo" 2>/dev/null && [[ -s "$host_errinfo" ]]; then
+      if ((has_ct)) && timeout 8 pct pull "$CTID" "/root/.install-${SESSION_ID}.log.errinfo" "$host_errinfo" 2>/dev/null && [[ -s "$host_errinfo" ]]; then
         TELEMETRY_ERRINFO="$host_errinfo"
         export TELEMETRY_ERRINFO
       fi

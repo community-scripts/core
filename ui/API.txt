@@ -11,6 +11,7 @@ _cs_host_version_line
 _cs_live_base
 _cs_os_family
 _cs_probe_drop
+_cs_probe_rc
 _cs_probe_read
 _cs_pveversion_out
 _cs_reattach_output
