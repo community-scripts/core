@@ -37,7 +37,7 @@ advanced_settings() {
     TAGS="community-script${var_tags:+;${var_tags}}"
   fi
   local STEP=1
-  local MAX_STEP=31
+  local MAX_STEP=32
 
   # Store values for back navigation - inherit from var_* app defaults
   local _ct_type="${var_unprivileged:-1}"
@@ -76,6 +76,7 @@ advanced_settings() {
   local _enable_mknod="${var_mknod:-0}"
   local _mount_fs="${var_mount_fs:-}"
   local _protect_ct="${var_protection:-no}"
+  local _ct_cmode="${var_cmode:-}"
   local _post_install="${var_post_install:-}"
 
   # Detect host timezone for default (if not set via var_timezone)
@@ -998,9 +999,30 @@ advanced_settings() {
       ;;
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # STEP 28: Device Node Creation (mknod)
+    # STEP 28: Console Mode
     # ═══════════════════════════════════════════════════════════════════════════
     28)
+      if result=$(whiptail --backtitle "Proxmox VE Helper Scripts [Step $STEP/$MAX_STEP]" \
+        --title "CONSOLE MODE" \
+        --ok-button "Next" --cancel-button "Back" \
+        --default-item "${_ct_cmode:-tty}" \
+        --menu "\nHow the Proxmox web console attaches to the container.\n\nshell has no login prompt - console access alone is root.\n\n(App default: ${var_cmode:-tty})" 18 74 3 \
+        "tty" "Login prompt on a virtual terminal (Proxmox default)" \
+        "console" "Login prompt on /dev/console" \
+        "shell" "Root shell, no login prompt (multiline paste works)" \
+        3>&1 1>&2 2>&3); then
+        [[ "$result" == "tty" ]] && result=""
+        _ct_cmode="$result"
+        ((STEP++))
+      else
+        ((STEP--))
+      fi
+      ;;
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # STEP 29: Device Node Creation (mknod)
+    # ═══════════════════════════════════════════════════════════════════════════
+    29)
       local mknod_default_flag="--defaultno"
       [[ "$_enable_mknod" == "1" ]] && mknod_default_flag=""
 
@@ -1022,9 +1044,9 @@ advanced_settings() {
       ;;
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # STEP 29: Mount Filesystems
+    # STEP 30: Mount Filesystems
     # ═══════════════════════════════════════════════════════════════════════════
-    29)
+    30)
       local mount_hint=""
       [[ -n "$_mount_fs" ]] && mount_hint="$_mount_fs" || mount_hint="(none)"
 
@@ -1048,9 +1070,9 @@ advanced_settings() {
       ;;
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # STEP 30: Optional host-side post-install hook (path on the Proxmox HOST)
+    # STEP 31: Optional host-side post-install hook (path on the Proxmox HOST)
     # ═══════════════════════════════════════════════════════════════════════════
-    30)
+    31)
       local _hook_prompt="Optional: absolute path to a *.sh file ON THE PROXMOX HOST.
 
 It runs as root on the HOST (NOT in the LXC) after the container
@@ -1098,9 +1120,9 @@ Leave empty to skip."
       ;;
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # STEP 31: Verbose Mode & Confirmation
+    # STEP 32: Verbose Mode & Confirmation
     # ═══════════════════════════════════════════════════════════════════════════
-    31)
+    32)
       local verbose_default_flag="--defaultno"
       [[ "$_verbose" == "yes" ]] && verbose_default_flag=""
 
@@ -1203,6 +1225,7 @@ Advanced:
   ENABLE_MKNOD="$_enable_mknod"
   ALLOW_MOUNT_FS="$_mount_fs"
   PROTECT_CT="$_protect_ct"
+  CT_CMODE="$_ct_cmode"
   CT_TIMEZONE="$_ct_timezone"
   APT_CACHER="$_apt_cacher"
   APT_CACHER_IP="$_apt_cacher_ip"
@@ -1222,6 +1245,7 @@ Advanced:
   var_mknod="$_enable_mknod"
   var_mount_fs="$_mount_fs"
   var_protection="$_protect_ct"
+  var_cmode="$_ct_cmode"
   var_timezone="$_ct_timezone"
   var_apt_cacher="$_apt_cacher"
   var_apt_cacher_ip="$_apt_cacher_ip"
