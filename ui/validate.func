@@ -182,6 +182,16 @@ install_ssh_keys_into_ct() {
   return 0
 }
 
+# _vmid_config_exists <id> - a VM or container config for the ID on any node
+_vmid_config_exists() {
+  local f
+  for f in /etc/pve/nodes/*/qemu-server/"$1".conf /etc/pve/nodes/*/lxc/"$1".conf \
+    /etc/pve/qemu-server/"$1".conf /etc/pve/lxc/"$1".conf; do
+    [[ -f "$f" ]] && return 0
+  done
+  return 1
+}
+
 # ------------------------------------------------------------------------------
 # validate_container_id()
 #
@@ -198,33 +208,19 @@ validate_container_id() {
     return 1
   fi
 
-  # Ask the cluster first: /etc/pve/qemu-server and /etc/pve/lxc are symlinks
-  # into this node's own directory, so checking them alone only sees local
-  # guests. On a cluster the wizard then hands out an ID already in use
-  # elsewhere and pct create fails long after the choice was made.
-  if command -v pvesh &>/dev/null; then
+  # /etc/pve/qemu-server and /etc/pve/lxc only point into this node's own
+  # directory; /etc/pve/nodes holds every node's guests. pvesh's
+  # /cluster/resources says the same in about a second, and the ID search
+  # asks once per ID it tries, so it is only the fallback without pmxcfs.
+  if [[ -d "/etc/pve/nodes" ]]; then
+    _vmid_config_exists "$ctid" && return 1
+  elif command -v pvesh &>/dev/null; then
     local cluster_ids
     cluster_ids=$(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null |
       grep -oP '"vmid":\s*\K[0-9]+' 2>/dev/null || true)
     if [[ -n "$cluster_ids" ]] && echo "$cluster_ids" | grep -qw "$ctid"; then
       return 1
     fi
-  fi
-
-  # Local config, for when pvesh is unavailable or answered with nothing.
-  if [[ -f "/etc/pve/qemu-server/${ctid}.conf" ]] || [[ -f "/etc/pve/lxc/${ctid}.conf" ]]; then
-    return 1
-  fi
-
-  # Every node's config directly, which also covers the window where pmxcfs has
-  # the file but /cluster/resources has not caught up.
-  if [[ -d "/etc/pve/nodes" ]]; then
-    local node_dir
-    for node_dir in /etc/pve/nodes/*/; do
-      if [[ -f "${node_dir}qemu-server/${ctid}.conf" ]] || [[ -f "${node_dir}lxc/${ctid}.conf" ]]; then
-        return 1
-      fi
-    done
   fi
 
   # Check if ID is used in LVM logical volumes

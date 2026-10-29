@@ -189,8 +189,10 @@ install_script() {
   # pvesh spawns a Perl client and waits on pvedaemon — the slowest thing here
   # by far, and it needs nothing the checks below produce. Start it now and
   # collect it when it is actually needed, so it runs while they do.
+  # core/build.func usually started it at load already (_cs_start_host_probes).
   local _nextid_file="" _nextid_pid=""
-  if ! declare -f get_next_container_identifier &>/dev/null && command -v pvesh &>/dev/null; then
+  if ! declare -f get_next_container_identifier &>/dev/null && [[ ! -f "${CS_PROBE_DIR:-/nonexistent}/nextid.out" ]] &&
+    command -v pvesh &>/dev/null; then
     _nextid_file="$(mktemp 2>/dev/null)" || _nextid_file=""
     if [[ -n "$_nextid_file" ]]; then
       pvesh get /cluster/nextid >"$_nextid_file" 2>/dev/null &
@@ -198,9 +200,11 @@ install_script() {
     fi
   fi
 
-  pve_check
+  # Root first: for any other user /etc/pve/storage.cfg is unreadable, and the
+  # cluster check in pve_check took that for a damaged cluster.
   shell_check
   root_check
+  pve_check
   ensure_whiptail
   arch_check
   arm64_notice
@@ -215,6 +219,8 @@ install_script() {
 
   if declare -f get_next_container_identifier &>/dev/null; then
     NEXTID="$(get_next_container_identifier)"
+  elif NEXTID="$(_cs_probe_read nextid | tr -d '[:space:]')" && [[ -n "$NEXTID" ]]; then
+    :
   elif [[ -n "$_nextid_pid" ]]; then
     wait "$_nextid_pid" 2>/dev/null || true
     NEXTID="$(tr -d '[:space:]' <"$_nextid_file" 2>/dev/null)"

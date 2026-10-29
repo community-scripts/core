@@ -549,16 +549,50 @@ _cs_runtime_cache_dir() {
   return 1
 }
 
+# _cs_probe_read <name> - output of a host probe that core/build.func started at
+# load, once it has finished; fails when there is none or it failed, and the
+# caller runs the command itself. Polls a file, so it works inside $( ) too.
+_cs_probe_read() {
+  local rc
+  rc="$(_cs_probe_rc "$1")" && [[ "$rc" == "0" ]] || return 1
+  cat "${CS_PROBE_DIR}/$1.out"
+}
+
+# _cs_probe_rc <name> - a finished probe's exit code, for checks that answer
+# with one; fails when there is no such probe
+_cs_probe_rc() {
+  local dir="${CS_PROBE_DIR:-}" n=0
+  [[ -n "$dir" && -f "${dir}/$1.out" ]] || return 1
+  while [[ ! -f "${dir}/$1.rc" ]]; do
+    ((n++ < 1200)) || return 1
+    sleep 0.05
+  done
+  cat "${dir}/$1.rc"
+}
+
+# _cs_probe_drop <name>... - forget probes whose answer a change made stale
+_cs_probe_drop() {
+  local name
+  for name in "$@"; do
+    rm -f "${CS_PROBE_DIR:-/nonexistent}/${name}.out" "${CS_PROBE_DIR:-/nonexistent}/${name}.rc" 2>/dev/null
+  done
+  return 0
+}
+
+_cs_pveversion_out() {
+  _cs_probe_read pveversion || pveversion 2>/dev/null
+}
+
 _pve_version() {
   [[ -n "${PVEVERSION:-}" ]] && { printf '%s' "$PVEVERSION"; return 0; }
   local dir cache
   dir="$(_cs_runtime_cache_dir)" || {
-    pveversion 2>/dev/null | awk -F'/' '{print $2}' | awk -F'-' '{print $1}'
-    return
+    _cs_pveversion_out | awk -F'/' '{print $2}' | awk -F'-' '{print $1}'
+    return 0
   }
   cache="${dir}/cs-pveversion.$$"
   [[ -s "$cache" ]] ||
-    pveversion 2>/dev/null | awk -F'/' '{print $2}' | awk -F'-' '{print $1}' >"$cache"
+    _cs_pveversion_out | awk -F'/' '{print $2}' | awk -F'-' '{print $1}' >"$cache"
   cat "$cache" 2>/dev/null
 }
 
@@ -566,7 +600,9 @@ _pve_version() {
 # reports it verbatim as pve_version. A fixed "PVE Version" prefix therefore
 # printed "PVE Version Incus 7.3" on Incus hosts.
 _cs_host_version_line() {
-  local v="${PVEVERSION:-unknown}"
+  local v="${PVEVERSION:-}"
+  [[ -z "$v" ]] && command -v pveversion >/dev/null 2>&1 && v="$(_pve_version)"
+  v="${v:-unknown}"
   if [[ "$v" == Incus* ]]; then
     v="${v#Incus}"
     v="${v# }"
@@ -643,11 +679,11 @@ _cs_scripts_ref_line() {
 _pveam_available() {
   local dir cache
   dir="$(_cs_runtime_cache_dir)" || {
-    pveam available -section system 2>/dev/null
-    return
+    _cs_probe_read pveam || pveam available -section system 2>/dev/null
+    return 0
   }
   cache="${dir}/cs-pveam.$$"
-  [[ -s "$cache" ]] || pveam available -section system 2>/dev/null >"$cache"
+  [[ -s "$cache" ]] || { _cs_probe_read pveam || pveam available -section system 2>/dev/null; } >"$cache"
   cat "$cache" 2>/dev/null
 }
 
@@ -656,6 +692,7 @@ _pveam_available() {
 _pveam_update() {
   local dir
   dir="$(_cs_runtime_cache_dir)" && rm -f "${dir}/cs-pveam.$$"
+  _cs_probe_drop pveam
   if command -v timeout &>/dev/null; then
     timeout 30 pveam update >/dev/null 2>&1 || return 1
   else
@@ -735,7 +772,7 @@ pmxcfs_check() {
     exit 228
   fi
 
-  if [[ -f /etc/pve/corosync.conf ]] && ! pvecm status 2>/dev/null | grep -qE '^Quorate:[[:space:]]+Yes'; then
+  if [[ -f /etc/pve/corosync.conf ]] && ! { _cs_probe_read pvecm || pvecm status 2>/dev/null; } | grep -qE '^Quorate:[[:space:]]+Yes'; then
     msg_error "This cluster node has no quorum, so /etc/pve is read-only and nothing can be created."
     msg_custom "🔧" "${YW}" "Bring enough cluster nodes online, then check: pvecm status"
     exit 210
@@ -899,8 +936,8 @@ log_msg() {
   local logfile
   logfile="$(get_active_logfile)"
 
-  [[ -z "$msg" ]] && return
-  [[ -z "$logfile" ]] && return
+  [[ -z "$msg" ]] && return 0
+  [[ -z "$logfile" ]] && return 0
 
   # Ensure log directory exists
   mkdir -p "$(dirname "$logfile")" 2>/dev/null || true
@@ -908,7 +945,8 @@ log_msg() {
   # Strip ANSI codes and write with timestamp
   local clean_msg
   clean_msg=$(strip_ansi "$msg")
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $clean_msg" >>"$logfile"
+  # A log that cannot be written (full disk, removed directory) must not end the run.
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $clean_msg" >>"$logfile" 2>/dev/null || true
 }
 
 # ------------------------------------------------------------------------------
@@ -923,7 +961,7 @@ log_section() {
   local logfile
   logfile="$(get_active_logfile)"
 
-  [[ -z "$logfile" ]] && return
+  [[ -z "$logfile" ]] && return 0
   mkdir -p "$(dirname "$logfile")" 2>/dev/null || true
 
   {
@@ -931,7 +969,7 @@ log_section() {
     echo "================================================================================"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $section"
     echo "================================================================================"
-  } >>"$logfile"
+  } >>"$logfile" 2>/dev/null || true
 }
 
 # ------------------------------------------------------------------------------

@@ -15,9 +15,21 @@ terminal status: it writes `/root/.install-<SESSION_ID>.failed` and an
 `.errinfo` capture, which the host picks up after `lxc-attach` returns. See
 [`core/error_handler.func`](../core/error_handler.func).
 
-A host run that fails before its install record went out (storage, ID or
-template checks) sends that record first, then the failure. Cancelled dialogs
-and update runs inside a container send nothing.
+Telemetry starts with the install record (`post_to_api`, `post_to_api_vm`),
+which the build sends once the checks and dialogs are behind it. A run that
+ends before that sends nothing: a host that is not ready is not a failed
+install. Tools and add-ons have no such point, so a failure with a
+"requirement not met" code (10, 103, 104, 106, 232, 233, 234, 236, 238) sends
+nothing either. Update runs inside a container send nothing.
+
+The checks, the settings and the storage dialogs wait on `pveversion`,
+`pvesm status` (all, `vztmpl`, `rootdir`), `pveam available` and `pvesh`.
+`core/build.func` starts these in the background before it downloads the
+engine, `variables` adds pve-container's verdict on the release, and the
+readers take them through `_cs_probe_read` / `_cs_probe_rc` (`_pvesm_status`
+for storage). `_offer_storage_content` and `_pveam_update` drop what they
+change with `_cs_probe_drop`. Guest IDs are checked against the configs under
+`/etc/pve/nodes`, which pmxcfs keeps for every node.
 
 ## What a failure carries (payload version 3)
 

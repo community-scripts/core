@@ -90,13 +90,19 @@ variables() {
     combined_log="/var/log/community-scripts/install-${SESSION_ID}-combined-$(date +%Y%m%d_%H%M%S).log"
   fi
 
-  # Get Proxmox VE version and kernel version
-  if command -v pveversion >/dev/null 2>&1; then
-    PVEVERSION="$(_pve_version)"
-  else
-    PVEVERSION="N/A"
-  fi
+  # On a PVE host the version is read where it is shown (_pve_version, cached):
+  # asking here held the header for the whole pveversion start.
+  command -v pveversion >/dev/null 2>&1 || PVEVERSION="N/A"
   KERNEL_VERSION=$(uname -r)
+
+  # pve-container's verdict on the release is a Perl start too; the script set
+  # the release before calling this, and lxc_os_support_check reads the answer.
+  case "${var_os:-}" in
+  debian | ubuntu)
+    [[ -n "${CS_PROBE_DIR:-}" && -n "${var_version:-}" ]] && declare -f lxc_os_supported >/dev/null 2>&1 &&
+      _cs_probe "$CS_PROBE_DIR" "lxcos-${var_os}-${var_version}" lxc_os_supported "$var_os" "$var_version"
+    ;;
+  esac
 
   # Capture app-declared defaults (for precedence logic)
   # These values are set by the app script BEFORE default.vars is loaded

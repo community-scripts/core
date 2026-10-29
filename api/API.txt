@@ -14,6 +14,7 @@ _tm_post_progress
 _tm_post_run
 _tm_post_update
 _tm_quiet
+_tm_requirement_code
 _tm_send
 _tm_step_output
 build_error_string

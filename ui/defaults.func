@@ -172,7 +172,7 @@ resolve_os_version() {
   ')
   [[ -n "$candidate" ]] || return 0
 
-  msg_warn "${ostype^} ${want} is not in this host's template catalog (PVE ${PVEVERSION:-unknown})"
+  msg_warn "${ostype^} ${want} is not in this host's template catalog (PVE ${PVEVERSION:-$(_pve_version)})"
 
   if [[ "${PHS_SILENT:-0}" != "1" ]] && command -v whiptail &>/dev/null && [ -t 0 ] && [[ "$TERM" != "dumb" ]]; then
     local -a menu=()

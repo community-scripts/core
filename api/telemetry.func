@@ -259,16 +259,10 @@ _tm_post_update() {
     ;;
   esac
 
-  # Unset: no install was reported yet. A host run that failed in its checks
-  # (storage, ID, template) reports one now; an update run inside a container
-  # or a cancelled dialog does not. "false" means that send failed.
-  if [[ -z "${POST_TO_API_DONE:-}" ]]; then
-    if [[ "$pb_status" == "failed" && -n "${NSAPP:-}" ]] &&
-      ! { declare -f _is_container_context >/dev/null 2>&1 && _is_container_context; }; then
-      post_to_api
-    fi
-    [[ -z "${POST_TO_API_DONE:-}" ]] && return 0
-  fi
+  # Unset: the run ended before its build reported the install, in the checks
+  # or a dialog. Those report nothing; a host that is not ready is no failed
+  # install. "false" means the install was due and its send failed.
+  [[ -z "${POST_TO_API_DONE:-}" ]] && return 0
 
   if [[ "$pb_status" == "failed" || "$pb_status" == "unknown" ]]; then
     _tm_error_context "$exit_code"
@@ -302,6 +296,17 @@ _tm_post_update() {
   return 0
 }
 
+# Tools and add-ons have no build step that starts their telemetry, so their
+# checks are known by the code they exit with: wrong host or OS, nothing to work
+# on, a prerequisite missing. Like the checks before a container build, those
+# report nothing.
+_tm_requirement_code() {
+  case "$1" in
+  10 | 103 | 104 | 106 | 232 | 233 | 234 | 236 | 238) return 0 ;;
+  esac
+  return 1
+}
+
 # ------------------------------------------------------------------------------
 # _tm_post_run <type> <name> <status> <exit_code> - tool and add-on runs
 #
@@ -318,6 +323,7 @@ _tm_post_run() {
   uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || echo "${type}-$(date +%s)")
   [[ "$status" == "done" ]] && status="success"
   [[ "$exit_code" =~ ^[0-9]+$ ]] || exit_code=199
+  [[ "$status" == "failed" ]] && _tm_requirement_code "$exit_code" && return 0
 
   if [[ "$status" == "failed" ]]; then
     _tm_error_context "$exit_code"

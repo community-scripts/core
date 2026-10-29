@@ -37,6 +37,7 @@ on:
       - "tests/stale-silent-record.sh"
       - "tests/exit-code-hints.sh"
       - "tests/telemetry-trace.sh"
+      - "tests/host-probes.sh"
       - "tests/forge-release-json.sh"
       - "tests/install-cleanup.sh"
       - "tests/console-hangup.sh"
@@ -73,6 +74,7 @@ on:
       - "tests/stale-silent-record.sh"
       - "tests/exit-code-hints.sh"
       - "tests/telemetry-trace.sh"
+      - "tests/host-probes.sh"
       - "tests/forge-release-json.sh"
       - "tests/install-cleanup.sh"
       - "tests/console-hangup.sh"
@@ -145,6 +147,9 @@ jobs:
 
       - name: Telemetry trace tests
         run: bash tests/telemetry-trace.sh
+
+      - name: Host probe tests
+        run: bash tests/host-probes.sh
 
       - name: Forge release lookup tests
         run: bash tests/forge-release-json.sh

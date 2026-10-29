@@ -43,7 +43,8 @@ advanced_settings() {
   local _ct_type="${var_unprivileged:-1}"
   local _pw=""
   local _pw_display="Automatic Login"
-  local _ct_id="$NEXTID"
+  # base_settings ran first and checked it; NEXTID can be taken by a leftover disk.
+  local _ct_id="${CT_ID:-$NEXTID}"
   local _hostname="$NSAPP"
   local _disk_size="${var_disk:-4}"
   local _core_count="${var_cpu:-1}"

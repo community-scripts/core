@@ -268,7 +268,7 @@ _cs_prefetch_engine() {
     [[ -d "$base" && -w "$base" ]] || continue
     # An EXIT trap would be the obvious cleanup, but core.func and api.func
     # install their own later and the last one wins. Sweep instead.
-    find "$base" -maxdepth 1 \( -name 'cs-engine.*' -o -name 'cs-pveam.*'       -o -name 'cs-pveversion.*' \) -mmin +60 -exec rm -rf {} + 2>/dev/null || true
+    find "$base" -maxdepth 1 \( -name 'cs-engine.*' -o -name 'cs-pveam.*'       -o -name 'cs-pveversion.*' -o -name 'cs-probe.*' \) -mmin +60 -exec rm -rf {} + 2>/dev/null || true
     dir="$(mktemp -d "${base}/cs-engine.XXXXXX" 2>/dev/null)" && break
     dir=""
   done
@@ -305,6 +305,52 @@ _cs_prefetch_engine() {
   return 0
 }
 
+# The checks, the settings and the storage dialogs wait on pveversion, pvesm,
+# pveam and pvesh, each a Perl start of up to a second. Start them now, while the
+# engine downloads and the header loads; _cs_probe_read hands over what they printed.
+# _cs_probe_run <dir> <name> <command...> - run it, keep its output and exit code
+_cs_probe_run() {
+  local dir="$1" name="$2"
+  shift 2
+  "$@" >"${dir}/${name}.out" 2>/dev/null
+  echo "$?" >"${dir}/${name}.tmp" && mv -f "${dir}/${name}.tmp" "${dir}/${name}.rc"
+}
+
+# _cs_probe <dir> <name> <command...> - the same in the background. The empty
+# .out tells readers a result is coming before the subshell has started.
+_cs_probe() {
+  : >"${1}/${2}.out"
+  _cs_probe_run "$@" </dev/null &
+}
+
+_cs_start_host_probes() {
+  command -v pveversion >/dev/null 2>&1 || return 0
+  [[ "$(id -u)" == "0" ]] || return 0
+  local base dir="" name names=(pveversion pvesm vztmpl rootdir pveam nextid)
+  for base in /dev/shm "${TMPDIR:-/tmp}" /tmp; do
+    [[ -d "$base" && -w "$base" ]] || continue
+    dir="$(mktemp -d "${base}/cs-probe.XXXXXX" 2>/dev/null)" && break
+    dir=""
+  done
+  [[ -n "$dir" ]] || return 0
+  [[ -f /etc/pve/corosync.conf ]] && names+=(pvecm)
+  for name in "${names[@]}"; do : >"${dir}/${name}.out"; done
+  # One fork from this shell; the probes branch off inside it.
+  (
+    _cs_probe_run "$dir" pveversion pveversion &
+    _cs_probe_run "$dir" pvesm pvesm status &
+    _cs_probe_run "$dir" vztmpl pvesm status -content vztmpl &
+    _cs_probe_run "$dir" rootdir pvesm status -content rootdir &
+    _cs_probe_run "$dir" pveam pveam available -section system &
+    _cs_probe_run "$dir" nextid pvesh get /cluster/nextid &
+    [[ -f "${dir}/pvecm.out" ]] && _cs_probe_run "$dir" pvecm pvecm status &
+    wait
+  ) </dev/null &
+  CS_PROBE_DIR="$dir"
+  return 0
+}
+
+_cs_start_host_probes
 _cs_prefetch_engine || true
 
 _cs_source_func "lxc/platform.func"
