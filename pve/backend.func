@@ -206,7 +206,8 @@ _pve_wait_for_detached_install() {
       return 0
     fi
     if [[ "$(pct status "$CTID" 2>/dev/null)" != "status: running" ]]; then
-      echo "[WARN] Container ${CTID} is no longer running"
+      echo "[WARN] Container ${CTID} is no longer running; its recent Proxmox tasks:"
+      pvenode task list --vmid "$CTID" --limit 5 --noborder 2>/dev/null | awk 'NR > 1 { print "  " $2, $4, $5, $6, $9 }'
       return 199
     fi
     pid="$(pct exec "$CTID" -- cat "${base}.pid" 2>/dev/null | tr -d '[:space:]')"
