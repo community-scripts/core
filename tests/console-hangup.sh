@@ -109,8 +109,15 @@ sleep 30 &
 worker=$!
 echo "$worker" >"$ROOT/.install-abc.pid"
 CT_STATE="status: stopped"
-_pve_wait_for_detached_install >/dev/null
+pvenode() {
+  printf '%s\n' "UPID Type ID User Starttime Endtime Status" \
+    "UPID:pve:1:vzstart:100:root@pam: vzstart 100 root@pam 2026-10-31 19:37:35 2026-10-31 19:37:36 OK" \
+    "UPID:pve:2:vzstop:100:root@pam: vzstop 100 root@pam 2026-10-31 19:40:43 2026-10-31 19:40:44 OK"
+}
+out="$(_pve_wait_for_detached_install)"
 expect "a stopped container ends the wait" 199 "$?"
+expect "a stopped container names who stopped it" "  vzstop root@pam 2026-10-31 19:40:43 OK" "$(tail -n 1 <<<"$out")"
+unset -f pvenode
 kill "$worker" 2>/dev/null
 
 # A redirected call to a shell function makes bash save fd 1 and restore it
