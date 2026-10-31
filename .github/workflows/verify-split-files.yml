@@ -28,6 +28,7 @@ on:
       - "tests/mongodb-upgrade.sh"
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
+      - "tests/java-memory.sh"
       - "tests/external-installer.sh"
       - "tests/forge-version-key.sh"
       - "tests/nodejs-key-refresh.sh"
@@ -65,6 +66,7 @@ on:
       - "tests/mongodb-upgrade.sh"
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
+      - "tests/java-memory.sh"
       - "tests/external-installer.sh"
       - "tests/forge-version-key.sh"
       - "tests/nodejs-key-refresh.sh"
@@ -121,6 +123,9 @@ jobs:
 
       - name: Docker lxcfs visibility regression tests
         run: bash tests/docker-lxcfs.sh
+
+      - name: Java memory drop-in tests
+        run: bash tests/java-memory.sh
 
       - name: External installer confirmation tests
         run: bash tests/external-installer.sh

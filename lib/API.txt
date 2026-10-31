@@ -140,6 +140,7 @@ setup_gs
 setup_hwaccel
 setup_imagemagick
 setup_java
+setup_java_memory
 setup_local_ip_helper
 setup_mariadb
 setup_mariadb_db
