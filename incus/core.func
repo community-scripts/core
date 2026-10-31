@@ -500,7 +500,7 @@ incus_msg_info() {
   incus_color_spinner
   incus_spinner &
   SPINNER_PID=$!
-  echo "$SPINNER_PID" >/tmp/.incus_spinner.pid
+  { echo "$SPINNER_PID" >/tmp/.incus_spinner.pid; } 2>/dev/null || true
   disown "$SPINNER_PID" 2>/dev/null || true
 }
 
