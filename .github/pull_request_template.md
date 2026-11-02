@@ -16,16 +16,6 @@ Fixes #
 
 ---
 
-## 🤖 AI Assistance (**X** in brackets)
-
-> If you used an AI tool (GitHub Copilot, Claude, ChatGPT, etc.) to write or generate any code in this PR, you **must** confirm compliance below.
-> Select exactly one option.
-
-- [ ] **No AI used** – Code was written without AI assistance.
-- [ ] **AI was used** – The output has been reviewed and corrected, and I take responsibility for it matching this repo's conventions.
-
----
-
 ## 🛠️ Type of Change (**X** in brackets)
 
 - [ ] 🐞 **Bug fix** – Resolves an issue without breaking functionality.
@@ -33,3 +23,13 @@ Fixes #
 - [ ] 💥 **Breaking change** – Alters existing behavior in a way that may require updates in every downstream script.
 - [ ] 🔧 **Refactoring / Code Cleanup** – Improves readability or maintainability without changing functionality.
 - [ ] 📝 **Documentation update** – Changes to `README`, `docs/`, `CONTRIBUTING.md`, or other docs.
+
+---
+
+## 🤖 AI Assistance (**X** in brackets)
+
+> If you used an AI tool (GitHub Copilot, Claude, ChatGPT, etc.) to write or generate any code in this PR, you **must** confirm compliance below.
+> Select exactly one option.
+
+- [ ] **No AI used** – Code was written without AI assistance.
+- [ ] **AI was used** – The output has been reviewed and corrected, and I take responsibility for it matching this repo's conventions.

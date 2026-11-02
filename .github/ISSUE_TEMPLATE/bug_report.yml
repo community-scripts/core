@@ -12,14 +12,6 @@ body:
 
         Thank you for taking the time to report an issue! Please provide as much detail as possible.
 
-  - type: input
-    id: guidelines
-    attributes:
-      label: ✅ Have you read and understood the above guidelines?
-      placeholder: "yes"
-    validations:
-      required: true
-
   - type: dropdown
     id: verbose_run
     attributes:
@@ -33,12 +25,32 @@ body:
       required: true
 
   - type: input
+    id: core_version
+    attributes:
+      label: 🏷️ Which core version or commit are you on?
+      description: "This engine moves fast — \"latest main\" isn't precise enough. Check the version/commit your script's header points to, or the commit hash if you're running from a local checkout."
+      placeholder: "e.g., commit a1b2c3d, or the version pinned in the script header"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: host_arch
+    attributes:
+      label: 🏗️ Host CPU architecture
+      options:
+        - ""
+        - amd64
+        - arm64
+    validations:
+      required: true
+
+  - type: input
     id: script_repo
     attributes:
       label: 📜 Which script (and repo) were you running when you hit this?
-      placeholder: "e.g., ct/vllm.sh in community-scripts/ProxmoxVE"
+      placeholder: "e.g., ct/vllm.sh in community-scripts/ProxmoxVE, or 'none — testing the engine directly'"
     validations:
-      required: true
+      required: false
 
   - type: input
     id: engine_file
