@@ -1053,7 +1053,11 @@ silent() {
     # Not a pipe: the command must stay in this shell so functions keep their side effects.
     "${run[@]}" > >(tee -a "$logfile") 2>&1
     rc=$?
-    wait $! 2>/dev/null
+    local tee_pid=$! waited
+    for ((waited = 0; waited < 30; waited++)); do
+      kill -0 "$tee_pid" 2>/dev/null || break
+      sleep 0.1
+    done
   else
     "${run[@]}" >>"$logfile" 2>&1
     rc=$?

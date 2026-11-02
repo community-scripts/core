@@ -47,6 +47,7 @@ on:
       - "tests/release-stamp-pending.sh"
       - "tests/pct-start-reason.sh"
       - "tests/vm-silent.sh"
+      - "tests/silent-verbose.sh"
       - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
@@ -85,6 +86,7 @@ on:
       - "tests/release-stamp-pending.sh"
       - "tests/pct-start-reason.sh"
       - "tests/vm-silent.sh"
+      - "tests/silent-verbose.sh"
       - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
@@ -175,6 +177,8 @@ jobs:
         run: bash tests/pct-start-reason.sh
       - name: VM silent helper tests
         run: bash tests/vm-silent.sh
+      - name: Verbose silent tests
+        run: bash tests/silent-verbose.sh
 
       - name: Prefetch lists cover every engine file
         run: |
