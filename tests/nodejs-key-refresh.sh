@@ -23,7 +23,6 @@ download_gpg_key() {
   echo "download_gpg_key $*" >>"$CALLS"
   return "${MOCK_KEY_RC:-0}"
 }
-apt-get() { echo "apt-get $*" >>"$CALLS"; }
 apt() { echo "apt $*" >>"$CALLS"; }
 node() { [[ "$1" == "-v" ]] && echo v24.13.0; return 0; }
 corepack() { :; }
@@ -56,11 +55,11 @@ run
 expect "same-major update succeeds" 0 "$?"
 expect "the NodeSource key is refreshed" "download_gpg_key https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key /etc/apt/keyrings/nodesource.gpg dearmor" "$(grep -F download_gpg_key "$CALLS")"
 expect "the refresh happens before apt update" yes "$(before "$(line_of download_gpg_key)" "$(line_of ensure_apt_working)")"
-expect "the refresh happens before the upgrade" yes "$(before "$(line_of download_gpg_key)" "$(line_of 'apt-get install -y --only-upgrade nodejs')")"
+expect "the refresh happens before the upgrade" yes "$(before "$(line_of download_gpg_key)" "$(line_of 'apt install -y --only-upgrade nodejs')")"
 
 MOCK_KEY_RC=7 run
 expect "a failed key download does not abort the update" 0 "$?"
-expect "the upgrade still runs" 1 "$(grep -c 'apt-get install -y --only-upgrade nodejs' "$CALLS")"
+expect "the upgrade still runs" 1 "$(grep -c 'apt install -y --only-upgrade nodejs' "$CALLS")"
 expect "the failed refresh is reported" 1 "$(grep -c 'warn: Could not refresh the NodeSource signing key' "$LOG")"
 
 printf '%s passed, %s failed\n' "$passed" "$failed"
