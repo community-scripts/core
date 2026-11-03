@@ -109,15 +109,28 @@ sleep 30 &
 worker=$!
 echo "$worker" >"$ROOT/.install-abc.pid"
 CT_STATE="status: stopped"
+_CS_INSTALL_STARTED=1793658000
 pvenode() {
+  if [[ " $* " == *" --output-format json "* ]]; then
+    [[ " $* " == *" --since ${_CS_INSTALL_STARTED} "* ]] || return 1
+    printf '%s' "${MOCK_TASKS_JSON:-[]}"
+    return 0
+  fi
   printf '%s\n' "UPID Type ID User Starttime Endtime Status" \
     "UPID:pve:1:vzstart:100:root@pam: vzstart 100 root@pam 2026-10-31 19:37:35 2026-10-31 19:37:36 OK" \
     "UPID:pve:2:vzstop:100:root@pam: vzstop 100 root@pam 2026-10-31 19:40:43 2026-10-31 19:40:44 OK"
 }
+MOCK_TASKS_JSON='[{"type":"vzstop","upid":"UPID:pve:00034660:021098C2:6AE99CC6:vzstop:100:root@pam:","user":"root@pam"}]'
 out="$(_pve_wait_for_detached_install)"
-expect "a stopped container ends the wait" 199 "$?"
-expect "a stopped container names who stopped it" "  vzstop root@pam 2026-10-31 19:40:43 OK" "$(tail -n 1 <<<"$out")"
+expect "a container stopped from outside ends the wait as an abort" 143 "$?"
+expect "it names the recent tasks" 1 "$(grep -c '  vzstop root@pam 2026-10-31 19:40:43 OK' <<<"$out")"
+expect "and who ended the install" "[INFO] The install did not fail: vzstop by root@pam ended it" "$(tail -n 1 <<<"$out")"
+
+MOCK_TASKS_JSON='[{"type":"vzstart","upid":"UPID:pve:00034661:021098C3:6AE99CC7:vzstart:100:root@pam:","user":"root@pam"}]'
+out="$(_pve_wait_for_detached_install)"
+expect "a container that stopped by itself is still unreported" 199 "$?"
 unset -f pvenode
+unset MOCK_TASKS_JSON _CS_INSTALL_STARTED
 kill "$worker" 2>/dev/null
 
 # A redirected call to a shell function makes bash save fd 1 and restore it
