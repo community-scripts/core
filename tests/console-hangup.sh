@@ -8,7 +8,7 @@ set -uo pipefail
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 eval "$(awk '/^(silent|_cs_shield_hangup|_cs_reattach_output)[(][)] [{]/,/^}/' "$CORE_DIR/core/core.func")"
 eval "$(awk '/^(on_hangup|on_exit|_eh_quiet_spinner)[(][)] [{]/,/^}/' "$CORE_DIR/core/error_handler.func")"
-eval "$(awk '/^_pve_wait_for_detached_install[(][)] [{]/,/^}/' "$CORE_DIR/pve/backend.func")"
+eval "$(awk '/^(_pve_wait_for_detached_install|_pve_ct_stopped_by|_pve_ct_gone_during_setup)[(][)] [{]/,/^}/' "$CORE_DIR/pve/backend.func")"
 
 TEST_DIR="$(mktemp -d)"
 trap 'rm -rf -- "$TEST_DIR"' EXIT
@@ -129,9 +129,28 @@ expect "and who ended the install" "[INFO] The install did not fail: vzstop by r
 MOCK_TASKS_JSON='[{"type":"vzstart","upid":"UPID:pve:00034661:021098C3:6AE99CC7:vzstart:100:root@pam:","user":"root@pam"}]'
 out="$(_pve_wait_for_detached_install)"
 expect "a container that stopped by itself is still unreported" 199 "$?"
-unset -f pvenode
-unset MOCK_TASKS_JSON _CS_INSTALL_STARTED
 kill "$worker" 2>/dev/null
+
+# _pve_ct_gone_during_setup(): a setup step failed; was the container still there?
+msg_warn() { echo "warn: $*"; }
+msg_error() { echo "error: $*"; }
+journalctl() { echo "lxc-start: 100: ../src/lxc/start.c: exited"; }
+CT_STATE="status: running"
+_pve_ct_gone_during_setup >/dev/null
+expect "a running container is not gone" 1 "$?"
+
+CT_STATE="status: stopped"
+MOCK_TASKS_JSON='[{"type":"vzshutdown","upid":"UPID:pve:00034662:021098C4:6AE99CC8:vzshutdown:100:root@pam:","user":"root@pam"}]'
+out="$(_pve_ct_gone_during_setup; echo "rc=$_CS_SETUP_GONE_RC")"
+expect "a shutdown during setup counts as an abort" rc=143 "$(tail -n 1 <<<"$out")"
+expect "and says who did it" 1 "$(grep -c 'warn: Container 100 was stopped during its setup (vzshutdown by root@pam)' <<<"$out")"
+
+MOCK_TASKS_JSON='[]'
+out="$(_pve_ct_gone_during_setup; echo "rc=$_CS_SETUP_GONE_RC cat=$ERROR_CATEGORY_OVERRIDE")"
+expect "a container that stopped by itself is reported as such" "rc=199 cat=proxmox" "$(tail -n 1 <<<"$out")"
+expect "with its own journal" 1 "$(grep -c '  lxc-start: 100: ../src/lxc/start.c: exited' <<<"$out")"
+unset -f pvenode msg_warn msg_error journalctl
+unset MOCK_TASKS_JSON _CS_INSTALL_STARTED
 
 # A redirected call to a shell function makes bash save fd 1 and restore it
 # afterwards, which undid the redirect the hangup trap had made. Every message
