@@ -679,6 +679,7 @@ msg_warn() {
   stop_spinner
   local msg="$1"
   echo -e "${BFR:-}${INFO:-ℹ️} ${YWB}${msg}${CL}" >&2
+  _vm_log "[WARN] $msg"
 }
 
 # Helper function to display a message with custom symbol and color
@@ -1872,7 +1873,7 @@ vm_fetch_image() {
   shift 2
   local min_bytes=0 exact_bytes="" sha256="" sha1="" advisory_sha1="" needs_bytes=""
   local checksum_url="" cache=no xz=no
-  local got avail_mib need_mib have part sha_tool="" sha_want="" discovered
+  local got avail_mib need_mib have part sha_tool="" sha_want="" discovered rc=0 why=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1945,9 +1946,13 @@ vm_fetch_image() {
   # Into a partial file, so a killed transfer cannot be mistaken for the image.
   part="${target}.part"
   rm -f "$part"
-  if ! curl -f#SL --retry 3 --retry-delay 5 -o "$part" "$url"; then
+  # curl's message reaches the terminal only; its exit status goes into the
+  # trace. Named after the target: SourceForge URLs end in /download.
+  curl -f#SL --retry 3 --retry-delay 5 -o "$part" "$url" || rc=$?
+  if ((rc != 0)); then
     rm -f "$part"
-    msg_error "Failed to download $(basename "$url")"
+    declare -f explain_exit_code >/dev/null 2>&1 && why=": $(explain_exit_code "$rc")"
+    msg_error "Failed to download $(basename "$target") (curl exit ${rc}${why})"
     return 1
   fi
 
@@ -2039,7 +2044,8 @@ _vm_root_fs() {
 # target it lands in the tmp dir with the suffix removed. Sets VM_IMAGE_FILE
 # and leaves the archive alone, so a cached download survives.
 vm_extract_image() {
-  local src="${1:?image}" target="${2:-}" tool rc
+  local src="${1:?image}" target="${2:-}" tool rc free
+  local -a st=()
 
   if [[ ! -r "$src" ]]; then
     msg_error "Cannot read ${src}"
@@ -2068,7 +2074,10 @@ vm_extract_image() {
   if command -v pv >/dev/null 2>&1; then
     # pv is the progress indicator here; a spinner would fight it for the line.
     "$tool" -dc "$src" | pv -N "Extracting $(basename "$src")" >"$target"
-    rc=${PIPESTATUS[0]}
+    # pv failing to write (a full disk) can come after the unpacker is done.
+    st=("${PIPESTATUS[@]}")
+    rc=${st[0]}
+    ((rc != 0)) || rc=${st[1]}
   else
     msg_info "Extracting $(basename "$src")"
     "$tool" -dc "$src" >"$target"
@@ -2077,7 +2086,8 @@ vm_extract_image() {
 
   if ((rc != 0)); then
     rm -f "$target"
-    msg_error "Failed to unpack $(basename "$src")"
+    free="$(df -Ph "$(dirname "$target")" 2>/dev/null | awk 'NR==2 {print $4}')"
+    msg_error "Failed to unpack $(basename "$src") (exit ${rc}, ${free:-?} free in $(dirname "$target"))"
     return 1
   fi
 
@@ -2583,7 +2593,8 @@ vm_import_disk() {
   msg_info "Importing $(basename "$file") to ${storage}"
   if ! out="$("${cmd[@]}" "$vmid" "$file" "$storage" "${opts[@]}" 2>&1)"; then
     msg_error "Importing $(basename "$file") into VM ${vmid} failed"
-    printf '%s\n' "$out" | tail -n 5 >&2
+    # Into the log too: the failure trace is read from there.
+    printf '%s\n' "$out" | tail -n 5 | tee -a "$(get_active_logfile)" >&2 || true
     return 1
   fi
 
@@ -2597,7 +2608,7 @@ vm_import_disk() {
 
   if [[ -z "$volume" ]]; then
     msg_error "Imported $(basename "$file"), but could not tell which volume Proxmox created"
-    printf '%s\n' "$out" | tail -n 5 >&2
+    printf '%s\n' "$out" | tail -n 5 | tee -a "$(get_active_logfile)" >&2 || true
     return 1
   fi
 
