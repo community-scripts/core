@@ -49,6 +49,7 @@ on:
       - "tests/vm-silent.sh"
       - "tests/silent-verbose.sh"
       - "tests/github-release-noapi.sh"
+      - "tests/vm-dialog-esc.sh"
       - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
@@ -89,6 +90,7 @@ on:
       - "tests/vm-silent.sh"
       - "tests/silent-verbose.sh"
       - "tests/github-release-noapi.sh"
+      - "tests/vm-dialog-esc.sh"
       - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
@@ -181,6 +183,8 @@ jobs:
         run: bash tests/vm-silent.sh
       - name: Verbose silent tests
         run: bash tests/silent-verbose.sh
+      - name: VM dialog Esc tests
+        run: bash tests/vm-dialog-esc.sh
       - name: GitHub release without the API tests
         run: bash tests/github-release-noapi.sh
 

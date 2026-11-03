@@ -1063,7 +1063,8 @@ vm_confirm_advanced_settings() {
 
 # One entry point for every dialog. Result lands in VM_DIALOG_RESULT, since the
 # return code carries the distinction: 0 = OK, 1 = cancel, anything else means
-# whiptail could not draw and is fatal with a reason.
+# whiptail could not draw and is fatal with a reason. Esc also exits 255; on a
+# terminal the dialog fits and with nothing printed, that is the user leaving.
 VM_DIALOG_RESULT=""
 
 vm_dialog() {
@@ -1090,6 +1091,9 @@ vm_dialog() {
   # No choice was presented, so the captured text is whiptail's complaint.
   cols=$(tput cols 2>/dev/null || echo "?")
   rows=$(tput lines 2>/dev/null || echo "?")
+  if [[ $rc -eq 255 && -z "$out" && "$cols" =~ ^[0-9]+$ && "$rows" =~ ^[0-9]+$ ]] && ((cols >= 60 && rows >= 18)); then
+    exit_script
+  fi
   msg_error "The '${title}' dialog could not be shown (whiptail exit ${rc})"
   [[ -n "$out" ]] && msg_error "whiptail: ${out}"
   msg_error "Terminal is ${cols}x${rows}; the wizard needs at least 60x18."
