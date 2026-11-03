@@ -151,5 +151,37 @@ reset
 post_addon_to_api demo-addon failed 10
 expect "an add-on whose prerequisite is missing sends nothing" no "$([[ -f "$SENT" ]] && echo yes || echo no)"
 
+# --- what ended a tool, from its EXIT trap ---
+reset
+TELEMETRY_TOOL_NAME=demo-tool CS_STEP_DONE="Loaded 3 containers"
+_telemetry_report_exit 1 'CHOICE=$(whiptail --menu "Proceed?" 10 58 2 yes " " no " " 3>&2 2>&1 1>&3)'
+expect "Cancel in a dialog is an abort" aborted "$(json_field "$SENT" status)"
+expect "an abort is filed as the user's" user_aborted "$(json_field "$SENT" error_category)"
+expect "the abort says what happened" "exit_code=1 | Dialog cancelled, or no terminal to show it | step: after Loaded 3 containers" "$(json_field "$SENT" error)"
+reset
+_telemetry_report_exit 255 'whiptail --backtitle x --msgbox "About fstrim" 16 88'
+expect "Esc in a dialog is an abort" aborted "$(json_field "$SENT" status)"
+reset
+_telemetry_report_exit 255 'fstrim_output=$(pct fstrim 105 2>&1)'
+expect "any other command stays a failure" failed "$(json_field "$SENT" status)"
+expect "and is named" 'fstrim_output=$(pct fstrim 105 2>&1)' "$(json_field "$SENT" failed_command)"
+reset
+_telemetry_report_exit 1 'exit 1'
+expect "an explicit exit names no command" "" "$(json_field "$SENT" failed_command)"
+reset
+cat >"$TEST_DIR/tool.sh" <<EOF
+set -eEuo pipefail
+for part in exitcodes errorlog sysinfo telemetry; do source "$CORE_DIR/api/\${part}.func"; done
+REPO_SOURCE=ProxmoxVE TELEMETRY_PAYLOAD_VERSION=3 TELEMETRY_TIMEOUT=5
+telemetry_collect_sysinfo() { :; }
+_tm_send() { printf '%s' "\$1" >"$SENT"; }
+whiptail() { return "\$1"; }
+init_tool_telemetry demo-tool pve
+DIAGNOSTICS=yes
+excluded=\$(whiptail "\$1" | tr -d '"')
+EOF
+bash "$TEST_DIR/tool.sh" 255
+expect "the trap sees the dialog errexit stopped at" aborted "$(json_field "$SENT" status)"
+
 printf '%s passed, %s failed\n' "$passed" "$failed"
 ((failed == 0))

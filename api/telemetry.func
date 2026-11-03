@@ -308,17 +308,17 @@ _tm_requirement_code() {
 }
 
 # ------------------------------------------------------------------------------
-# _tm_post_run <type> <name> <status> <exit_code> - tool and add-on runs
+# _tm_post_run <type> <name> <status> <exit_code> [reason] - tool and add-on runs
 #
 # Each run is its own execution with a fresh id. Failures carry the same error
-# fields as installs.
+# fields as installs; an abort carries its reason.
 # ------------------------------------------------------------------------------
 _tm_post_run() {
   command -v curl &>/dev/null || return 0
   [[ "${DIAGNOSTICS:-no}" == "no" ]] && return 0
 
-  local type="$1" name="${2:-unknown}" status="${3:-success}" exit_code="${4:-0}"
-  local uuid error_raw="" payload
+  local type="$1" name="${2:-unknown}" status="${3:-success}" exit_code="${4:-0}" reason="${5:-}"
+  local uuid error_raw="" category="${ERROR_CATEGORY_OVERRIDE:-}" payload
 
   uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || echo "${type}-$(date +%s)")
   [[ "$status" == "done" ]] && status="success"
@@ -329,19 +329,23 @@ _tm_post_run() {
     _tm_error_context "$exit_code"
     exit_code="$TM_ERR_CODE"
     error_raw=$(_tm_format_error)
+  elif [[ "$status" == "aborted" ]]; then
+    TM_ERR_STEP="${CS_STEP:-${CS_STEP_DONE:+after ${CS_STEP_DONE}}}"
+    error_raw="exit_code=${exit_code} | ${reason:-$(explain_exit_code "$exit_code")}${TM_ERR_STEP:+ | step: ${TM_ERR_STEP}}"
+    category="${category:-user_aborted}"
   fi
 
   payload=$(RANDOM_UUID="$uuid" EXECUTION_ID="$uuid" TELEMETRY_TYPE="$type" NSAPP="$name" CT_TYPE=0 \
-    _tm_payload "$status" "$exit_code" "$error_raw")
+    ERROR_CATEGORY_OVERRIDE="$category" _tm_payload "$status" "$exit_code" "$error_raw")
   _tm_send "$payload" "$TELEMETRY_TIMEOUT" 1 || true
 }
 
-# post_tool_to_api <name> [status] [exit_code] - a PVE host tool ran
+# post_tool_to_api <name> [status] [exit_code] [reason] - a PVE host tool ran
 post_tool_to_api() {
   _tm_quiet _tm_post_run "${TELEMETRY_TOOL_TYPE:-pve}" "$@"
 }
 
-# post_addon_to_api <name> [status] [exit_code] - an add-on ran inside a container
+# post_addon_to_api <name> [status] [exit_code] [reason] - an add-on ran inside a container
 post_addon_to_api() {
   local os_type="" os_version=""
   if [[ -f /etc/os-release ]]; then
@@ -365,18 +369,35 @@ telemetry_new_attempt() {
 # TOOLS & ADD-ONS
 # ==============================================================================
 
-# EXIT trap set by init_tool_telemetry
+# Under errexit, Cancel/No (1) or Esc (255) in a whiptail dialog ends the run, as
+# does whiptail without a terminal. The user decided; the tool did not fail.
+_tm_dialog_exit() {
+  [[ "$2" == 1 || "$2" == 255 ]] || return 1
+  [[ "$1" =~ ^((local|export|declare)[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=\$\()?whiptail[[:space:]] ]]
+}
+
+# EXIT trap set by init_tool_telemetry. <command> is the one running when the
+# shell exited: the failing one under errexit. Tools have no ERR trap, so it is
+# the only trace of what failed.
 _telemetry_report_exit() {
-  local ec="${1:-0}"
-  local status="success"
-  [[ "$ec" -ne 0 ]] && status="failed"
+  local ec="${1:-0}" cmd="${2:-}"
+  local status="success" reason=""
+  if [[ "$ec" -ne 0 ]]; then
+    status="failed"
+    if _tm_dialog_exit "$cmd" "$ec"; then
+      status="aborted"
+      reason="Dialog cancelled, or no terminal to show it"
+    elif [[ -z "${FAILED_COMMAND:-}" && -n "$cmd" && ! "$cmd" =~ ^(exit|return)([[:space:]]|$) ]]; then
+      FAILED_COMMAND="$cmd"
+    fi
+  fi
 
   local name="${TELEMETRY_TOOL_NAME:-${APP:-unknown}}"
 
   if [[ "${TELEMETRY_TOOL_TYPE:-pve}" == "addon" ]]; then
-    post_addon_to_api "$name" "$status" "$ec"
+    post_addon_to_api "$name" "$status" "$ec" "$reason"
   else
-    post_tool_to_api "$name" "$status" "$ec"
+    post_tool_to_api "$name" "$status" "$ec" "$reason"
   fi
 }
 
@@ -394,7 +415,7 @@ init_tool_telemetry() {
 
   start_install_timer
 
-  trap '_telemetry_report_exit "$?"' EXIT
+  trap '_telemetry_report_exit "$?" "$BASH_COMMAND"' EXIT
 }
 
 # ==============================================================================
