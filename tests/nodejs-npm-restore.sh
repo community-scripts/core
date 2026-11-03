@@ -42,13 +42,14 @@ _setup_npm() {
   # shellcheck disable=SC2034  # read by the extracted setup_nodejs
   NPM_SETUP_VERSION="12.2.1"
 }
-apt-get() {
-  echo "apt-get $*" >>"$CALLS"
+_apt_record() {
+  echo "$*" >>"$CALLS"
   # A NodeSource nodejs ships npm, so the reinstall brings it back.
   [[ "$*" == *--reinstall*nodejs* && "${MOCK_REINSTALL_RESTORES:-1}" == 1 ]] && HAVE="$HAVE npm"
   return 0
 }
-apt() { echo "apt $*" >>"$CALLS"; }
+apt() { _apt_record "apt $*"; }
+apt-get() { _apt_record "apt-get $*"; }
 node() { [[ "$1" == "-v" ]] && echo v22.23.4; return 0; }
 corepack() { :; }
 npm() {
@@ -86,7 +87,7 @@ run
 rc=$?
 expect "a missing npm does not fail the update" 0 "$rc"
 expect "the loss is reported" 1 "$(grep -c 'warn: npm is missing - reinstalling nodejs' "$LOG")"
-expect "nodejs is reinstalled" 1 "$(grep -c 'apt-get install -y --reinstall nodejs' "$CALLS")"
+expect "nodejs is reinstalled" 1 "$(grep -c 'install -y --reinstall nodejs' "$CALLS")"
 expect "_setup_npm runs once npm is back" 1 "$(grep -c '^_setup_npm$' "$CALLS")"
 expect "the branch still reports success" 1 "$(grep -c 'ok: Update Node.js 22 (npm 12.2.1)' "$LOG")"
 
