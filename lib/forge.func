@@ -690,10 +690,10 @@ _deploy_unpacked_archive() {
     return 252
   fi
 
-  # <target> is only touched once the payload is known good. Wiping before the
-  # extraction left CLEAN_INSTALL callers with an empty target -- and nothing to
-  # restart -- whenever the archive was unreadable, unpacked to nothing, or the
-  # disk filled up while it unpacked.
+  # <target> is only touched once the payload has extracted and is non-empty.
+  # Wiping it first left CLEAN_INSTALL callers with an empty target whenever
+  # the archive was unreadable, unpacked to nothing, or the disk filled up
+  # while it unpacked.
   mkdir -p "$target"
   if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
     _cs_clean_target_dir "$target"
