@@ -55,6 +55,7 @@ on:
       - "tests/silent-verbose.sh"
       - "tests/github-release-noapi.sh"
       - "tests/vm-dialog-esc.sh"
+      - "tests/gpg-key-reason.sh"
       - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
@@ -101,6 +102,7 @@ on:
       - "tests/silent-verbose.sh"
       - "tests/github-release-noapi.sh"
       - "tests/vm-dialog-esc.sh"
+      - "tests/gpg-key-reason.sh"
       - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
