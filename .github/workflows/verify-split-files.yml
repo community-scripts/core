@@ -45,6 +45,7 @@ on:
       - "tests/forge-release-json.sh"
       - "tests/install-cleanup.sh"
       - "tests/console-hangup.sh"
+      - "tests/container-removal-offer.sh"
       - "tests/incus-target.sh"
       - "tests/incus-storage-space.sh"
       - "tests/release-stamp-pending.sh"
@@ -89,6 +90,7 @@ on:
       - "tests/forge-release-json.sh"
       - "tests/install-cleanup.sh"
       - "tests/console-hangup.sh"
+      - "tests/container-removal-offer.sh"
       - "tests/incus-target.sh"
       - "tests/incus-storage-space.sh"
       - "tests/release-stamp-pending.sh"
@@ -183,6 +185,8 @@ jobs:
         run: bash tests/install-cleanup.sh
       - name: Console hangup tests
         run: bash tests/console-hangup.sh
+      - name: Container removal offer tests
+        run: bash tests/container-removal-offer.sh
 
       - name: Incus target tests
         run: bash tests/incus-target.sh
