@@ -383,7 +383,11 @@ VM_KEYBOARD=""
 if ! kb="$(set -eo pipefail; vm_keyboard_default)"; then fail "the lookup must not fail without a datacenter.cfg"; fi
 [[ -e /etc/pve/datacenter.cfg ]] || assert_eq "$kb" "" "no datacenter.cfg yields no layout"
 VM_TIMEZONE=Europe/Berlin
-assert_eq "$(vm_timezone_default)" "Europe/Berlin" "VM_TIMEZONE"
+# vm_timezone_default only returns a zone that exists in the local zoneinfo
+# tree, so this half of the check needs tzdata on whatever box runs the test.
+if [[ -f /usr/share/zoneinfo/Europe/Berlin ]]; then
+  assert_eq "$(vm_timezone_default)" "Europe/Berlin" "VM_TIMEZONE"
+fi
 VM_TIMEZONE=Mars/Olympus
 assert_eq "$(vm_timezone_default)" "" "an unknown zone is dropped"
 unset VM_TIMEZONE
