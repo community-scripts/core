@@ -83,7 +83,7 @@ explain_exit_code() {
   112) echo "Proxmox: Invalid install menu option" ;;
   113) echo "LXC: Under-provisioned — user aborted update" ;;
   114) echo "LXC: Storage too low — user aborted update" ;;
-  115) echo "Engine or install script could not be downloaded" ;;
+  115) echo "Download failed (engine, install script or VM image)" ;;
   116) echo "Proxmox: Default bridge vmbr0 not found" ;;
   117) echo "LXC: Container did not reach running state" ;;
   118) echo "LXC: No IP assigned to container after timeout" ;;

@@ -51,6 +51,7 @@ on:
       - "tests/release-stamp-pending.sh"
       - "tests/pct-start-reason.sh"
       - "tests/vm-silent.sh"
+      - "tests/vm-failure-reasons.sh"
       - "tests/silent-verbose.sh"
       - "tests/github-release-noapi.sh"
       - "tests/vm-dialog-esc.sh"
@@ -96,6 +97,7 @@ on:
       - "tests/release-stamp-pending.sh"
       - "tests/pct-start-reason.sh"
       - "tests/vm-silent.sh"
+      - "tests/vm-failure-reasons.sh"
       - "tests/silent-verbose.sh"
       - "tests/github-release-noapi.sh"
       - "tests/vm-dialog-esc.sh"
@@ -199,6 +201,8 @@ jobs:
         run: bash tests/pct-start-reason.sh
       - name: VM silent helper tests
         run: bash tests/vm-silent.sh
+      - name: VM failure reason tests
+        run: bash tests/vm-failure-reasons.sh
       - name: Verbose silent tests
         run: bash tests/silent-verbose.sh
       - name: VM dialog Esc tests
