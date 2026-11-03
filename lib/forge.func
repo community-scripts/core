@@ -142,11 +142,13 @@ prompt_for_github_token() {
 #   expanded_assets page
 # - For a rate-limited API: 60 calls an hour per address are soon spent behind
 #   a shared address, and retrying seconds later does not help
+# - A renamed or transferred repo redirects, and its asset links carry the new
+#   owner/name, so neither is matched against the name the caller passed
 # ------------------------------------------------------------------------------
 _github_release_noapi() {
   local repo="$1" tag="$2" out="$3" loc html
   if [[ "$tag" == "latest" ]]; then
-    loc="$(curl -sSI --connect-timeout 10 --max-time 30 "https://github.com/${repo}/releases/latest" 2>/dev/null |
+    loc="$(curl -sSIL --connect-timeout 10 --max-time 30 "https://github.com/${repo}/releases/latest" 2>/dev/null |
       tr -d '\r' | awk 'tolower($1) == "location:" {print $2}' | tail -n1)"
     [[ "$loc" == */releases/tag/* ]] || return 1
     tag="${loc##*/releases/tag/}"
@@ -155,7 +157,7 @@ _github_release_noapi() {
   html="$(curl -fsSL --connect-timeout 10 --max-time 30 "https://github.com/${repo}/releases/expanded_assets/${tag}" 2>/dev/null)" || return 1
   {
     grep -oE 'href="[^"]+"' <<<"$html" | sed -E 's/^href="//; s/"$//' |
-      grep -iF "/${repo}/releases/download/" | sort -u || true
+      grep -E '^/[^/]+/[^/]+/releases/download/' | sort -u || true
   } | jq -R -s --arg tag "$tag" '{
       tag_name: $tag, name: $tag, draft: false, prerelease: false, body: "",
       assets: (split("\n") | map(select(length > 0))
