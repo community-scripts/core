@@ -240,6 +240,10 @@ vm_dialog() {
 
   cols=$(tput cols 2>/dev/null || echo "?")
   rows=$(tput lines 2>/dev/null || echo "?")
+  # Esc also exits 255: on a terminal the dialog fits and with nothing printed, the user left.
+  if [[ $rc -eq 255 && -z "$out" && "$cols" =~ ^[0-9]+$ && "$rows" =~ ^[0-9]+$ ]] && ((cols >= 60 && rows >= 18)); then
+    exit_script
+  fi
   msg_error "The '${title}' dialog could not be shown (whiptail exit ${rc})"
   [[ -n "$out" ]] && msg_error "whiptail: ${out}"
   msg_error "Terminal is ${cols}x${rows}; the wizard needs at least 60x18."
