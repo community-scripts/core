@@ -244,7 +244,7 @@ _docker_setup_lxcfs_visibility() {
   fi
 
   if ! command -v jq >/dev/null 2>&1; then
-    $STD apt-get install -y jq || {
+    $STD apt install -y jq || {
       msg_warn "jq unavailable - skipping LXC resource visibility for Docker"
       return 0
     }
@@ -1419,9 +1419,9 @@ _setup_npm() {
 # (thelounge) must survive that.
 _nodejs_in_place_simulate() {
   local sim removed dependents pkg
-  dependents=$(apt-get -s purge -y nodejs npm 2>/dev/null | awk '/^(Remv|Purg) /{print $2}' |
+  dependents=$(apt -s purge -y nodejs npm 2>/dev/null | awk '/^(Remv|Purg) /{print $2}' |
     grep -vE '^(nodejs|nodejs-doc|npm|libnode.*|node-.*)$' || true)
-  sim=$(apt-get -s install -y nodejs 2>&1) || {
+  sim=$(apt -s install -y nodejs 2>&1) || {
     msg_error "apt cannot upgrade nodejs in place:"
     printf '%s\n' "$sim" | grep -E '^(E:|W:| )' | head -n 5
     return 1
@@ -1486,14 +1486,14 @@ setup_nodejs() {
     ensure_apt_working || return 100
 
     # Upgrade to the latest minor/patch release from NodeSource
-    $STD apt-get install -y --only-upgrade nodejs 2>/dev/null || true
+    $STD apt install -y --only-upgrade nodejs 2>/dev/null || true
 
     # An interrupted `npm install -g npm@latest` leaves nodejs installed
     # without npm. The reinstall brings it back on NodeSource builds; the
     # second check catches a Debian nodejs, which keeps npm in its own package.
     if ! command -v npm >/dev/null 2>&1; then
       msg_warn "npm is missing - reinstalling nodejs"
-      if ! { $STD apt-get install -y --reinstall nodejs && command -v npm >/dev/null 2>&1; }; then
+      if ! { $STD apt install -y --reinstall nodejs && command -v npm >/dev/null 2>&1; }; then
         msg_error "Could not restore npm"
         return 1
       fi
