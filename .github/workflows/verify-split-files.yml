@@ -34,6 +34,7 @@ on:
       - "tests/forge-version-key.sh"
       - "tests/nodejs-key-refresh.sh"
       - "tests/nodejs-in-place.sh"
+      - "tests/nodejs-npm-restore.sh"
       - "tests/forge-connection.sh"
       - "tests/failed-command-output.sh"
       - "tests/stale-silent-record.sh"
@@ -77,6 +78,7 @@ on:
       - "tests/forge-version-key.sh"
       - "tests/nodejs-key-refresh.sh"
       - "tests/nodejs-in-place.sh"
+      - "tests/nodejs-npm-restore.sh"
       - "tests/forge-connection.sh"
       - "tests/failed-command-output.sh"
       - "tests/stale-silent-record.sh"
@@ -151,6 +153,9 @@ jobs:
 
       - name: Node.js in-place upgrade tests
         run: bash tests/nodejs-in-place.sh
+
+      - name: Node.js npm restore tests
+        run: bash tests/nodejs-npm-restore.sh
 
       - name: Forge connection diagnosis tests
         run: bash tests/forge-connection.sh

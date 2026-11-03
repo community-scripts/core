@@ -31,13 +31,20 @@ cache_installed_version() { :; }
 _setup_npm() { :; }
 dpkg() { [[ "$1" == "-l" ]] && printf '%s\n' "${MOCK_DPKG:-ii  nodejs  20.19.2+dfsg-1}"; return 0; }
 dpkg-query() { echo "${MOCK_NODE_DEB:-20.19.2+dfsg-1+deb13u3}"; }
-apt() { echo "apt $*" >>"$CALLS"; }
-apt-get() {
+# Routed on the arguments, not the binary: runtime.func has moved between
+# `apt` and `apt-get` before, and a simulate must never reach CALLS or the
+# "nothing is purged" assertion counts it as a purge.
+_apt_cmd() {
+  local bin="$1"
+  shift
   case "$*" in
   "-s purge"*) printf '%s\n' "${MOCK_PURGE:-}" ;;
   "-s install"*) printf '%s\n' "${MOCK_SIM:-Inst nodejs [20.19.2] (22.23.4-1nodesource1)}" ;;
+  *) echo "$bin $*" >>"$CALLS" ;;
   esac
 }
+apt() { _apt_cmd apt "$@"; }
+apt-get() { _apt_cmd apt-get "$@"; }
 node() { echo v22.23.4; }
 npm() { [[ "$1" == "-v" ]] && echo 11.21.1; return 0; }
 corepack() { :; }
@@ -67,7 +74,7 @@ DEPENDENT=$'Purg nodejs [20.19.2]\nPurg thelounge [4.4.3]\nPurg libnode115 [20.1
 
 expect "nothing depends on nodejs: purge" 0 "$(MOCK_PURGE='Purg nodejs [20.19.2]' run)"
 expect "  the old version is purged" 1 "$(has 'purge nodejs')"
-expect "  Debian's packages are removed" 1 "$(grep -c '^apt purge -y nodejs' "$CALLS")"
+expect "  Debian's packages are removed" 1 "$(grep -cE '^apt(-get)? purge -y nodejs' "$CALLS")"
 
 expect "an app depends on nodejs: in place" 0 "$(MOCK_PURGE="$DEPENDENT" run)"
 expect "  nothing is purged" 0 "$(grep -c 'purge' "$CALLS")"
