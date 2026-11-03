@@ -900,10 +900,14 @@ get_active_logfile() {
   elif [[ -n "${BUILD_LOG:-}" ]]; then
     echo "$BUILD_LOG"
   else
-    # Fallback for legacy scripts
-    echo "/tmp/build-$(date +%Y%m%d_%H%M%S).log"
+    # No build log (the host tools): one file for the run, named at load. A
+    # name taken per call made a new file every second, so a failure's step
+    # and output were never in the log telemetry reads.
+    echo "${_CS_RUN_LOG:-/tmp/build-$(date +%Y%m%d_%H%M%S).log}"
   fi
 }
+
+_CS_RUN_LOG="${_CS_RUN_LOG:-/tmp/build-$(date +%Y%m%d_%H%M%S).log}"
 
 # Legacy compatibility: SILENT_LOGFILE points to active log
 SILENT_LOGFILE="$(get_active_logfile)"

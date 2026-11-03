@@ -36,6 +36,7 @@ on:
       - "tests/forge-connection.sh"
       - "tests/failed-command-output.sh"
       - "tests/stale-silent-record.sh"
+      - "tests/tool-run-log.sh"
       - "tests/exit-code-hints.sh"
       - "tests/telemetry-trace.sh"
       - "tests/host-probes.sh"
@@ -77,6 +78,7 @@ on:
       - "tests/forge-connection.sh"
       - "tests/failed-command-output.sh"
       - "tests/stale-silent-record.sh"
+      - "tests/tool-run-log.sh"
       - "tests/exit-code-hints.sh"
       - "tests/telemetry-trace.sh"
       - "tests/host-probes.sh"
@@ -152,6 +154,8 @@ jobs:
         run: bash tests/failed-command-output.sh
       - name: Stale silent record tests
         run: bash tests/stale-silent-record.sh
+      - name: Tool run log tests
+        run: bash tests/tool-run-log.sh
 
       - name: Exit code hint tests
         run: bash tests/exit-code-hints.sh
