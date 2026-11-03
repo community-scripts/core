@@ -475,9 +475,13 @@ _eh_destroy_container() {
 # that failed and left a container nobody wants. A read that *errors* is treated
 # differently from one that times out: we keep the container, since that is the
 # reversible choice when we cannot tell what the user wanted.
+#
+# Only for the container this run created. An add-on sets CTID to a container
+# the operator picked, and a failed add-on offered to destroy that one.
 # ------------------------------------------------------------------------------
 _eh_offer_container_removal() {
   [[ -n "${CTID:-}" ]] || return 0
+  [[ "${_CS_CREATED_CTID:-}" == "$CTID" ]] || return 0
   command -v pct &>/dev/null || return 0
   pct status "$CTID" &>/dev/null || return 0
 
@@ -488,10 +492,11 @@ _eh_offer_container_removal() {
     echo -en "${YW}Remove broken container ${CTID}? (Y/n) [auto-remove in 60s]: ${CL}"
   fi
 
-  local response="" read_rc
+  # errexit is still on in the ERR trap: a bare read ended the run on a timeout
+  # (exit 142) or a missing tty (exit 1), and that code replaced the real one.
+  local response="" read_rc=0
   declare -f reclaim_tty >/dev/null 2>&1 && reclaim_tty
-  read -t 60 -r response </dev/tty
-  read_rc=$?
+  read -t 60 -r response </dev/tty || read_rc=$?
 
   if [[ $read_rc -eq 0 ]]; then
     if [[ -z "$response" || "$response" =~ ^[Yy]$ ]]; then

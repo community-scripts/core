@@ -3815,6 +3815,8 @@ create_lxc_container() {
     _flush_pct_log
     exit 215
   fi
+  # The error handler offers to remove only this container.
+  _CS_CREATED_CTID="$CTID"
 
   # Verify config rootfs
   grep -q '^rootfs:' "/etc/pve/lxc/$CTID.conf" || {
