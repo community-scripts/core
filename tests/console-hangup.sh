@@ -157,6 +157,19 @@ expect "and not back to the original target" 0 "$(grep -c 'after the redirected 
 expect "without a hangup nothing is redirected" 0 "$(grep -c 'no hangup' "$AFTER" 2>/dev/null)"
 expect "it stays where it was" 1 "$(grep -c 'no hangup' "$TEST_DIR/orig2.log" 2>/dev/null)"
 
+# The flag outlives the hangup in every script started later. Home Assistant
+# answers the Portainer add-on with <<<"y"; dropping that stdin made its prompt
+# read EOF and fail the install.
+: >"$AFTER"
+answer="$( (export _CS_HANGUP=1 _CS_HANGUP_LOG="$AFTER"; _cs_reattach_output; read -r a; printf '%s' "$a" >"$TEST_DIR/answer") <<<"y"; cat "$TEST_DIR/answer" 2>/dev/null)"
+expect "a here-string on stdin survives the reattach" y "$answer"
+printf 'y\n' >"$TEST_DIR/answer.in"
+rm -f "$TEST_DIR/answer"
+(export _CS_HANGUP=1 _CS_HANGUP_LOG="$AFTER"; _cs_reattach_output; read -r a; printf '%s' "$a" >"$TEST_DIR/answer") <"$TEST_DIR/answer.in"
+expect "so does a file" y "$(cat "$TEST_DIR/answer" 2>/dev/null)"
+stdin_after="$( (export _CS_HANGUP=1 _CS_HANGUP_LOG="$AFTER"; _cs_reattach_output; readlink "/proc/$BASHPID/fd/0" >"$TEST_DIR/stdin") </dev/zero; cat "$TEST_DIR/stdin")"
+expect "a terminal-like stdin is replaced" /dev/null "$stdin_after"
+
 # The telemetry service decides what counts as a user abort by searching the
 # log text, so a word in one of our own messages is enough to file a failure
 # as "the operator pressed Ctrl-C". A closed console is not that, and 81 of
