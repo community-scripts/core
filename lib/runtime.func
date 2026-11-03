@@ -1488,6 +1488,17 @@ setup_nodejs() {
     # Upgrade to the latest minor/patch release from NodeSource
     $STD apt-get install -y --only-upgrade nodejs 2>/dev/null || true
 
+    # An interrupted `npm install -g npm@latest` leaves nodejs installed
+    # without npm. The reinstall brings it back on NodeSource builds; the
+    # second check catches a Debian nodejs, which keeps npm in its own package.
+    if ! command -v npm >/dev/null 2>&1; then
+      msg_warn "npm is missing - reinstalling nodejs"
+      if ! { $STD apt-get install -y --reinstall nodejs && command -v npm >/dev/null 2>&1; }; then
+        msg_error "Could not restore npm"
+        return 1
+      fi
+    fi
+
     export NPM_CONFIG_UPDATE_NOTIFIER=false
     $STD npm config set update-notifier false --global 2>/dev/null || true
     _setup_npm
@@ -1693,7 +1704,7 @@ setup_nodejs() {
       fi
     fi
 
-    local failed_modules=0
+    local failed_modules=()
     for mod in "${MODULES[@]}"; do
       # corepack itself is already handled above
       if [[ "$mod" == "corepack" || "$mod" == corepack@* ]]; then
@@ -1725,7 +1736,7 @@ setup_nodejs() {
           msg_ok "Provisioned $MODULE_NAME via corepack"
         else
           msg_warn "Failed to provision $MODULE_NAME via corepack"
-          ((failed_modules++)) || true
+          failed_modules+=("$MODULE_NAME")
         fi
         continue
       fi
@@ -1748,7 +1759,7 @@ setup_nodejs() {
             msg_ok "Updated $MODULE_NAME"
           else
             msg_warn "Failed to update $MODULE_NAME to version $MODULE_REQ_VERSION"
-            ((failed_modules++)) || true
+            failed_modules+=("$MODULE_NAME")
           fi
         elif [[ "$MODULE_REQ_VERSION" == "latest" ]]; then
           msg_info "Updating $MODULE_NAME to latest version"
@@ -1758,7 +1769,7 @@ setup_nodejs() {
             msg_ok "Updated $MODULE_NAME"
           else
             msg_warn "Failed to update $MODULE_NAME to latest version"
-            ((failed_modules++)) || true
+            failed_modules+=("$MODULE_NAME")
           fi
         fi
       else
@@ -1771,7 +1782,7 @@ setup_nodejs() {
           msg_ok "Installed $MODULE_NAME"
         else
           msg_warn "Failed to install $MODULE_NAME@$MODULE_REQ_VERSION"
-          ((failed_modules++)) || true
+          failed_modules+=("$MODULE_NAME")
         fi
       fi
     done
@@ -1797,12 +1808,12 @@ setup_nodejs() {
         msg_ok "Restored $mod_bin"
       else
         msg_error "$mod_bin is not callable and could not be restored"
-        ((failed_modules++)) || true
+        [[ " ${failed_modules[*]:-} " == *" $mod_bin "* ]] || failed_modules+=("$mod_bin")
       fi
     done
 
-    if ((failed_modules > 0)); then
-      msg_warn "$failed_modules Node.js module(s) failed: $NODE_MODULE"
+    if ((${#failed_modules[@]} > 0)); then
+      msg_warn "${#failed_modules[@]} Node.js module(s) failed: ${failed_modules[*]}"
     fi
   fi
 
