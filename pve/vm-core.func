@@ -854,6 +854,17 @@ arch_check() {
   fi
 }
 
+# qm start refuses a KVM guest when /dev/kvm cannot be opened. Hosts with VT-x
+# or AMD-V switched off in the firmware, or a nested Proxmox without nested
+# virtualization, used to find that out only after the image was downloaded and
+# the VM built.
+kvm_check() {
+  [[ -c "${_VM_KVM_DEV:-/dev/kvm}" ]] && return 0
+  msg_error "KVM is not available on this host (no /dev/kvm), so no VM can start here."
+  msg_error "Enable Intel VT-x or AMD-V (SVM) in the BIOS/UEFI. A Proxmox VM needs nested virtualization on its own host."
+  exit 236
+}
+
 ssh_check() {
   # Purely advisory, and there is nobody to advise on an unattended run.
   [[ "${VM_UNATTENDED:-0}" == "1" ]] && return 0
@@ -1023,6 +1034,7 @@ vm_preflight() {
   check_root
   [[ "${var_arm64:-no}" == "yes" ]] || arch_check
   pve_check
+  kvm_check
   ssh_check
 }
 
@@ -1032,6 +1044,7 @@ vm_start_script() {
     METHOD="unattended"
     default_settings
     vm_apply_env_overrides
+    vm_fit_cores
     echo -e "${INFO}${BOLD}${DGN}Unattended: script defaults with environment overrides${CL}"
     return 0
   fi
@@ -1041,6 +1054,7 @@ vm_start_script() {
     header_info
     echo -e "${DEFAULT}${BOLD}${BL}Using Default Settings${CL}"
     default_settings
+    vm_fit_cores
   else
     header_info
     echo -e "${ADVANCED}${BOLD}${RD}Using Advanced Settings${CL}"
@@ -1501,8 +1515,29 @@ vm_prompt_cpu_model() {
   fi
 }
 
+# What qm start allows: one vCPU per processor line in /proc/cpuinfo.
+_vm_host_cpus() {
+  local n
+  n=$(grep -c '^processor' "${_VM_CPUINFO:-/proc/cpuinfo}" 2>/dev/null) || true
+  printf '%s' "${n:-0}"
+}
+
+# Script defaults are fixed numbers, and qm start refuses more cores than the
+# host has threads ("MAX 2 vcpus allowed per VM on this node").
+vm_fit_cores() {
+  local host_cpus
+  host_cpus="$(_vm_host_cpus)"
+  if [[ "${CORE_COUNT:-}" =~ ^[0-9]+$ ]] && ((host_cpus > 0 && CORE_COUNT > host_cpus)); then
+    msg_warn "This host has ${host_cpus} CPU threads; the VM gets ${host_cpus} cores instead of ${CORE_COUNT}"
+    CORE_COUNT="$host_cpus"
+  fi
+  return 0
+}
+
 vm_prompt_cpu_cores() {
-  local default_cores="${1:-2}"
+  local default_cores="${1:-2}" host_cpus
+  host_cpus="$(_vm_host_cpus)"
+  ((host_cpus > 0 && default_cores > host_cpus)) && default_cores="$host_cpus"
 
   while true; do
     if vm_dialog inputbox "CORE COUNT" "Allocate CPU Cores" 8 58 "$default_cores" --cancel-button Exit-Script; then
@@ -1510,11 +1545,14 @@ vm_prompt_cpu_cores() {
       if [ -z "$CORE_COUNT" ]; then
         CORE_COUNT="$default_cores"
       fi
-      if [[ "$CORE_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+      if [[ ! "$CORE_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+        vm_dialog msgbox "INVALID INPUT" "CPU Cores must be a positive integer (e.g., 2)." 8 58
+      elif ((host_cpus > 0 && CORE_COUNT > host_cpus)); then
+        vm_dialog msgbox "INVALID INPUT" "This host has ${host_cpus} CPU threads, so a VM can have at most ${host_cpus} cores." 8 58
+      else
         echo -e "${CPUCORE}${BOLD}${DGN}CPU Cores: ${BGN}$CORE_COUNT${CL}"
         break
       fi
-      vm_dialog msgbox "INVALID INPUT" "CPU Cores must be a positive integer (e.g., 2)." 8 58
     else
       exit_script
     fi

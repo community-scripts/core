@@ -210,9 +210,8 @@ vm_preflight() {
   [[ "${var_arm64:-no}" == "yes" ]] || arch_check
   pve_check
   ssh_check
-  # Not in the Proxmox counterpart because a PVE host is a hypervisor by
-  # definition. An Incus host without /dev/kvm only runs containers, and finding
-  # that out after the wizard wastes the operator's time.
+  # An Incus host without /dev/kvm only runs containers, and finding that out
+  # after the wizard wastes the operator's time.
   kvm_check
 }
 

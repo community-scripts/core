@@ -71,6 +71,8 @@ layouts are understood and the algorithm follows from the hash length.
 | Function | Contract |
 | --- | --- |
 | `vm_import_disk <vmid> <image> <storage> [format]` | `qm disk import` (or `qm importdisk` on older hosts) with `DISK_IMPORT_FORMAT`; sets `VM_IMPORTED_DISK` to the volume Proxmox reported or the `unusedN` entry the import added. Never guesses a name. |
+| `kvm_check` | Part of `vm_preflight`, as on Incus: exit 236 when `/dev/kvm` is missing, before any question or download. `qm start` refuses a KVM guest without it. |
+| `vm_fit_cores` | Cuts `CORE_COUNT` to the host's CPU threads, with a warning. `vm_start_script` calls it after `default_settings`; `vm_prompt_cpu_cores` refuses a larger answer. |
 | `vm_claim_vmid` | Call right before `qm create`: re-checks `VMID`, which was picked before the download. An auto-picked ID another run took moves to the next free one and the disk names follow; an ID chosen in advanced settings stops with exit 205. |
 | `vm_prompt_keyboard [default]` | Advanced-settings choice of the keyboard layout (Proxmox codes: `de`, `en-us`, `fr-ch`, …) into `VM_KEYBOARD`. |
 | `vm_start_vm [label]` | Starts the VM when `START_VM=yes`. |

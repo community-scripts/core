@@ -25,6 +25,7 @@ on:
       - "tests/vm-iso-storage.sh"
       - "tests/vm-consoles.sh"
       - "tests/vm-helpers.sh"
+      - "tests/vm-host-limits.sh"
       - "tests/mongodb-upgrade.sh"
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
@@ -67,6 +68,7 @@ on:
       - "tests/vm-iso-storage.sh"
       - "tests/vm-consoles.sh"
       - "tests/vm-helpers.sh"
+      - "tests/vm-host-limits.sh"
       - "tests/mongodb-upgrade.sh"
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
@@ -122,6 +124,9 @@ jobs:
 
       - name: VM helper regression tests
         run: bash tests/vm-helpers.sh
+
+      - name: VM host limit tests
+        run: bash tests/vm-host-limits.sh
 
       - name: MongoDB upgrade regression tests
         run: bash tests/mongodb-upgrade.sh
