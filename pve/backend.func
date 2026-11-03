@@ -184,6 +184,38 @@ _pct_restart() {
   return 1
 }
 
+# Who stopped, shut down, rebooted or removed the container since its setup
+# began, as "<task> by <user>"; empty when nobody did. The engine itself leaves
+# the container alone from then on, so such a task came from outside.
+_pve_ct_stopped_by() {
+  pvenode task list --vmid "$CTID" --since "${_CS_INSTALL_STARTED:-$(date +%s)}" --output-format json 2>/dev/null |
+    grep -oE 'UPID:[^"]+' | awk -F: '$6 ~ /^vz(stop|shutdown|reboot|destroy)$/ { print $6 " by " $8; exit }'
+}
+
+# ------------------------------------------------------------------------------
+# _pve_ct_gone_during_setup
+#
+# The setup steps run with pct exec, and fail like a broken mirror when the
+# container went away under them: 33 runs in three days were reported as
+# "apt-get base packages installation failed". Returns 1 while the container
+# runs. Otherwise says so and leaves the exit code in _CS_SETUP_GONE_RC: 143
+# when someone stopped it (an abort), 199 when it stopped by itself.
+# ------------------------------------------------------------------------------
+_pve_ct_gone_during_setup() {
+  local by
+  [[ "$(pct status "$CTID" 2>/dev/null)" == "status: running" ]] && return 1
+  by="$(_pve_ct_stopped_by)"
+  if [[ -n "$by" ]]; then
+    msg_warn "Container ${CTID} was stopped during its setup (${by})"
+    _CS_SETUP_GONE_RC=143
+    return 0
+  fi
+  msg_error "Container ${CTID} stopped by itself during its setup"
+  journalctl -u "pve-container@${CTID}" -n 10 --no-pager -o cat 2>/dev/null | sed "s/^/${TAB}/" || true
+  export ERROR_CATEGORY_OVERRIDE="proxmox"
+  _CS_SETUP_GONE_RC=199
+}
+
 # ------------------------------------------------------------------------------
 # _pve_wait_for_detached_install
 #
@@ -196,7 +228,6 @@ _pct_restart() {
 _pve_wait_for_detached_install() {
   local base="/root/.install-${SESSION_ID}" pid="" waited=0 stopped_by
   local poll="${_CS_HANGUP_POLL:-15}" limit="${_CS_HANGUP_TIMEOUT:-21600}"
-  local since="${_CS_INSTALL_STARTED:-$(date +%s)}"
   echo "[INFO] $(date '+%Y-%m-%d %H:%M:%S') Waiting for the install in container ${CTID} to finish on its own"
   while :; do
     if pct exec "$CTID" -- test -f "${base}.failed" 2>/dev/null; then
@@ -210,9 +241,7 @@ _pve_wait_for_detached_install() {
     if [[ "$(pct status "$CTID" 2>/dev/null)" != "status: running" ]]; then
       echo "[WARN] Container ${CTID} is no longer running; its recent Proxmox tasks:"
       pvenode task list --vmid "$CTID" --limit 5 --noborder 2>/dev/null | awk 'NR > 1 { print "  " $2, $4, $5, $6, $9 }'
-      # The engine itself does not touch the container while the install runs.
-      stopped_by="$(pvenode task list --vmid "$CTID" --since "$since" --output-format json 2>/dev/null |
-        grep -oE 'UPID:[^"]+' | awk -F: '$6 ~ /^vz(stop|shutdown|reboot|destroy)$/ { print $6 " by " $8; exit }')"
+      stopped_by="$(_pve_ct_stopped_by)"
       if [[ -n "$stopped_by" ]]; then
         echo "[INFO] The install did not fail: ${stopped_by} ended it"
         return 143
@@ -1118,6 +1147,7 @@ EOF
   fi
 
   msg_info "Customizing container"
+  _CS_INSTALL_STARTED="$(date +%s)"
 
  set +Eeuo pipefail
  trap - ERR
@@ -1160,8 +1190,12 @@ EOF
         exit 2
       ' && alpine_exit=0 || alpine_exit=$?
       if [[ $alpine_exit -ne 0 ]]; then
-        msg_error "Failed to install base packages in Alpine container"
-        install_exit_code=1
+        if _pve_ct_gone_during_setup; then
+          install_exit_code=$_CS_SETUP_GONE_RC
+        else
+          msg_error "Failed to install base packages in Alpine container"
+          install_exit_code=1
+        fi
       fi
     }
   elif [[ "$var_os" =~ ^(debian|ubuntu|devuan)$ ]]; then
@@ -1211,7 +1245,9 @@ EOF
       pct exec "$CTID" -- bash -c "echo -e 'nameserver 8.8.8.8\nnameserver 1.1.1.1' >/etc/resolv.conf"
     fi
 
-    pct exec "$CTID" -- bash -c "set -a; [ -f /etc/profile.d/90-http-proxy.sh ] && . /etc/profile.d/90-http-proxy.sh; set +a; ${_ct_env} apt-get update 2>&1 && apt-get install -y ${_base_pkgs} 2>&1" >>"$BUILD_LOG" 2>&1 || {
+    pct exec "$CTID" -- bash -c "set -a; [ -f /etc/profile.d/90-http-proxy.sh ] && . /etc/profile.d/90-http-proxy.sh; set +a; ${_ct_env} apt-get update 2>&1 && apt-get install -y ${_base_pkgs} 2>&1" >>"$BUILD_LOG" 2>&1 || if _pve_ct_gone_during_setup; then
+      install_exit_code=$_CS_SETUP_GONE_RC
+    else
       local failed_mirror
       failed_mirror=$(pct exec "$CTID" -- bash -c "grep -m1 -oP '(?<=URIs: https?://)[^/]+' /etc/apt/sources.list.d/debian.sources 2>/dev/null || grep -m1 -oP '(?<=deb https?://)[^/]+' /etc/apt/sources.list 2>/dev/null" 2>/dev/null || echo "unknown")
       msg_warn "apt-get update failed (${failed_mirror})."
@@ -1356,7 +1392,7 @@ EOF
         msg_error "apt-get base packages installation failed"
         install_exit_code=100
       fi
-    }
+    fi
   else
     # Non-apt, non-apk systems: Fedora/Rocky/Alma/CentOS/openEuler/openSUSE/Arch/Gentoo
     sleep 3
