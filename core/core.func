@@ -988,12 +988,20 @@ log_section() {
 # bash saves and restores fd 1 and 2 around a redirected call to a shell
 # function -- silent() makes exactly such a call -- so the redirect is undone
 # the moment that call returns. Re-apply it where no redirection is in effect.
+#
+# The flag is exported, so a script started after the hangup gets here too. A
+# pipe or a file on stdin is input its caller handed over -- the "y" in
+# `bash -c "$(curl ...)" <<<"y"` -- and stays; only a terminal is swapped out.
 _cs_reattach_output() {
   [[ "${_CS_HANGUP:-}" == "1" ]] || return 0
   local log="${_CS_HANGUP_LOG:-}"
   [[ -n "$log" ]] || log="$(get_active_logfile)"
   [[ -n "$log" ]] || return 0
-  exec </dev/null >>"$log" 2>&1
+  if [[ -p /dev/stdin || -f /dev/stdin ]]; then
+    exec >>"$log" 2>&1
+  else
+    exec </dev/null >>"$log" 2>&1
+  fi
 }
 
 # A closed console sends SIGHUP to every process in the foreground group, and a
