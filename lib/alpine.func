@@ -376,8 +376,10 @@ _cs_clean_target_dir() {
     find "${dir:?}" -mindepth 1 -maxdepth 1 -print0 | xargs -0 rm -rf --
   else
     list="$(mktemp)" || return 1
-    find "${dir:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o -print0 >"$list"
-    xargs -0 rm -rf -- <"$list"
+    find "${dir:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o ! -type d -print0 >"$list"
+    xargs -0 rm -f -- <"$list"
+    find "${dir:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o -type d -print0 >"$list"
+    sort -rz "$list" | xargs -0 rmdir -- 2>/dev/null || true
     rm -f "$list"
   fi
 

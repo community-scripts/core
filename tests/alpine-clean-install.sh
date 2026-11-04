@@ -86,7 +86,32 @@ for mode in tarball prebuild; do
   mkdir -p "$target/mnt"
   echo mounted >"$target/mnt/file"
   check "$mode: mount point survives" "0 ./app ./mnt/file " "$(CLEAN_INSTALL=1 deploy "$mode" good.tar.gz)"
+  setup
+  mkdir -p "$target/data/mnt"
+  echo mounted >"$target/data/mnt/file"
+  check "$mode: nested mount survives" "0 ./app ./data/mnt/file " "$(CLEAN_INSTALL=1 deploy "$mode" good.tar.gz)"
 done
+
+# The engine runs under set -e, and rmdir fails on purpose on a mount's parent.
+setup
+mkdir -p "$target/data/mnt"
+check "set -e: the wipe does not end the script" "survived" "$(
+  set -e -o pipefail
+  _cs_clean_target_dir "$target"
+  echo survived
+)"
+
+# A file that cannot be removed still stops the script, as rm -rf did.
+if ((EUID != 0)); then
+  setup
+  chmod 500 "$target/data"
+  check "set -e: a failed removal ends the script" "" "$(
+    set -e -o pipefail
+    _cs_clean_target_dir "$target" 2>/dev/null
+    echo survived
+  )"
+  chmod 700 "$target/data"
+fi
 
 setup
 check "tarball: no top-level directory leaves the install" "1 $installed" "$(CLEAN_INSTALL=1 deploy tarball flat.tar.gz)"

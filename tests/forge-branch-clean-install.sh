@@ -109,6 +109,22 @@ check "mount: returns 0" "0" "$(CLEAN_INSTALL=1 deploy owner/app)"
 check "mount: contents survive" "mounted" "$(content mnt/file)"
 
 installed_plain
+mkdir -p "$target/data/mnt"
+echo mounted >"$target/data/mnt/file"
+check "nested mount: returns 0" "0" "$(CLEAN_INSTALL=1 deploy owner/app)"
+check "nested mount: contents survive" "mounted" "$(content data/mnt/file)"
+check "nested mount: everything else goes" "./app ./data/mnt/file " "$(listing)"
+
+# The engine runs under set -e, and rmdir fails on purpose on a mount's parent.
+installed_plain
+mkdir -p "$target/data/mnt"
+check "set -e: the wipe does not end the script" "survived" "$(
+  set -e -o pipefail
+  _cs_clean_target_dir "$target"
+  echo survived
+)"
+
+installed_plain
 chmod 700 "$target"
 check "mode: returns 0" "0" "$(CLEAN_INSTALL=1 deploy owner/app)"
 check "mode: target takes the clone's mode" "0" "$(find "$target" -maxdepth 0 -perm 700 | wc -l | tr -d ' ')"
@@ -117,6 +133,27 @@ installed_plain
 check "dot target: returns 0" "0" "$(cd "$target" && fetch_and_deploy_gh_branch app owner/app "" . >/dev/null 2>&1; echo $?)"
 check "dot target: deploys" "v1" "$(content app)"
 check "dot target: leaves no clone dir" "0" "$(leftovers)"
+
+# A file that cannot be removed still stops the script, as rm -rf did.
+if ((EUID != 0)); then
+  installed_plain
+  chmod 500 "$target/data"
+  check "set -e: a failed removal ends the script" "" "$(
+    set -e -o pipefail
+    _cs_clean_target_dir "$target" 2>/dev/null
+    echo survived
+  )"
+  chmod 700 "$target/data"
+fi
+
+rm -rf "$TEST_DIR/opt" "$TEST_DIR/real"
+mkdir -p "$TEST_DIR/opt" "$TEST_DIR/real"
+echo old >"$TEST_DIR/real/old"
+ln -s "$TEST_DIR/real" "$target"
+check "symlink: returns 0" "0" "$(CLEAN_INSTALL=1 deploy owner/app)"
+check "symlink: stays a symlink" "yes" "$([[ -L "$target" ]] && echo yes || echo no)"
+check "symlink: replaces what it points at" "app" "$(ls "$TEST_DIR/real")"
+check "symlink: leaves no clone dir" "0" "$(leftovers)"
 
 rm -rf "$TEST_DIR/opt"
 check "fresh: creates the target and its parent" "0" "$(deploy owner/app)"
