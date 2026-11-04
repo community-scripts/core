@@ -103,13 +103,11 @@ load_functions() {
 
 # core/core.func owns this, but a VM script never loads that file -- it carries
 # its own colours and icons. `clear` is part of ncurses and missing from minimal
-# images, where a bare call returns 127 and errexit ends the run.
+# images, where a bare call returns 127 and errexit ends the run. It also exits 1
+# when TERM is unset or dumb, so without a terminal it is skipped.
 _cs_clear() {
-  if command -v clear >/dev/null 2>&1; then
-    clear
-  else
-    printf '\033[H\033[2J\033[3J'
-  fi
+  [[ -t 1 && "${TERM:-dumb}" != "dumb" ]] || return 0
+  clear 2>/dev/null || printf '\033[H\033[2J\033[3J'
 }
 
 # Returns non-zero when the helpers are unavailable. A swallowed failure here
