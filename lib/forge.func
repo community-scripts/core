@@ -690,10 +690,7 @@ _deploy_unpacked_archive() {
     return 252
   fi
 
-  # <target> is only touched once the payload has extracted and is non-empty.
-  # Wiping it first left CLEAN_INSTALL callers with an empty target whenever
-  # the archive was unreadable, unpacked to nothing, or the disk filled up
-  # while it unpacked.
+  # Wipe only here, so a failed or empty extract leaves <target> as it was.
   mkdir -p "$target"
   if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
     _cs_clean_target_dir "$target"
