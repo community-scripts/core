@@ -407,12 +407,12 @@ set_std_mode() {
 # do not ship. A bare call there returns 127, and under errexit that aborted the
 # run before it had done anything -- `update` on a fresh Fedora container died on
 # this line. The escape sequence does the same job wherever clear is missing.
+# clear also exits 1 when TERM is unset or dumb, which is how an unattended
+# update runs, and header_info ended it there. Clearing is cosmetic, so it is
+# skipped without a terminal and never fails the run.
 _cs_clear() {
-  if command -v clear >/dev/null 2>&1; then
-    clear
-  else
-    printf '\033[H\033[2J\033[3J'
-  fi
+  [[ -t 1 && "${TERM:-dumb}" != "dumb" ]] || return 0
+  clear 2>/dev/null || printf '\033[H\033[2J\033[3J'
 }
 
 # ==============================================================================

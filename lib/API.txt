@@ -21,6 +21,7 @@ _forge_explain_failure
 _forge_highest_version
 _forge_http_get
 _forge_is_current
+_forge_is_script_app
 _forge_keep_raw
 _forge_previous_version
 _forge_release_json
