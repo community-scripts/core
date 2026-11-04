@@ -58,6 +58,7 @@ on:
       - "tests/cs-clear.sh"
       - "tests/forge-appversion-scope.sh"
       - "tests/motd-os-version.sh"
+      - "tests/gpg-key-reason.sh"
       - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
@@ -107,6 +108,7 @@ on:
       - "tests/cs-clear.sh"
       - "tests/forge-appversion-scope.sh"
       - "tests/motd-os-version.sh"
+      - "tests/gpg-key-reason.sh"
       - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
@@ -221,6 +223,8 @@ jobs:
         run: bash tests/cs-clear.sh
       - name: App version pin and .deb stamp tests
         run: bash tests/forge-appversion-scope.sh
+      - name: GPG key failure reason tests
+        run: bash tests/gpg-key-reason.sh
 
       - name: Prefetch lists cover every engine file
         run: |

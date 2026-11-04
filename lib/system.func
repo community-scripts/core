@@ -190,7 +190,7 @@ download_gpg_key() {
   local mode="${3:-auto}" # auto, dearmor, or binary
   local retries="${CURL_RETRIES:-3}"
   local timeout="${CURL_TIMEOUT:-30}"
-  local temp_key
+  local temp_key err rc last_err=""
   temp_key=$(mktemp)
 
   mkdir -p "$(dirname "$output")"
@@ -200,7 +200,10 @@ download_gpg_key() {
     debug_log "GPG key download attempt $attempt/$retries: $url"
 
     # Download to temp file first
-    if ! curl -fsSL --connect-timeout 10 --max-time "$timeout" -o "$temp_key" "$url" 2>/dev/null; then
+    rc=0
+    err=$(curl -fsSL --connect-timeout 10 --max-time "$timeout" -o "$temp_key" "$url" 2>&1) || rc=$?
+    if ((rc != 0)); then
+      last_err="${err:-curl exit ${rc}}"
       debug_log "GPG key download attempt $attempt failed, waiting ${attempt}s..."
       sleep "$attempt"
       ((attempt++))
@@ -221,18 +224,20 @@ download_gpg_key() {
 
     # Process based on mode
     if [[ "$mode" == "dearmor" ]]; then
-      if gpg --dearmor --yes -o "$output" <"$temp_key" 2>/dev/null && [[ -s "$output" ]]; then
+      if err=$(gpg --dearmor --yes -o "$output" <"$temp_key" 2>&1) && [[ -s "$output" ]]; then
         rm -f "$temp_key"
         chmod 644 "$output"
         debug_log "GPG key installed (dearmored): $output"
         return 0
       fi
+      last_err="gpg --dearmor: ${err:-the keyring came out empty}"
     else
-      if mv "$temp_key" "$output" 2>/dev/null; then
+      if err=$(mv "$temp_key" "$output" 2>&1); then
         chmod 644 "$output"
         debug_log "GPG key installed: $output"
         return 0
       fi
+      last_err="$err"
     fi
 
     debug_log "GPG key processing attempt $attempt failed"
@@ -242,6 +247,8 @@ download_gpg_key() {
 
   rm -f "$temp_key"
   debug_log "GPG key download FAILED after $retries attempts: $url"
+  # The callers only say that the key failed; this is the why.
+  msg_warn "GPG key ${url} not installed after ${retries} attempts: ${last_err//$'\n'/ }"
   return 7
 }
 
