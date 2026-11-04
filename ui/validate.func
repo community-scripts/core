@@ -73,7 +73,7 @@ update_motd_ip() {
   # always checked whose file it is; this one never did.
   if [ -f "$MOTD_FILE" ] && grep -q "LXC Container" "$MOTD_FILE" 2>/dev/null; then
     # Remove existing IP Address lines to prevent duplication
-    sed -i '/IP Address:/d' "$MOTD_FILE"
+    sed -i '/IP Address:/d; / OS: .* - Version: /d' "$MOTD_FILE"
 
     IP=$(get_current_ip)
     # Add the new IP address
@@ -104,7 +104,7 @@ update_motd_ip() {
     fi
 
     # Get current values
-    local current_os="$(grep ^NAME /etc/os-release | cut -d= -f2 | tr -d '"') - Version: $(grep ^VERSION_ID /etc/os-release | cut -d= -f2 | tr -d '"')"
+    local os_line='$(if [ -r /etc/os-release ]; then . /etc/os-release; fi; echo "${NAME:-Linux} - Version: ${VERSION_ID:-rolling}")'
     local current_hostname="$(hostname 2>/dev/null || uname -n)"
     # get_current_ip, not `hostname -I`: BusyBox's hostname has no -I, so on
     # Alpine this aborted the update with "unrecognized option: I". The helper
@@ -114,15 +114,14 @@ update_motd_ip() {
     # $GN/$CL are unset in a login shell, so a line using them never colors.
     # The staleness checks below only compare the value text, so a line with a
     # current value but a dead placeholder is never revisited; force it here.
-    local esc dead_color_os dead_color_hostname dead_color_ip
+    local esc dead_color_hostname dead_color_ip
     esc=$'\033'
-    grep -qE 'OS:.*\$\{GN\}' "$profile_file" 2>/dev/null && dead_color_os=1
     grep -qE 'Hostname:.*\$\{GN\}' "$profile_file" 2>/dev/null && dead_color_hostname=1
     grep -qE 'IP Address:.*\$\{GN\}' "$profile_file" 2>/dev/null && dead_color_ip=1
 
     # Update only if values actually changed (or the color placeholder is dead)
-    if [[ -n "${dead_color_os:-}" ]] || ! grep -q "OS:.*$current_os" "$profile_file" 2>/dev/null; then
-      sed -i "s|OS:.*|OS: ${esc}[1;92m$current_os${esc}[m\\\"|" "$profile_file"
+    if ! grep -q 'OS:.*os-release' "$profile_file" 2>/dev/null; then
+      sed -i "s|OS:.*|OS: ${esc}[1;92m${os_line}${esc}[m\\\"|" "$profile_file"
     fi
     if [[ -n "${dead_color_hostname:-}" ]] || ! grep -q "Hostname:.*$current_hostname" "$profile_file" 2>/dev/null; then
       sed -i "s|Hostname:.*|Hostname: ${esc}[1;92m$current_hostname${esc}[m\\\"|" "$profile_file"
