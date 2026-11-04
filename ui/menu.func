@@ -1126,8 +1126,8 @@ check_breaking_change_guard() {
 
 # The update path, shared by the three branches of start() that reach it.
 # exit, not return: returning continues into the ct script's host-only tail.
-# Most ct scripts exit inside update_script, so the two calls after it are
-# unreachable for them; the cleanup therefore runs from on_exit.
+# Most ct scripts exit inside update_script, so the call after it is
+# unreachable for them; cleanup and MOTD therefore run from on_exit.
 _cs_run_update() {
   ensure_profile_loaded
   ensure_recorded_toolchains
@@ -1140,7 +1140,6 @@ _cs_run_update() {
   _CS_UPDATE_CLEANUP=1
   update_script
   run_addon_updates
-  update_motd_ip
   exit 0
 }
 

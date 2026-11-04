@@ -2059,6 +2059,23 @@ _gh_scan_older_releases() {
   return 250
 }
 
+# True when a fetched release is the script's own app. Release names often add
+# or drop a part of the app's name (adguard/adguardhome, paperless-ngx/paperless),
+# so either containing the other counts, from four characters up. Without a
+# known script app (a caller outside the engine) every release counts, as before.
+_forge_is_script_app() {
+  local fetched script short
+  fetched="$(printf '%s' "${1,,}" | tr -cd 'a-z0-9')"
+  script="$(printf '%s' "${2,,}" | tr -cd 'a-z0-9')"
+  [[ -z "$script" ]] && return 0
+  [[ -n "$fetched" ]] || return 1
+  [[ "$fetched" == "$script" ]] && return 0
+  short="$fetched"
+  ((${#script} < ${#fetched})) && short="$script"
+  ((${#short} >= 4)) || return 1
+  [[ "$fetched" == *"$script"* || "$script" == *"$fetched"* ]]
+}
+
 # ------------------------------------------------------------------------------
 # fetch_and_deploy_release()
 #
@@ -2072,11 +2089,13 @@ _gh_scan_older_releases() {
 #   normalisation notes at each site.
 # ------------------------------------------------------------------------------
 fetch_and_deploy_release() {
+  # Read before the local below hides the exported app name.
+  local script_app="${NSAPP:-${app:-}}"
   local forge="${1:?forge}"
   local app="${2:-}"
   local repo="${3:?repo}"
   local mode="${4:-tarball}"
-  local version="${var_appversion:-${5:-latest}}"
+  local version="${5:-latest}"
   local target="${6:-}"
   local asset_pattern="${7:-}"
   local tag_prefix="${8:-}"
@@ -2093,6 +2112,13 @@ fetch_and_deploy_release() {
       msg_error "fetch_and_deploy_release requires an app name or a valid repo"
       return 65
     fi
+  fi
+
+  # var_appversion pins the script's own app. Applied to every call it also
+  # asked the other releases a script fetches (Subwave: liquidsoap, piper) for
+  # that tag, and those calls failed.
+  if [[ -n "${var_appversion:-}" ]] && _forge_is_script_app "$app" "$script_app"; then
+    version="$var_appversion"
   fi
 
   local app_lc version_file
@@ -2142,7 +2168,9 @@ fetch_and_deploy_release() {
 
   local current_version=""
   [[ -f "$version_file" ]] && current_version="$(<"$version_file")"
-  if [[ -z "$redo" && "$current_version" == "$version" && -d "$target" && "${FORCE_UPDATE:-}" != "1" ]]; then
+  # A .deb installs into the system, never into $target, so the stamp alone says
+  # it is there. Requiring the directory downloaded it again on every update.
+  if [[ -z "$redo" && "$current_version" == "$version" && (-d "$target" || "$mode" == "binary") && "${FORCE_UPDATE:-}" != "1" ]]; then
     msg_ok "${app} ${version} already installed"
     return 0
   fi
