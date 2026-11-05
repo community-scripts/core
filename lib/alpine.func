@@ -354,11 +354,12 @@ check_for_gh_release() {
 
 # Empty a target directory before a clean install, leaving mount points and
 # CLEAN_INSTALL_KEEP paths alone. Same function as in lib/forge.func, which says
-# why it is written this way.
+# why it is written this way, except for how it spots a mount: busybox mountpoint
+# compares device numbers, so it misses a bind mount from the same filesystem.
 _cs_clean_target_dir() {
   local dir="${1:?directory}" list entry stash=""
   [[ -d "$dir" ]] || return 0
-  dir="${dir%/}"
+  dir="$(realpath "$dir")" # mountinfo lists resolved paths
 
   local -a keep=()
   [[ -n "${CLEAN_INSTALL_KEEP:-}" ]] && read -ra keep <<<"$CLEAN_INSTALL_KEEP"
@@ -376,9 +377,10 @@ _cs_clean_target_dir() {
     find "${dir:?}" -mindepth 1 -maxdepth 1 -print0 | xargs -0 rm -rf --
   else
     list="$(mktemp)" || return 1
-    find "${dir:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o ! -type d -print0 >"$list"
+    local -a skip_mounts=(\( -type d \( -exec mountpoint -q {} \; -o -exec grep -qF " {} " /proc/self/mountinfo \; \) -prune \))
+    find "${dir:?}" -mindepth 1 "${skip_mounts[@]}" -o ! -type d -print0 >"$list"
     xargs -0 rm -f -- <"$list"
-    find "${dir:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o -type d -print0 >"$list"
+    find "${dir:?}" -mindepth 1 "${skip_mounts[@]}" -o -type d -print0 >"$list"
     sort -rz "$list" | xargs -0 rmdir -- 2>/dev/null || true
     rm -f "$list"
   fi
