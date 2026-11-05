@@ -1091,12 +1091,13 @@ EOF
     local ip_in_lxc=""
     for i in {1..60}; do
       # Try IPv4 first
-      ip_in_lxc=$(pct exec "$CTID" -- ip -4 addr show dev eth0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1)
+      ip_in_lxc=$(pct exec "$CTID" -- ip -4 addr show dev eth0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1) || true
       # Fallback to IPv6 if IPv4 not available
       if [ -z "$ip_in_lxc" ]; then
-        ip_in_lxc=$(pct exec "$CTID" -- ip -6 addr show dev eth0 scope global 2>/dev/null | awk '/inet6 / {print $2}' | cut -d/ -f1 | head -n1)
+        ip_in_lxc=$(pct exec "$CTID" -- ip -6 addr show dev eth0 scope global 2>/dev/null | awk '/inet6 / {print $2}' | cut -d/ -f1 | head -n1) || true
       fi
       [ -n "$ip_in_lxc" ] && break
+      _pve_ct_gone_during_setup && exit "$_CS_SETUP_GONE_RC"
       if [ "$i" -le 20 ]; then
         sleep 1
       elif [ "$i" -le 40 ]; then
@@ -1365,7 +1366,9 @@ EOF
 
         exit 2
       ' && mirror_exit=0 || mirror_exit=$?
-      if [[ $mirror_exit -eq 2 ]]; then
+      if [[ $mirror_exit -ne 0 ]] && _pve_ct_gone_during_setup; then
+        install_exit_code=$_CS_SETUP_GONE_RC
+      elif [[ $mirror_exit -eq 2 ]]; then
         msg_warn "Multiple mirrors failed (possible CDN synchronization issue)."
         if [[ "$var_os" == "ubuntu" ]]; then
           msg_warn "Find Ubuntu mirrors at: https://launchpad.net/ubuntu/+archivemirrors"
@@ -3989,7 +3992,7 @@ ${_testing_block}
 </div>
 EOF
   )
-  pct set "$CTID" -description "$DESCRIPTION"
+  pct set "$CTID" -description "$DESCRIPTION" || msg_warn "Could not write the container notes in Proxmox; the container itself is fine"
 
   # Last line of the run, where the user is still looking at the terminal.
   if [[ -n "${CS_TESTING_URL:-}" ]]; then
