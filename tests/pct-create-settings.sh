@@ -56,5 +56,13 @@ expect "a hostname with a trailing dot is invalid" 1 "$?"
 validate_hostname "frigate.home.lan"
 expect "an FQDN is still valid" 0 "$?"
 
+eval "$(awk '/^_pveam_download[(][)] [{]/,/^}/' "$CORE_DIR/pve/backend.func")"
+TEST_DIR="$(mktemp -d)"
+trap 'rm -rf -- "$TEST_DIR"' EXIT
+pvesm() { echo "$TEST_DIR/nas/template/cache/${2#*:vztmpl/}"; }
+_cs_shield_hangup() { "$@"; }
+pveam() { [[ -d "$TEST_DIR/nas/template/cache" ]] && echo saved || echo "No such file or directory"; }
+expect "a storage without template/cache gets it before the download" saved "$(_pveam_download nas debian-13-standard_13.6-1_amd64.tar.zst)"
+
 printf '%s passed, %s failed\n' "$passed" "$failed"
 ((failed == 0))
