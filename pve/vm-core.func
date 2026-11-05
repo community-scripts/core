@@ -2549,10 +2549,11 @@ vm_select_iso_storage() {
     else
       term_cols=$(tput cols 2>/dev/null || echo 0)
       ((term_cols > 0 && menu_width > term_cols)) && menu_width=$term_cols
+      storage_menu[2]="ON"
       if vm_dialog radiolist "ISO Storage Pools" \
         "Which storage pool should hold the installer ISO for ${hostname}?\nTo make a selection, use the Spacebar.\n" \
         16 "$menu_width" 6 "${storage_menu[@]}"; then
-        selected="$VM_DIALOG_RESULT"
+        selected="${VM_DIALOG_RESULT:-${storage_menu[0]}}"
       else
         exit_script
       fi
