@@ -52,5 +52,19 @@ _INCUS_HOST_LOGFILE="$TEST_DIR/incus.log"
 incus_log_msg $'\e[32mhello\e[0m'
 expect "a writable Incus log still gets the line without colors" 1 "$(grep -c '\] hello$' "$TEST_DIR/incus.log")"
 
+eval "$(awk '/^(_bootstrap_die|_cs_core_url)[(][)] [{]/,/^}/' "$CORE_DIR/lxc/install.func")"
+INSTALL_LOG="$TEST_DIR/install.log"
+(
+  curl() {
+    echo "curl: (6) Could not resolve host: raw.githubusercontent.com" >&2
+    printf 'HTTP 000'
+    return 6
+  }
+  _bootstrap_die "Failed to download core/core.func" core/core.func 2>/dev/null
+)
+expect "an engine download failure still exits 115" 115 "$?"
+expect "and leaves the URL and curl's reason in the log the host collects" 1 \
+  "$(grep -cF '[ERROR] Failed to download core/core.func from https://raw.githubusercontent.com/community-scripts/core/main/core/core.func (curl: (6) Could not resolve host: raw.githubusercontent.com HTTP 000)' "$INSTALL_LOG")"
+
 printf '%s passed, %s failed\n' "$passed" "$failed"
 ((failed == 0))
