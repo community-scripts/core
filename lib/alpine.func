@@ -352,6 +352,48 @@ check_for_gh_release() {
   return 1
 }
 
+# Empty a target directory before a clean install, leaving mount points and
+# CLEAN_INSTALL_KEEP paths alone. Same function as in lib/forge.func, which says
+# why it is written this way.
+_cs_clean_target_dir() {
+  local dir="${1:?directory}" list entry stash=""
+  [[ -d "$dir" ]] || return 0
+  dir="${dir%/}"
+
+  local -a keep=()
+  [[ -n "${CLEAN_INSTALL_KEEP:-}" ]] && read -ra keep <<<"$CLEAN_INSTALL_KEEP"
+  if ((${#keep[@]})); then
+    stash="$(mktemp -d -p "$(dirname "$dir")" .clean-keep.XXXXXX)" || return 1
+    for entry in "${keep[@]}"; do
+      entry="${entry#/}"
+      [[ -n "$entry" && -e "$dir/$entry" ]] || continue
+      mkdir -p "$stash/$(dirname "$entry")"
+      mv "$dir/$entry" "$stash/$entry" || msg_warn "Could not preserve ${entry}"
+    done
+  fi
+
+  if ! command -v mountpoint >/dev/null 2>&1; then
+    find "${dir:?}" -mindepth 1 -maxdepth 1 -print0 | xargs -0 rm -rf --
+  else
+    list="$(mktemp)" || return 1
+    find "${dir:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o ! -type d -print0 >"$list"
+    xargs -0 rm -f -- <"$list"
+    find "${dir:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o -type d -print0 >"$list"
+    sort -rz "$list" | xargs -0 rmdir -- 2>/dev/null || true
+    rm -f "$list"
+  fi
+
+  if [[ -n "$stash" ]]; then
+    for entry in "${keep[@]}"; do
+      entry="${entry#/}"
+      [[ -n "$entry" && -e "$stash/$entry" ]] || continue
+      mkdir -p "$dir/$(dirname "$entry")"
+      mv "$stash/$entry" "$dir/$entry" || msg_warn "Could not restore ${entry}"
+    done
+    rm -rf "$stash"
+  fi
+}
+
 # ------------------------------------------------------------------------------
 # GitHub: get Release  & deployen (Alpine)
 # modes: tarball | prebuild | singlefile
@@ -426,7 +468,12 @@ fetch_and_deploy_gh_release() {
       return 1
     }
     unpack=$(find "$tmpd" -mindepth 1 -maxdepth 1 -type d | head -n1)
-    [ "${CLEAN_INSTALL:-0}" = "1" ] && rm -rf "${target:?}/"*
+    if [ -z "$unpack" ] || [ -z "$(find "$unpack" -mindepth 1 | head -n1)" ]; then
+      msg_error "Archive has no payload: $filename"
+      rm -rf "$tmpd"
+      return 1
+    fi
+    [ "${CLEAN_INSTALL:-0}" = "1" ] && _cs_clean_target_dir "$target"
     # copy content of unpack to target
     (cd "$unpack" && tar -cf - .) | (cd "$target" && tar -xf -) || {
       msg_error "copy failed"
@@ -487,11 +534,19 @@ fetch_and_deploy_gh_release() {
         return 1
       }
       mkdir -p "$tmpd/unp"
-      unzip -q "$tmpd/$filename" -d "$tmpd/unp"
+      unzip -q "$tmpd/$filename" -d "$tmpd/unp" || {
+        msg_error "unzip failed: $filename"
+        rm -rf "$tmpd"
+        return 1
+      }
       ;;
     *.tar.gz | *.tgz | *.tar.xz | *.tar.zst | *.tar.bz2)
       mkdir -p "$tmpd/unp"
-      tar -xf "$tmpd/$filename" -C "$tmpd/unp"
+      tar -xf "$tmpd/$filename" -C "$tmpd/unp" || {
+        msg_error "tar extract failed"
+        rm -rf "$tmpd"
+        return 1
+      }
       ;;
     *)
       msg_error "unsupported archive: $filename"
@@ -499,22 +554,22 @@ fetch_and_deploy_gh_release() {
       return 1
       ;;
     esac
-    [ "${CLEAN_INSTALL:-0}" = "1" ] && rm -rf "${target:?}/"*
     # top-level folder strippen
+    unpack="$tmpd/unp"
     if [ "$(find "$tmpd/unp" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1 ] && [ -z "$(find "$tmpd/unp" -mindepth 1 -maxdepth 1 -type f | head -n1)" ]; then
       unpack=$(find "$tmpd/unp" -mindepth 1 -maxdepth 1 -type d)
-      (cd "$unpack" && tar -cf - .) | (cd "$target" && tar -xf -) || {
-        msg_error "copy failed"
-        rm -rf "$tmpd"
-        return 1
-      }
-    else
-      (cd "$tmpd/unp" && tar -cf - .) | (cd "$target" && tar -xf -) || {
-        msg_error "copy failed"
-        rm -rf "$tmpd"
-        return 1
-      }
     fi
+    if [ -z "$(find "$unpack" -mindepth 1 | head -n1)" ]; then
+      msg_error "Archive has no payload: $filename"
+      rm -rf "$tmpd"
+      return 1
+    fi
+    [ "${CLEAN_INSTALL:-0}" = "1" ] && _cs_clean_target_dir "$target"
+    (cd "$unpack" && tar -cf - .) | (cd "$target" && tar -xf -) || {
+      msg_error "copy failed"
+      rm -rf "$tmpd"
+      return 1
+    }
     ;;
   singlefile)
     [ -n "$pattern" ] || {

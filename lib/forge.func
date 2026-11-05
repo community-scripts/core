@@ -534,8 +534,13 @@ _cs_clean_target_dir() {
     find "${dir:?}" -mindepth 1 -maxdepth 1 -print0 | xargs -0 rm -rf --
   else
     list="$(mktemp)" || return 1
-    find "${dir:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o -print0 >"$list"
-    xargs -0 rm -rf -- <"$list"
+    # Not rm -r on the list: it would hold the parents of a nested mount, and
+    # rm -r on one would empty the mount. Files first, then directories deepest
+    # first. rmdir fails on purpose on a parent that still holds a mount.
+    find "${dir:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o ! -type d -print0 >"$list"
+    xargs -0 rm -f -- <"$list"
+    find "${dir:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o -type d -print0 >"$list"
+    sort -rz "$list" | xargs -0 rmdir -- 2>/dev/null || true
     rm -f "$list"
   fi
 
@@ -1097,7 +1102,10 @@ check_for_gh_branch() {
 #   $4 - target directory (optional, defaults to /opt/<app>)
 #
 # Variables:
-#   CLEAN_INSTALL - set to 1 to wipe the target before cloning
+#   CLEAN_INSTALL - set to 1 to replace the target with a fresh clone, even if
+#                   it is already a checkout
+#   CLEAN_INSTALL_KEEP - paths relative to the target that the replacement leaves
+#                        alone (see _cs_clean_target_dir)
 # ------------------------------------------------------------------------------
 
 fetch_and_deploy_gh_branch() {
@@ -1118,11 +1126,7 @@ fetch_and_deploy_gh_branch() {
   local -a clone_args=(--depth 1)
   [[ -n "$branch" ]] && clone_args+=(--branch "$branch")
 
-  if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-    rm -rf "$target"
-  fi
-
-  if [[ -d "$target/.git" ]]; then
+  if [[ "${CLEAN_INSTALL:-0}" != "1" && -d "$target/.git" ]]; then
     msg_info "Updating ${app}"
     local ref="HEAD"
     [[ -n "$branch" ]] && ref="$branch"
@@ -1137,12 +1141,30 @@ fetch_and_deploy_gh_branch() {
     $STD git -C "$target" clean -fd
   else
     msg_info "Fetching ${app}"
-    rm -rf "$target"
-    mkdir -p "$(dirname "$target")"
-    $STD git clone "${clone_args[@]}" "https://github.com/${source}" "$target" || {
+    # Cloned beside the target, so a failed clone leaves <target> as it was.
+    local parent clone_tmp copy_rc=0
+    target="$(realpath -m -- "$target")"
+    parent="$(dirname "$target")"
+    mkdir -p "$parent"
+    clone_tmp="$(mktemp -d -p "$parent" ".${app_lc}-clone.XXXXXX")" || {
+      msg_error "Failed to create a clone directory in ${parent}"
+      return 22
+    }
+    $STD git clone "${clone_args[@]}" "https://github.com/${source}" "$clone_tmp/repo" || {
+      rm -rf "$clone_tmp"
       msg_error "Failed to clone ${source}"
       return 22
     }
+    mkdir -p "$target"
+    _cs_clean_target_dir "$target"
+    # With the /. the target takes the clone's owner and mode too. Git refuses a
+    # worktree owned by someone else.
+    cp -a "$clone_tmp/repo/." "$target/" || copy_rc=$?
+    rm -rf "$clone_tmp"
+    if ((copy_rc != 0)); then
+      msg_error "Failed to copy ${app} to ${target}"
+      return 22
+    fi
   fi
 
   git -C "$target" rev-parse --short=7 HEAD >"$HOME/.${app_lc}"
