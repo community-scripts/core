@@ -274,7 +274,7 @@ validate_hostname() {
   local hostname="$1"
 
   # Check total length (max 253 for FQDN)
-  if [[ ${#hostname} -gt 253 ]] || [[ -z "$hostname" ]]; then
+  if [[ ${#hostname} -gt 253 ]] || [[ -z "$hostname" ]] || [[ "$hostname" == .* || "$hostname" == *. ]]; then
     return 1
   fi
 

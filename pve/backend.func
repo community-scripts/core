@@ -625,6 +625,14 @@ build_container() {
 
   validate_ct_settings
 
+  # PCT_OPTIONS is expanded unquoted: a space inside a list made an extra argument
+  local _list
+  _list="$(_cs_pct_list , "${NS#-nameserver=}")"
+  [[ -n "$_list" ]] && NS="-nameserver=$_list" || NS=""
+  _list="$(_cs_pct_list , "${SD#-searchdomain=}")"
+  [[ -n "$_list" ]] && SD="-searchdomain=$_list" || SD=""
+  TAGS="$(_cs_pct_list ';' "${TAGS:-}")"
+
   # Build PCT_OPTIONS as multi-line string
   PCT_OPTIONS_STRING="  -hostname $HN"
 
@@ -2436,6 +2444,13 @@ select_storage() {
 # from the environment arrive unchecked, and pct reported them only after the
 # storage selection and template download, as a generic creation failure.
 # ------------------------------------------------------------------------------
+_cs_pct_list() {
+  local -a items
+  read -ra items <<<"${2//[,;]/ }"
+  local IFS="$1"
+  printf '%s' "${items[*]}"
+}
+
 validate_ct_settings() {
   local -a problems=()
   local ns="${NS#-nameserver=}" sd="${SD#-searchdomain=}"
@@ -2449,6 +2464,15 @@ validate_ct_settings() {
   fi
   if [[ -n "${PW:-}" && ${#PW} -lt 5 ]]; then
     problems+=("the root password needs at least 5 characters (var_pw)")
+  fi
+  if [[ ! "${CTID:-}" =~ ^[1-9][0-9]{2,8}$ ]]; then
+    problems+=("container ID '${CTID:-}' must be a number from 100 up, without leading zeros (var_ctid)")
+  fi
+  if [[ ! "${CORE_COUNT:-}" =~ ^[1-9][0-9]*$ ]]; then
+    problems+=("CPU cores '${CORE_COUNT:-}' is not a whole number (var_cpu)")
+  fi
+  if [[ ! "${DISK_SIZE:-}" =~ ^[1-9][0-9]*$ ]]; then
+    problems+=("disk size '${DISK_SIZE:-}' is not a whole number of GiB (var_disk)")
   fi
   if [[ -n "${NET:-}" && "$NET" != "dhcp" && "$NET" != "manual" ]] && ! validate_ip_address "$NET"; then
     problems+=("IPv4 '${NET}' is not dhcp or an address with prefix, e.g. 192.168.1.50/24 (var_net)")
