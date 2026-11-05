@@ -558,9 +558,10 @@ _cs_clean_target_dir() {
 # directory). Extracts <tarball_path> into <workdir>, then copies the contents
 # of that top-level directory into <target>.
 #
-#   - Honors CLEAN_INSTALL=1 (wipes <target> first, dotfiles included, mount
-#     points preserved — back up config dotfiles like .env via create_backup
-#     and call restore_backup BEFORE any build step that sources them).
+#   - Honors CLEAN_INSTALL=1 (wipes <target> once the tarball has extracted,
+#     dotfiles included, mount points preserved — back up config dotfiles like
+#     .env via create_backup and call restore_backup BEFORE any build step that
+#     sources them). A failed extraction leaves <target> as it was.
 #   - Honors CLEAN_INSTALL_KEEP, a space-separated list of paths relative to
 #     <target> that the wipe leaves alone (e.g. "geodata .env data/uploads").
 #   - Does NOT own <workdir>: the caller creates it and is responsible for its
@@ -572,11 +573,6 @@ _cs_clean_target_dir() {
 _deploy_source_tarball() {
   local tarball="$1" target="$2" workdir="$3"
 
-  mkdir -p "$target"
-  if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-    _cs_clean_target_dir "$target"
-  fi
-
   tar --no-same-owner -xzf "$tarball" -C "$workdir" || {
     msg_error "Failed to extract tarball"
     return 251
@@ -584,6 +580,16 @@ _deploy_source_tarball() {
 
   local unpack_dir
   unpack_dir=$(find "$workdir" -mindepth 1 -maxdepth 1 -type d | head -n1)
+  # Without this, an empty unpack_dir turns the cp below into "/"*.
+  [[ -n "$unpack_dir" ]] || {
+    msg_error "Tarball has no top-level directory"
+    return 251
+  }
+
+  mkdir -p "$target"
+  if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
+    _cs_clean_target_dir "$target"
+  fi
 
   shopt -s dotglob nullglob
   cp -r "$unpack_dir"/* "$target/"
@@ -605,9 +611,11 @@ _deploy_source_tarball() {
 #     a download URL need not carry a usable extension; the release helpers omit
 #     it and get the filename mapping below. This is the only place in the
 #     engine that decides how an archive is opened -- keep it that way.
-#   - Honors CLEAN_INSTALL=1 (wipes <target> first, dotfiles included, mount
-#     points preserved — back up config dotfiles like .env via create_backup
-#     and call restore_backup BEFORE any build step that sources them).
+#   - Honors CLEAN_INSTALL=1 (wipes <target> once the payload has extracted and
+#     is non-empty, dotfiles included, mount points preserved — back up config
+#     dotfiles like .env via create_backup and call restore_backup BEFORE any
+#     build step that sources them). Every failure except the copy itself
+#     leaves <target> as it was.
 #   - Honors CLEAN_INSTALL_KEEP, a space-separated list of paths relative to
 #     <target> that the wipe leaves alone (e.g. "geodata .env data/uploads").
 #   - Does NOT own <workdir>: the caller creates it and cleans it up.
@@ -627,7 +635,6 @@ _deploy_unpacked_archive() {
     esac
   fi
 
-  # Ahead of CLEAN_INSTALL: a format we cannot open must not wipe the target.
   case "$kind" in
   zip | tar | 7z) ;;
   *)
@@ -635,11 +642,6 @@ _deploy_unpacked_archive() {
     return 65
     ;;
   esac
-
-  mkdir -p "$target"
-  if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-    _cs_clean_target_dir "$target"
-  fi
 
   case "$kind" in
   zip)
@@ -668,38 +670,42 @@ _deploy_unpacked_archive() {
     ;;
   esac
 
-  local top_entries inner_dir
+  local top_entries inner_dir="" source_dir
   top_entries=$(find "$workdir" -mindepth 1 -maxdepth 1)
   if [[ "$(echo "$top_entries" | wc -l)" -eq 1 && -d "$top_entries" ]]; then
     inner_dir="$top_entries"
-    shopt -s dotglob nullglob
-    if compgen -G "$inner_dir/*" >/dev/null; then
-      cp -r "$inner_dir"/* "$target/" || {
-        msg_error "Failed to copy contents from $inner_dir to $target"
-        shopt -u dotglob nullglob
-        return 252
-      }
-    else
-      msg_error "Inner directory is empty: $inner_dir"
-      shopt -u dotglob nullglob
-      return 252
-    fi
-    shopt -u dotglob nullglob
+    source_dir="$inner_dir"
   else
-    shopt -s dotglob nullglob
-    if compgen -G "$workdir/*" >/dev/null; then
-      cp -r "$workdir"/* "$target/" || {
-        msg_error "Failed to copy contents to $target"
-        shopt -u dotglob nullglob
-        return 252
-      }
+    source_dir="$workdir"
+  fi
+
+  shopt -s dotglob nullglob
+  if ! compgen -G "$source_dir/*" >/dev/null; then
+    if [[ -n "$inner_dir" ]]; then
+      msg_error "Inner directory is empty: $inner_dir"
     else
       msg_error "Unpacked archive is empty"
-      shopt -u dotglob nullglob
-      return 252
     fi
     shopt -u dotglob nullglob
+    return 252
   fi
+
+  # Wipe only here, so a failed or empty extract leaves <target> as it was.
+  mkdir -p "$target"
+  if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
+    _cs_clean_target_dir "$target"
+  fi
+
+  if ! cp -r "$source_dir"/* "$target/"; then
+    if [[ -n "$inner_dir" ]]; then
+      msg_error "Failed to copy contents from $inner_dir to $target"
+    else
+      msg_error "Failed to copy contents to $target"
+    fi
+    shopt -u dotglob nullglob
+    return 252
+  fi
+  shopt -u dotglob nullglob
   return 0
 }
 
@@ -722,7 +728,7 @@ _deploy_unpacked_archive() {
 #   $4 - Target directory (default: /opt/$app)
 #
 # Notes:
-#   - Supports CLEAN_INSTALL=1 to wipe target before extracting
+#   - Supports CLEAN_INSTALL=1 to wipe target once the tarball has extracted
 #   - For repos that only publish tags, not GitHub Releases
 # ------------------------------------------------------------------------------
 fetch_and_deploy_gh_tag() {
@@ -878,7 +884,7 @@ get_latest_gl_tag() {
 #   $4 - Target directory (default: /opt/$app)
 #
 # Notes:
-#   - Supports CLEAN_INSTALL=1 to wipe target before extracting
+#   - Supports CLEAN_INSTALL=1 to wipe target once the tarball has extracted
 #   - Supports GITLAB_TOKEN for private/rate-limited projects
 #   - Supports GITLAB_URL for self-hosted GitLab (default: https://gitlab.com)
 #   - For repos that only publish tags, not formal GitLab Releases
