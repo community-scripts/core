@@ -339,6 +339,8 @@ setup_hwaccel() {
     if [[ "$HWACCEL_VENDOR" == "none" ]]; then
       case "$_gpu_type" in
       AMD) HWACCEL_VENDOR="amd" ;;
+      # Not amd: consumers read that as ROCm, and an APU gets Mesa only.
+      AMD_APU) HWACCEL_VENDOR="amd_apu" ;;
       INTEL*) HWACCEL_VENDOR="intel" ;;
       esac
     fi
@@ -346,7 +348,15 @@ setup_hwaccel() {
   export HWACCEL_VENDOR
 
   cache_installed_version "hwaccel" "1.0"
-  msg_ok "Setup Hardware Acceleration"
+  if [[ "$HWACCEL_VENDOR" == "none" ]]; then
+    # Close the step like msg_ok, or a later failure is reported under it.
+    # shellcheck disable=SC2034
+    CS_STEP_DONE="Setup Hardware Acceleration" CS_STEP="" CS_ERROR_MSG=""
+    _cs_drop_silent_record
+    msg_warn "Hardware acceleration is not available - see the messages above"
+  else
+    msg_ok "Setup Hardware Acceleration"
+  fi
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -663,6 +673,44 @@ ENVEOF
 # ══════════════════════════════════════════════════════════════════════════════
 # NVIDIA GPU Setup
 # ══════════════════════════════════════════════════════════════════════════════
+
+# The host's exact release first; the series fallback may end up newer than
+# the kernel module, which the caller warns about.
+_cuda_pick_version() {
+  local host="$1" madison exact
+  madison=$(apt-cache madison libcuda1 2>/dev/null | awk '{print $3}') || return 0
+  exact=$(printf '%s\n' "$madison" | grep -E "^${host//./\\.}(-|$)" | head -1 || true)
+  if [[ -n "$exact" ]]; then
+    printf '%s\n' "$exact"
+    return 0
+  fi
+  printf '%s\n' "$madison" | grep -E "^${host%%.*}\." | head -1 || true
+}
+
+# libcuda1 needs its libnvidia-* dependencies at exactly its own version.
+# The priority has to stay above the origin pin's.
+_nvidia_version_pin() {
+  cat <<NVIDIA_VERSION_PIN
+Package: libcuda* libnvcuvid* libnvidia-*
+Pin: version $1
+Pin-Priority: 1002
+NVIDIA_VERSION_PIN
+}
+
+# Version stanza first: apt uses the first stanza that matches a version.
+# The origin pin stays scoped, since above 1000 apt may downgrade what it matches.
+_nvidia_apt_pins() {
+  if [[ -n "${1:-}" ]]; then
+    _nvidia_version_pin "$1"
+    echo
+  fi
+  cat <<'NVIDIA_PIN'
+Package: libcuda* libnvcuvid* libnvidia-* nvidia-smi nvidia-utils-* cuda-*
+Pin: origin developer.download.nvidia.com
+Pin-Priority: 1001
+NVIDIA_PIN
+}
+
 _setup_nvidia_gpu() {
   local os_id="$1" os_codename="$2" os_version="$3"
 
@@ -740,40 +788,13 @@ _setup_nvidia_gpu() {
       rm -f "$cuda_keyring"
     fi
 
-    # Pin NVIDIA repo for version matching
-    # Scoped to the NVIDIA userspace packages. It used to be Package: *, which
-    # gave that repository priority over every package it happens to carry --
-    # and a priority above 1000 permits downgrades, so a later apt upgrade in
-    # the container could replace unrelated packages. The file is not removed
-    # afterwards, so the scope is what limits the damage.
-    cat <<'NVIDIA_PIN' >/etc/apt/preferences.d/nvidia-cuda-pin
-Package: libcuda* libnvcuvid* libnvidia-* nvidia-smi nvidia-utils-* cuda-*
-Pin: origin developer.download.nvidia.com
-Pin-Priority: 1001
-NVIDIA_PIN
+    local nvidia_pin_file="/etc/apt/preferences.d/nvidia-cuda-pin"
+    [[ -f "$nvidia_pin_file" ]] || _nvidia_apt_pins >"$nvidia_pin_file"
 
     # Extract major version for flexible matching (580.126.09 -> 580)
     local nvidia_major_version="${nvidia_host_version%%.*}"
     local cuda_list="/etc/apt/sources.list.d/cuda-community-scripts.list"
     local chosen_repo="" available_version="" cuda_repo=""
-
-    # Pick the host's exact version when the repo has it, and only then settle
-    # for another release in the same series. Taking the newest of the series
-    # unconditionally is the wrong direction: a host on 580.126 would be handed
-    # 580.178, which is newer than the loaded kernel module and therefore fails
-    # the same way a whole major mismatch does.
-    _cuda_pick_version() {
-      local madison exact
-      madison=$(apt-cache madison libcuda1 2>/dev/null | awk '{print $3}') || return 0
-      # Dots are escaped: unescaped they are regex wildcards, so 580.178.04
-      # would also match a hypothetical 580x178x04.
-      exact=$(printf '%s\n' "$madison" | grep -E "^${nvidia_host_version//./\\.}(-|$)" | head -1 || true)
-      if [[ -n "$exact" ]]; then
-        printf '%s\n' "$exact"
-        return 0
-      fi
-      printf '%s\n' "$madison" | grep -E "^${nvidia_major_version}\." | head -1 || true
-    }
 
     for cuda_repo in "${cuda_repos[@]}"; do
       # The keyring package drops its own list file for whichever repo it came
@@ -783,7 +804,7 @@ NVIDIA_PIN
       echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/${cuda_repo}/x86_64/ /" >"$cuda_list"
       $STD apt-get -y update 2>/dev/null || true
 
-      available_version="$(_cuda_pick_version)"
+      available_version="$(_cuda_pick_version "$nvidia_host_version")"
       if [[ -n "$available_version" ]]; then
         chosen_repo="$cuda_repo"
         break
@@ -795,15 +816,17 @@ NVIDIA_PIN
       # Last resort: the distribution's own non-free packages.
       rm -f "$cuda_list"
       $STD apt-get -y update 2>/dev/null || true
-      available_version="$(_cuda_pick_version)"
+      available_version="$(_cuda_pick_version "$nvidia_host_version")"
       [[ -n "$available_version" ]] && chosen_repo="Debian non-free"
     fi
-    unset -f _cuda_pick_version
 
     if [[ -n "$chosen_repo" ]]; then
+      _nvidia_apt_pins "$available_version" >"$nvidia_pin_file"
       msg_info "Installing NVIDIA userspace ${available_version} from ${chosen_repo}"
       local nvidia_pkgs="libcuda1=${available_version} libnvcuvid1=${available_version} libnvidia-encode1=${available_version} libnvidia-ml1=${available_version}"
-      if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends $nvidia_pkgs 2>/dev/null; then
+      # -y refuses the downgrade a host rollback needs, pin or not.
+      local -a apt_install=(apt-get -y --allow-downgrades -o Dpkg::Options::="--force-confold" install --no-install-recommends)
+      if $STD "${apt_install[@]}" $nvidia_pkgs 2>/dev/null; then
         # Say which kind of match this was. NVIDIA wants the full version to
         # agree; the fallback above only guarantees the series, so 580.178.04
         # on the host and 580.126.20 here would both land here. State both and
@@ -815,9 +838,13 @@ NVIDIA_PIN
           msg_warn "Same driver series, different release. CUDA workloads may still fail on this."
         fi
       else
-        msg_warn "Version-pinned install failed - keeping libcuda1 at ${available_version}, the rest unpinned"
-        $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
-          "libcuda1=${available_version}" libnvcuvid1 libnvidia-encode1 libnvidia-ml1 2>/dev/null || true
+        # A partly pinned retry cannot resolve either; report apt's reason.
+        msg_error "NVIDIA userspace ${available_version} would not install from ${chosen_repo}"
+        local apt_reason="" reason_line
+        apt_reason="$("${apt_install[@]}" -s $nvidia_pkgs 2>&1 | grep -E 'Depends:|^E: ' | sed 's/^ *//' | head -3 || true)"
+        while IFS= read -r reason_line; do
+          if [[ -n "$reason_line" ]]; then msg_warn "apt: ${reason_line}"; fi
+        done <<<"$apt_reason"
       fi
     else
       # Deliberately install nothing. The previous code fell back to whatever
