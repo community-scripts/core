@@ -68,6 +68,17 @@ printf '%s\n' '[2026-01-01 10:00:00] [INFO] Installing Dependencies' 'old output
   '[2026-01-01 10:00:06] [INFO] Setting up Demo' 'curl: (22) The requested URL returned error: 404' >"$LOG"
 expect "only the failing step is kept" "[2026-01-01 10:00:06] [INFO] Setting up Demo|curl: (22) The requested URL returned error: 404" "$(_tm_focus <"$LOG" | paste -sd'|')"
 
+# jumpserver: yarn crashed in Node, and the minified source lines it printed filled the budget before the error.
+{
+  echo '[2026-01-01 10:00:06] [INFO] Building Lina'
+  for _ in $(seq 30); do printf '%*s\n' 5000 '' | tr ' ' x; done
+  echo 'Error: the real reason'
+} >"$LOG"
+out="$(_tm_focus <"$LOG")"
+expect "the error after minified lines survives" "Error: the real reason" "$(tail -n1 <<<"$out")"
+expect "no line keeps more than 1000 characters" 0 "$(awk 'length > 1000' <<<"$out" | wc -l | tr -d ' ')"
+expect "the trace stays within its budget" yes "$( (($(printf '%s' "$out" | wc -c) <= 10240)) && echo yes || echo no)"
+
 # --- a container failure, read by the host ---
 reset
 printf '%s\n' 'EXIT_CODE=7' 'LINE=24' 'COMMAND=setup_uv' 'FUNCTION=' 'STEP=Setup uv' \

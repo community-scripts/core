@@ -100,9 +100,10 @@ _tm_step_output() {
   awk '/^\[[0-9-]+ [0-9:]+\] \[(INFO|OK)\] /{n=0} {buf[n++]=$0} END{for(i=0;i<n;i++)print buf[i]}'
 }
 
-# stdin filter: what goes into the trace
+# stdin filter: what goes into the trace. The error is at the end; a Node crash
+# prints its minified source line, which alone filled the budget.
 _tm_focus() {
-  _tm_step_output | _tm_clean_log | tail -n "${TELEMETRY_ERROR_MAX_LINES:-60}" | head -c "${TELEMETRY_ERROR_MAX_BYTES:-10240}"
+  _tm_step_output | _tm_clean_log | cut -c1-1000 | tail -n "${TELEMETRY_ERROR_MAX_LINES:-60}" | tail -c "${TELEMETRY_ERROR_MAX_BYTES:-10240}"
 }
 
 # The most specific log that exists: combined (host + container), install, build.
