@@ -51,6 +51,38 @@ _incus_nic_supports_ip() {
   esac
 }
 
+# A system container takes only a plain address (a DHCP reservation) and no
+# gateway; CIDR and ipv4/ipv6.gateway are OCI-only and stop it from starting.
+_incus_apply_addresses() {
+  local changed=1 addr gw net_gw
+  if [[ -n "${NET:-}" && "${NET}" != "dhcp" ]]; then
+    addr="${NET%%/*}"
+    _incus_device_set ipv4.address "$addr" "Could not reserve ${addr} on '${BRG}' (see the log); the container keeps a DHCP address" && changed=0 || true
+  fi
+
+  gw="${GATE:-}"
+  gw="${gw#,gw=}"
+  if [[ -n "$gw" ]]; then
+    net_gw="$(incus network get "$BRG" ipv4.dhcp.gateway 2>/dev/null || true)"
+    if [[ -z "$net_gw" ]]; then
+      net_gw="$(incus network get "$BRG" ipv4.address 2>/dev/null || true)"
+      net_gw="${net_gw%%/*}"
+    fi
+    if [[ "$gw" != "$net_gw" ]]; then
+      msg_warn "Gateway ${gw} is not applied: Incus DHCP on '${BRG}' hands out ${net_gw:-its own}"
+    fi
+  fi
+
+  if [[ "${IPV6_METHOD:-}" == "static" && -n "${IPV6_ADDR:-}" && "${IPV6_ADDR}" != "auto" ]]; then
+    addr="${IPV6_ADDR%%/*}"
+    _incus_device_set ipv6.address "$addr" "Could not reserve ${addr} on '${BRG}' (see the log); IPv6 stays as the network assigns it" && changed=0 || true
+    if [[ -n "${IPV6_GATE:-}" ]]; then
+      msg_warn "IPv6 gateway ${IPV6_GATE} is not applied: Incus sets a gateway only for OCI containers"
+    fi
+  fi
+  return "$changed"
+}
+
 # Restart the container, tolerating optional boot-time configs (e.g.
 # linux.sysctl.kernel.keys.maxkeys) that some hosts/kernels reject for the
 # container's privilege level. Such configs pass 'config set' but abort the
@@ -72,8 +104,18 @@ _incus_restart_ct() {
   [[ "$(incus_instance_field "${CT_NAME}" s)" == "RUNNING" ]]
 }
 
+# An alias resolves whether or not the image exists for this host's
+# architecture; the launch then fails with "architecture isn't supported".
+_incus_image_fits_host() {
+  local arch
+  arch=$(LC_ALL=C incus image info "$1" 2>/dev/null | awk '/^Architecture:/ {print $2; exit}' || true)
+  [[ -n "$arch" ]] || return 2
+  [[ "$arch" == "$(uname -m)" ]]
+}
+
 _incus_resolve_launch_image() {
   # Tries images:OS/VER (+ /cloud, codename alias, local cache). Sets INCUS_LAUNCH_IMAGE.
+  # Returns 2 when the image exists, but not for this architecture.
   local os="${IMAGE_OS:-debian}" ver="${IMAGE_VERSION:-13}" alias=""
   os="${os,,}"
   alias="$(incus_get_image_alias "$os" "$ver" 2>/dev/null || true)"
@@ -97,18 +139,34 @@ _incus_resolve_launch_image() {
   for cand in "${candidates[@]}"; do
     if [[ -n "$local_aliases" ]] &&
       grep -qxF "${cand#images:}" <<<"$local_aliases" &&
-      incus image info "${cand#images:}" &>/dev/null; then
+      _incus_image_fits_host "${cand#images:}"; then
       INCUS_LAUNCH_IMAGE="${cand#images:}"
       return 0
     fi
   done
 
+  local fit other_arch=0
   for cand in "${candidates[@]}"; do
-    if incus image info "$cand" &>/dev/null; then
+    fit=0
+    _incus_image_fits_host "$cand" || fit=$?
+    if ((fit == 0)); then
       INCUS_LAUNCH_IMAGE="$cand"
       return 0
     fi
+    ((fit == 1)) && other_arch=1
   done
+
+  # Not on the image server under any name we know: take its newest version.
+  local newest
+  for newest in $(incus image alias list images: "${os}/" -f csv 2>/dev/null | cut -d, -f1 |
+    awk -F/ 'NF == 2 && $2 ~ /^[0-9][0-9.]*$/ {print $2}' | sort -urV || true); do
+    if _incus_image_fits_host "images:${os}/${newest}"; then
+      msg_warn "${os} ${ver} is not on the image server; using ${os} ${newest}"
+      INCUS_LAUNCH_IMAGE="images:${os}/${newest}"
+      return 0
+    fi
+  done
+  ((other_arch)) && return 2
 
   # Last resort: try remote launch of primary (incus may pull on demand)
   INCUS_LAUNCH_IMAGE="images:${os}/${ver}"
@@ -116,25 +174,23 @@ _incus_resolve_launch_image() {
 }
 
 _incus_parse_size_to_bytes() {
-  # Accepts raw bytes or human values like 589.51GiB / 211MiB / 1.5TB
-  local raw="${1:-}" val unit
+  # Integer arithmetic only: BusyBox awk truncates printf "%d" to 32 bit.
+  local raw="${1:-}" int frac unit mult scale=1 i
   raw="${raw// /}"
-  [[ -z "$raw" ]] && return 1
-  if [[ "$raw" =~ ^[0-9]+$ ]]; then
-    echo "$raw"
-    return 0
-  fi
-  val=$(echo "$raw" | sed -E 's/[^0-9.].*$//')
-  unit=$(echo "$raw" | sed -E 's/^[0-9.]+//' | tr '[:lower:]' '[:upper:]')
-  [[ -z "$val" ]] && return 1
+  [[ "$raw" =~ ^([0-9]+)(\.([0-9]+))?([A-Za-z]*)$ ]] || return 1
+  int="${BASH_REMATCH[1]}"
+  frac="${BASH_REMATCH[3]}"
+  unit="${BASH_REMATCH[4]^^}"
   case "$unit" in
-  B | "") echo "$(awk -v v="$val" 'BEGIN{printf "%d", v}')" ;;
-  KB | KIB | K) echo "$(awk -v v="$val" 'BEGIN{printf "%d", v*1024}')" ;;
-  MB | MIB | M) echo "$(awk -v v="$val" 'BEGIN{printf "%d", v*1024*1024}')" ;;
-  GB | GIB | G) echo "$(awk -v v="$val" 'BEGIN{printf "%d", v*1024*1024*1024}')" ;;
-  TB | TIB | T) echo "$(awk -v v="$val" 'BEGIN{printf "%d", v*1024*1024*1024*1024}')" ;;
+  B | "") mult=1 ;;
+  KB | KIB | K) mult=1024 ;;
+  MB | MIB | M) mult=$((1024 * 1024)) ;;
+  GB | GIB | G) mult=$((1024 * 1024 * 1024)) ;;
+  TB | TIB | T) mult=$((1024 * 1024 * 1024 * 1024)) ;;
   *) return 1 ;;
   esac
+  for ((i = 0; i < ${#frac}; i++)); do scale=$((scale * 10)); done
+  echo $((10#$int * mult + 10#${frac:-0} * mult / scale))
 }
 
 incus_storage_pool_free_gb() {
@@ -145,18 +201,25 @@ incus_storage_pool_free_gb() {
   # LC_ALL=C: incus translates this output. A German host reports "Gesamter
   # Speicherplatz" and "Speicherplatz in Benutzung", so the awk below matched
   # nothing and a 357GB pool looked unmeasurable.
+  # Incus reports total and used only; with --bytes they are plain integers, so
+  # the subtraction stays in bash and never goes through awk floats (BusyBox awk
+  # truncates those to 32 bit).
   info=$(LC_ALL=C incus storage info --bytes "$pool" 2>/dev/null || true)
-  free_raw=$(echo "$info" | awk -F': *' '/space free:/ {print $2; exit}')
-  if [[ -n "$free_raw" ]]; then
-    free_bytes="$(_incus_parse_size_to_bytes "$free_raw" 2>/dev/null || true)"
+  free_raw=$(echo "$info" | awk -F': *' '/space free:/ {gsub(/"/, "", $2); print $2; exit}')
+  total_raw=$(echo "$info" | awk -F': *' '/total space:/ {gsub(/"/, "", $2); print $2; exit}')
+  used_raw=$(echo "$info" | awk -F': *' '/space used:/ {gsub(/"/, "", $2); print $2; exit}')
+  if [[ "$free_raw" =~ ^[0-9]+$ ]]; then
+    free_bytes="$free_raw"
+  elif [[ "$total_raw" =~ ^[0-9]+$ && "$used_raw" =~ ^[0-9]+$ && "$total_raw" -ge "$used_raw" ]]; then
+    free_bytes=$((total_raw - used_raw))
   fi
 
   # Older/human output often has only "space used" + "total space" (no free line).
   if [[ -z "${free_bytes:-}" ]]; then
     info=$(LC_ALL=C incus storage info "$pool" 2>/dev/null || true)
-    free_raw=$(echo "$info" | awk -F': *' '/space free:/ {print $2; exit}')
-    total_raw=$(echo "$info" | awk -F': *' '/total space:/ {print $2; exit}')
-    used_raw=$(echo "$info" | awk -F': *' '/space used:/ {print $2; exit}')
+    free_raw=$(echo "$info" | awk -F': *' '/space free:/ {gsub(/"/, "", $2); print $2; exit}')
+    total_raw=$(echo "$info" | awk -F': *' '/total space:/ {gsub(/"/, "", $2); print $2; exit}')
+    used_raw=$(echo "$info" | awk -F': *' '/space used:/ {gsub(/"/, "", $2); print $2; exit}')
     if [[ -n "$free_raw" ]]; then
       free_bytes="$(_incus_parse_size_to_bytes "$free_raw" 2>/dev/null || true)"
     elif [[ -n "$total_raw" && -n "$used_raw" ]]; then
@@ -173,7 +236,7 @@ incus_storage_pool_free_gb() {
   if [[ -z "${free_bytes:-}" ]]; then
     local src
     src="$(LC_ALL=C incus storage get "$pool" source 2>/dev/null || true)"
-    if [[ -n "$src" && -d "$src" ]]; then
+    if [[ "${INCUS_REMOTE:-local}" == "local" && -n "$src" && -d "$src" ]]; then
       free_bytes="$(df -PB1 "$src" 2>/dev/null | awk 'NR==2 {print $4}')"
     fi
   fi
@@ -198,7 +261,6 @@ incus_validate_storage_space() {
     msg_custom "ℹ️" "${YW}" "Grow: incus storage set ${pool} size=50GiB   |   Or pick another pool"
     return 0
   fi
-  msg_ok "Storage space validated (${pool}: ~${free_gb}GB free)"
 }
 
 resolve_storage_preselect() {
@@ -303,17 +365,15 @@ incus_create_lxc_container() {
 
   if resolve_storage_preselect container "${CONTAINER_STORAGE:-}"; then
     STORAGE_POOL="$STORAGE_RESULT"
-    msg_ok "Storage ${BL}${STORAGE_POOL}${CL} (${STORAGE_INFO}) [Container]"
   elif [[ -z "${CONTAINER_STORAGE:-}" ]]; then
     select_storage container && STORAGE_POOL="$CONTAINER_STORAGE"
-    msg_ok "Storage ${BL}${STORAGE_POOL}${CL} [Container]"
   else
     STORAGE_POOL="${CONTAINER_STORAGE}"
   fi
 
   msg_info "Validating storage '${STORAGE_POOL}'"
   incus storage info "$STORAGE_POOL" &>/dev/null || { msg_error "Storage pool '${STORAGE_POOL}' invalid"; exit 213; }
-  msg_ok "Storage '${STORAGE_POOL}' validated"
+  msg_ok "Storage '${STORAGE_POOL}' validated${STORAGE_INFO:+ - ${STORAGE_INFO}}"
 
   if ! incus network show "${BRG}" >/dev/null 2>&1; then
     msg_warn "Network '${BRG}' not found, auto-selecting fallback"
@@ -323,15 +383,20 @@ incus_create_lxc_container() {
 
   msg_info "Resolving container image"
   local image_name=""
-  if _incus_resolve_launch_image; then
+  local resolve_rc=0
+  _incus_resolve_launch_image || resolve_rc=$?
+  if ((resolve_rc == 2)); then
+    msg_error "${IMAGE_OS} ${IMAGE_VERSION} has no $(uname -m) image on the image server"
+    exit 106
+  elif ((resolve_rc == 0)); then
     image_name="${INCUS_LAUNCH_IMAGE}"
-    msg_ok "Image ${BL}${image_name}${CL}"
+    msg_ok "Image ${BL}${image_name}${CL} (cached)"
   else
     image_name="${INCUS_LAUNCH_IMAGE:-images:${IMAGE_OS}/${IMAGE_VERSION}}"
-    msg_custom "ℹ️" "${YW}" "Image not cached yet — will try pull: ${image_name}"
+    msg_custom "ℹ️" "${YW}" "Image ${image_name} not cached, pulling"
   fi
 
-  msg_info "Creating LXC Container"
+  msg_info "Creating container"
   incus_log_section "Container Creation: ${CT_NAME}"
 
   local launch_args=()
@@ -364,7 +429,7 @@ incus_create_lxc_container() {
   [[ -n "${KERNEL_MODULES:-}" ]] &&
     launch_args+=("--config" "linux.kernel_modules=${KERNEL_MODULES}")
 
-  if [[ "${CT_TYPE:-1}" != "1" || "${ENABLE_FUSE:-no}" == "yes" || "${ENABLE_TUN:-no}" == "yes" ]]; then
+  if [[ "${CT_TYPE:-1}" != "1" ]]; then
     launch_args+=("--config" "security.privileged=true")
   fi
 
@@ -388,12 +453,13 @@ incus_create_lxc_container() {
 
   if ! incus launch "${image_name}" "${CT_NAME}" "${launch_args[@]}" >>"$LOGFILE" 2>&1; then
     # Retry alternate candidates once if primary pull failed
-    local retry_img="" launched=0
+    local retry_img="" launched=0 tried=" ${image_name} "
     for retry_img in "images:${IMAGE_OS}/${IMAGE_VERSION}/cloud" \
       "images:${IMAGE_OS}/$(incus_get_image_alias "${IMAGE_OS}" "${IMAGE_VERSION}" 2>/dev/null || true)" \
       "images:${IMAGE_OS}/$(incus_get_image_alias "${IMAGE_OS}" "${IMAGE_VERSION}" 2>/dev/null || true)/cloud"; do
-      [[ -z "$retry_img" || "$retry_img" == "$image_name" || "$retry_img" == */ ]] && continue
-      msg_warn "Launch failed with ${image_name} — retrying ${retry_img}"
+      [[ -z "$retry_img" || "$retry_img" == */ || "$tried" == *" ${retry_img} "* ]] && continue
+      tried+="${retry_img} "
+      msg_warn "Launch failed, retrying with ${retry_img}"
       if incus launch "${retry_img}" "${CT_NAME}" "${launch_args[@]}" >>"$LOGFILE" 2>&1; then
         image_name="$retry_img"
         launched=1
@@ -429,14 +495,15 @@ incus_create_lxc_container() {
   # plus a rollback to reach the state it would have had anyway. Privileged
   # only, and only when the host default is actually below what we want.
   local optional_sysctl_pending=0
+  # The sysctl probe reads this machine; against a remote, just try the setting.
   if [[ "${CT_TYPE:-1}" == "0" ]] &&
-    (($(cat /proc/sys/kernel/keys/maxkeys 2>/dev/null || echo 2000) < 2000)); then
+    { [[ "${INCUS_REMOTE:-local}" != "local" ]] || (($(cat /proc/sys/kernel/keys/maxkeys 2>/dev/null || echo 2000) < 2000)); }; then
     if incus config set "${CT_NAME}" linux.sysctl.kernel.keys.maxkeys=2000 >>"$LOGFILE" 2>&1; then
       optional_sysctl_pending=1
     fi
   fi
 
-  msg_ok "LXC Container ${CT_NAME} was successfully created."
+  msg_ok "Container ${CT_NAME} created"
 
   msg_info "Waiting for container to initialize"
   local waited=0
@@ -445,7 +512,7 @@ incus_create_lxc_container() {
     waited=$((waited + 2))
     [[ "$waited" -ge 60 ]] && { msg_error "Container not ready"; exit 1; }
   done
-  msg_ok "Container ${CT_NAME} is ready"
+  msg_ok "Container started"
 
   incus_set_container_hostname
 
@@ -465,30 +532,7 @@ incus_create_lxc_container() {
   fi
 
   if [[ "$nic_supports_ip" -eq 1 ]]; then
-    if [[ -n "${NET:-}" && "${NET}" != "dhcp" ]]; then
-      _incus_device_set ipv4.address "${NET}" "Could not apply IPv4 (${NET})" && net_reconfigure=1 || true
-    fi
-    if [[ -n "${GATE:-}" ]]; then
-      _incus_device_set ipv4.gateway "${GATE}" "Could not apply gateway (${GATE})" && net_reconfigure=1 || true
-    fi
-    case "${IPV6_METHOD:-auto}" in
-    auto | dhcp)
-      # Leave unset — NIC/network default. Explicit ipv6.address=auto breaks some hosts.
-      ;;
-    static)
-      if [[ -n "${IPV6_ADDR:-}" && "${IPV6_ADDR}" != "auto" ]]; then
-        _incus_device_set ipv6.address "${IPV6_ADDR}" "Could not apply IPv6 (${IPV6_ADDR})" && net_reconfigure=1 || true
-      fi
-      [[ -n "${IPV6_GATE:-}" ]] && { _incus_device_set ipv6.gateway "${IPV6_GATE}" "Could not apply IPv6 gateway" && net_reconfigure=1 || true; }
-      ;;
-    none | disable)
-      # Incus only accepts ipv6.address=none on a NIC when the bridge has
-      # security.ipv6_filtering, so on a default incusbr0 this always failed
-      # and warned about something it does not actually control. verb_ip6() in
-      # tools.func does the real disabling from inside the container, so leave
-      # the device alone and save the restart.
-      ;;
-    esac
+    _incus_apply_addresses && net_reconfigure=1 || true
   else
     # An unmanaged bridge is the ordinary case here and not an error: the
     # container simply takes an address from the LAN's own DHCP. Worth saying
@@ -540,25 +584,28 @@ incus_set_container_hostname() {
   hn=$(echo "$hn" | tr '[:upper:]' '[:lower:]' | tr -d ' ' | tr '_' '-')
   [[ -z "$hn" ]] && return 0
 
-  msg_info "Setting hostname to ${hn}"
   _incus_soft incus config set "${CT_NAME}" "user.hostname=${hn}" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
   # Prefer instance name for system hostname when UI used CT_ID as name
   local sys_hn="${CT_NAME}"
-  _incus_soft incus_ct_exec bash -c "
+  # sh: a fresh Alpine image has no bash yet.
+  if incus_ct_exec sh -c "
     echo '${sys_hn}' >/etc/hostname
     hostname '${sys_hn}' 2>/dev/null || true
     if command -v hostnamectl >/dev/null 2>&1; then
       hostnamectl set-hostname '${sys_hn}' 2>/dev/null || true
     fi
-    if [[ -f /etc/hosts ]]; then
+    if [ -f /etc/hosts ]; then
       if grep -qE '^127\\.0\\.1\\.1' /etc/hosts; then
-        sed -i 's/^127\\.0\\.1\\.1.*/127.0.1.1\\t${sys_hn}/' /etc/hosts
+        sed -i 's/^127\\.0\\.1\\.1.*/127.0.1.1 ${sys_hn}/' /etc/hosts
       else
-        echo -e '127.0.1.1\\t${sys_hn}' >>/etc/hosts
+        echo '127.0.1.1 ${sys_hn}' >>/etc/hosts
       fi
     fi
-  " >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
-  msg_ok "Hostname set to ${sys_hn}"
+  " >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1; then
+    :
+  else
+    msg_warn "Could not set the hostname inside ${CT_NAME} (see the log)"
+  fi
 }
 
 incus_is_gpu_app() {
@@ -824,18 +871,22 @@ incus_configure_device_passthrough() {
     fi
   fi
 
-  if [[ "${ENABLE_FUSE:-no}" == "yes" ]]; then
-    msg_custom "ℹ️" "${YW}" "FUSE enabled via privileged container (security.privileged=true)"
-  fi
-
-  if [[ "${ENABLE_TUN:-no}" == "yes" ]]; then
+  if [[ "${ENABLE_TUN:-no}" == "yes" ]] && ! incus_ct_exec test -c /dev/net/tun 2>/dev/null; then
     if incus config device add "${CT_NAME}" tun unix-char source=/dev/net/tun path=/dev/net/tun \
       >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1; then
       msg_ok "TUN device attached"
     else
       msg_warn "Could not add TUN device"
-      echo -e "${TAB}${INFO} TUN/VPN usually needs a ${GN}privileged${CL} container (security.privileged=true)"
       echo -e "${TAB}${INFO} Nesting/Docker apps: also enable nesting (security.nesting=true)."
+    fi
+  fi
+
+  if [[ "${ENABLE_FUSE:-no}" == "yes" ]] && ! incus_ct_exec test -c /dev/fuse 2>/dev/null; then
+    if incus config device add "${CT_NAME}" fuse unix-char source=/dev/fuse path=/dev/fuse \
+      >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1; then
+      msg_ok "FUSE device attached"
+    else
+      msg_warn "Could not add FUSE device"
     fi
   fi
 
@@ -847,8 +898,7 @@ incus_configure_device_passthrough() {
 }
 
 incus_wait_for_network() {
-  [[ "${var_os:-debian}" == "alpine" ]] && return 0
-  msg_info "Waiting for network in LXC container"
+  msg_info "Waiting for the container network"
 
   local net_type="" max_wait=40
   net_type=$(incus network show "${BRG:-}" 2>/dev/null | awk '/^type:/ {print $2; exit}')
@@ -880,7 +930,8 @@ incus_wait_for_network() {
   for retry in {1..3}; do
     if incus_ct_exec ping -c 1 -W 2 1.1.1.1 &>/dev/null ||
       incus_ct_exec ping -c 1 -W 2 8.8.8.8 &>/dev/null ||
-      incus_ct_exec ping6 -c 1 -W 2 2606:4700:4700::1111 &>/dev/null; then
+      incus_ct_exec ping6 -c 1 -W 2 2606:4700:4700::1111 &>/dev/null ||
+      incus_ct_exec timeout 3 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' &>/dev/null; then
       ping_success=true
       break
     fi
@@ -891,9 +942,8 @@ incus_wait_for_network() {
     msg_warn "Network configured (IP: $ip_in_lxc) but connectivity test failed"
     echo -e "${YW}Container may have limited internet access. Installation will continue...${CL}"
   else
-    msg_ok "Network in LXC is reachable (ping)"
+    msg_ok "Network reachable (${ip_in_lxc})"
   fi
-  msg_ok "IP set to ${ip_in_lxc}"
   export IP="$ip_in_lxc"
 }
 
@@ -943,12 +993,12 @@ incus_set_root_password() {
   local pw_raw="${PW#--password }"
   [[ -z "$pw_raw" ]] && return 0
   msg_info "Setting root password"
-  incus_ct_exec bash -c "echo 'root:${pw_raw}' | chpasswd" &>/dev/null && msg_ok "Set root password" || msg_warn "Could not set root password"
+  printf 'root:%s\n' "$pw_raw" | incus exec "${CT_NAME}" -- chpasswd &>/dev/null && msg_ok "Set root password" || msg_warn "Could not set root password"
 }
 
 incus_customize_container() {
-  msg_info "Customizing LXC Container"
-  ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+  msg_info "Customizing container"
+  ARCH="$(_cs_host_arch)"
 
   if [[ "${var_os:-debian}" == "alpine" ]]; then
     sleep 2
@@ -1006,40 +1056,42 @@ EOF"
   fi
 
   incus_set_root_password
-  msg_ok "Customized LXC Container"
+  msg_ok "Container customized"
 }
 
-incus_setup_motd_pve_style() {
-  msg_info "Setting up MOTD"
-  local motd_file
-  motd_file=$(mktemp)
-  cat >"$motd_file" <<MOTDEOF
-#!/bin/bash
-# Community Scripts MOTD
-if [[ -f /etc/os-release ]]; then . /etc/os-release; fi
-echo ''
-echo '  🚀 ${APP} LXC'
-echo "  🖥️  OS: \${PRETTY_NAME:-Linux}"
-echo "  📡 IP: \$(hostname -I 2>/dev/null | awk '{print \$1}')"
-echo ''
-MOTDEOF
-  incus file push "$motd_file" "${CT_NAME}/etc/profile.d/99-community-scripts-motd.sh" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
-  incus_ct_exec chmod +x /etc/profile.d/99-community-scripts-motd.sh >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
-  rm -f "$motd_file"
-  msg_ok "MOTD configured"
+# ------------------------------------------------------------------------------
+# _incus_wait_for_detached_install <base>
+#
+# The console closed while the install ran. incus ended the exec session that
+# was watching it, but the install itself is detached and carries on. Wait for
+# what it leaves behind: .failed (its exit code, read by the caller), .done, or
+# the process gone without either.
+# ------------------------------------------------------------------------------
+_incus_wait_for_detached_install() {
+  local base="$1" pid="" waited=0
+  local poll="${_CS_HANGUP_POLL:-10}" limit="${_CS_HANGUP_TIMEOUT:-21600}"
+  while :; do
+    incus_ct_exec test -f "${base}.failed" >/dev/null 2>&1 && return 0
+    incus_ct_exec test -f "${base}.done" >/dev/null 2>&1 && return 0
+    pid="$(incus_ct_exec cat "${base}.pid" 2>/dev/null | tr -d '[:space:]')"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && ! incus_ct_exec kill -0 "$pid" >/dev/null 2>&1; then
+      return 0
+    fi
+    ((waited >= limit)) && return 0
+    sleep "$poll"
+    waited=$((waited + poll))
+  done
 }
 
 _incus_push_functions_and_run_install() {
   # Sets INCUS_LAST_INSTALL_EXIT (do not capture stdout — msg_* writes there).
   INCUS_LAST_INSTALL_EXIT=0
-  msg_info "Pushing functions to container"
   incus_ct_exec bash -c "cat > /tmp/incus-functions <<'INNEREOF'
 ${FUNCTIONS_FILE_PATH}
 INNEREOF" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || { msg_error "Failed to push functions"; exit 1; }
-  msg_ok "Functions pushed"
 
   if [[ "${DNS_RETRY_OVERRIDE:-}" == "true" ]]; then
-    msg_info "Applying DNS override inside LXC"
+    msg_info "Applying the DNS override (8.8.8.8, 1.1.1.1)"
     incus_ct_exec bash -c "echo -e 'nameserver 8.8.8.8\nnameserver 1.1.1.1' >/etc/resolv.conf" || true
     msg_ok "DNS override applied"
   fi
@@ -1049,8 +1101,14 @@ INNEREOF" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || { msg_error "Failed to push f
   # prompts - the spinner kept redrawing over them, which is why Immich's
   # machine-learning menu could not be read and the keystroke landed in the
   # spinner line. A static line, and the script owns the terminal from here.
+  # Emptied first, or msg_custom would resume a block the host left open.
+  _MSG_BLOCKS=()
   msg_custom "🚀" "${GN}" "Starting application installation"
   local _install_script _run_env lxc_exit=0 install_exit_code=0
+  # Checked here: inside $(...) below, stdout is the capture pipe, never the terminal.
+  local _incus_tty_out=0 _incus_tty_in=0
+  [[ -t 1 ]] && _incus_tty_out=1
+  [[ -t 0 ]] && _incus_tty_in=1
   _install_script="$(_cs_fetch_text "install/${var_install}.sh")"
   _run_env="$(_incus_build_install_env)"
   _run_env+=$'\nsource /dev/stdin <<<"$(cat /tmp/incus-functions)"'
@@ -1059,22 +1117,61 @@ INNEREOF" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1 || { msg_error "Failed to push f
   # No pty on purpose: under `incus exec -t` apt's tcsetattr fails with EIO and kills the shell.
   set +Eeuo pipefail
   trap - ERR
+
+  # incus ends an exec session the moment its client goes away, so closing the
+  # console killed the install outright - the one thing lxc-attach does not do.
+  # Run it detached from that session and only watch it from here. The console
+  # keeps the view and the keyboard: input reaches the install through a fifo
+  # for as long as there is a console, and once there is none the reads return
+  # EOF and the prompts take their defaults.
+  local _base="/root/.install-${SESSION_ID}"
+  local _runner _watcher _body
+  _runner='setsid bash "$1".sh <"$1".in >>"$1".out 2>&1 &
+echo $! >"$1".pid'
+  _watcher='tail -n +1 -f "$1".out &
+_tp=$!
+while [ ! -f "$1".done ] && [ ! -f "$1".failed ]; do sleep 2; done
+sleep 1
+kill $_tp 2>/dev/null'
   # The trailing touch is a completion sentinel: no install script exits early.
-  incus exec "${CT_NAME}" -- bash -c "${_run_env}
+  _body="${_run_env}
 ${_install_script}
-touch /root/.install-${SESSION_ID}.done" 2>&1 |
-    tee >(sed -u 's/.*\r//' >>"${LOGFILE:-$INCUS_BUILD_LOG}")
-  # PIPESTATUS, not $?: the line above turns pipefail off, so $? is tee's
-  # status - always 0. Every non-zero exit from the container was discarded
-  # here, which is why a half-finished install reported success.
-  lxc_exit=${PIPESTATUS[0]}
+touch ${_base}.done"
+
+  incus exec "${CT_NAME}" -- bash -c "cat >${_base}.sh <<'CSBODYEOF'
+${_body}
+CSBODYEOF
+cat >${_base}.run <<'CSRUNEOF'
+${_runner}
+CSRUNEOF
+cat >${_base}.watch <<'CSWATCHEOF'
+${_watcher}
+CSWATCHEOF
+rm -f ${_base}.in ${_base}.pid ${_base}.done ${_base}.failed ${_base}.out
+mkfifo ${_base}.in" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
+
+  # A writer has to hold the fifo open before the install opens it to read.
+  incus exec "${CT_NAME}" -- sh -c "cat >${_base}.in" &
+  local _feeder=$!
+  incus exec "${CT_NAME}" -- bash "${_base}.run" "${_base}" >/dev/null 2>&1
+
+  incus exec "${CT_NAME}" -- bash "${_base}.watch" "${_base}" 2>&1 |
+    tee >(sed 's/.*\r//' >>"${LOGFILE:-$INCUS_BUILD_LOG}")
+  kill "$_feeder" 2>/dev/null || true
+  wait "$_feeder" 2>/dev/null || true
+
+  # The watcher is gone either way - because the install ended, or because the
+  # console did. Only the markers say which.
+  _incus_wait_for_detached_install "$_base"
+  lxc_exit=0
   set -Eeuo pipefail
   declare -f error_handler &>/dev/null && trap 'error_handler' ERR || true
 
   if [[ -n "${SESSION_ID:-}" ]]; then
     local error_flag="/root/.install-${SESSION_ID}.failed"
     if incus_ct_exec test -f "$error_flag" 2>/dev/null; then
-      install_exit_code=$(incus_ct_exec cat "$error_flag" 2>/dev/null || echo "1")
+      install_exit_code=$(incus_ct_exec cat "$error_flag" 2>/dev/null | tr -d '[:space:]') || true
+      [[ "$install_exit_code" =~ ^[0-9]+$ ]] || install_exit_code=199
       incus_ct_exec rm -f "$error_flag" 2>/dev/null || true
     fi
   fi
@@ -1089,10 +1186,12 @@ touch /root/.install-${SESSION_ID}.done" 2>&1 |
       incus_ct_exec rm -f "/root/.install-${SESSION_ID}.done" 2>/dev/null || true
     else
       msg_error "Install script stopped before it finished - nothing reported it"
+      [[ "${_CS_HANGUP:-}" == "1" ]] && msg_custom "ℹ️" "${YW}" "The console was closed; the install ran on detached, so look at its log for the reason"
       msg_custom "ℹ️" "${YW}" "Output: incus exec ${CT_NAME} -- tail -50 /root/.install-${SESSION_ID}.log"
-      install_exit_code=1
+      install_exit_code=199
     fi
   fi
+  incus_ct_exec rm -f "${_base}.sh" "${_base}.run" "${_base}.watch" "${_base}.in" "${_base}.pid" "${_base}.out" >/dev/null 2>&1 || true
   INCUS_LAST_INSTALL_EXIT=$install_exit_code
 }
 
@@ -1144,7 +1243,6 @@ _incus_build_combined_log() {
 }
 
 incus_run_install_script_with_recovery() {
-  msg_info "Preparing installation"
   incus_log_section "Application Installation: ${APP}"
 
   declare -f start_install_timer &>/dev/null && start_install_timer || true
@@ -1156,7 +1254,6 @@ incus_run_install_script_with_recovery() {
   local install_exit_code="${INCUS_LAST_INSTALL_EXIT:-1}"
 
   if [[ "$install_exit_code" -eq 0 ]]; then
-    msg_ok "Installation completed"
     CONTAINER_INSTALLING=false
     INCUS_BUILD_OK=1
     export INCUS_BUILD_OK
@@ -1190,12 +1287,21 @@ incus_run_install_script_with_recovery() {
 
   echo ""
   local is_oom=false is_network_issue=false is_apt_issue=false is_cmd_not_found=false
-  local error_explanation=""
-  declare -f explain_exit_code >/dev/null 2>&1 && error_explanation="$(explain_exit_code "$install_exit_code")"
+  local error_explanation="" failed_cmd=""
+  [[ -s "${TELEMETRY_ERRINFO:-}" ]] && failed_cmd="$(sed -n 's/^COMMAND=//p' "$TELEMETRY_ERRINFO" | head -n1)"
+  if declare -f _eh_explanation >/dev/null 2>&1; then
+    error_explanation="$(_eh_explanation "$install_exit_code" "$failed_cmd")"
+  elif declare -f explain_exit_code >/dev/null 2>&1; then
+    error_explanation="$(explain_exit_code "$install_exit_code")"
+  fi
 
   [[ $install_exit_code -eq 134 || $install_exit_code -eq 137 || $install_exit_code -eq 243 ]] && is_oom=true
   case "$install_exit_code" in
-  100 | 101 | 102) is_apt_issue=true ;;
+  100 | 101 | 102)
+    if [[ -z "$failed_cmd" ]] || ! declare -f _eh_command_is >/dev/null 2>&1 || _eh_command_is "$failed_cmd" "$(_eh_tools_for APT)"; then
+      is_apt_issue=true
+    fi
+    ;;
   255)
     [[ -f "$combined_log" ]] && grep -qiE 'dpkg|apt-get|broken packages|unmet dependencies' "$combined_log" && is_apt_issue=true
     ;;
@@ -1210,14 +1316,14 @@ incus_run_install_script_with_recovery() {
   if [[ $install_exit_code -eq 1 && -f "$combined_log" ]]; then
     grep -qiE 'E: Unable to|broken packages|unmet dependencies|dpkg --configure' "$combined_log" && is_apt_issue=true
     grep -qiE 'Cannot allocate memory|Out of memory|oom-killer|JavaScript heap' "$combined_log" && is_oom=true
-    grep -qiE 'Could not resolve|DNS|Network is unreachable|Failed to fetch' "$combined_log" && is_network_issue=true
+    grep -qiE 'Could not resolve|DNS resolution failed|Temporary failure resolving|Network is unreachable|Failed to fetch' "$combined_log" && is_network_issue=true
     grep -qiE ': command not found' "$combined_log" && is_cmd_not_found=true
   fi
 
   [[ -n "$error_explanation" ]] && echo -e "${TAB}${RD}Error: ${error_explanation}${CL}" && echo ""
   if [[ $install_exit_code -eq 10 ]]; then
     echo -e "${TAB}${INFO} Privileged / nesting / device hint:"
-    echo -e "${TAB}${INFO}  • Privileged: ${GN}security.privileged=true${CL} (TUN, FUSE, USB, Docker-in-LXC)"
+    echo -e "${TAB}${INFO}  • Privileged: ${GN}security.privileged=true${CL} (USB, Docker-in-LXC)"
     echo -e "${TAB}${INFO}  • Nesting:     ${GN}security.nesting=true${CL} (Docker/Podman inside CT)"
     echo -e "${TAB}${INFO}  • Re-run Advanced settings and enable the matching options."
     echo ""
@@ -1363,40 +1469,59 @@ incus_run_install_script_with_recovery() {
   exit "$install_exit_code"
 }
 
+# incus exec does not carry the caller's environment like lxc-attach does, so
+# everything the install side reads is passed here, quoted with %q.
 _incus_build_install_env() {
-  cat <<EOF
-export FUNCTIONS_FILE_PATH=\$(cat /tmp/incus-functions)
-export DIAGNOSTICS='${DIAGNOSTICS:-yes}'
-export RANDOM_UUID='${RANDOM_UUID}'
-export EXECUTION_ID='${EXECUTION_ID}'
-export SESSION_ID='${SESSION_ID}'
-export VERBOSE='${VERBOSE:-no}'
-export STD='$([ "${VERBOSE:-no}" = "yes" ] && echo "" || echo silent)'
-export APP='${APP}'
-export APPLICATION='${APP}'
-export NSAPP='${NSAPP}'
-export app='${NSAPP}'
-export PASSWORD='${PW:-}'
-export CTID='${CT_NAME}'
-export CTTYPE='${CT_TYPE:-1}'
-export PCT_OSTYPE='${var_os:-debian}'
-export PCT_OSVERSION='${var_version:-13}'
-export PCT_DISK_SIZE='${DISK_SIZE}'
-export tz='${timezone:-UTC}'
-export MODE='${METHOD:-default}'
-export ENABLE_FUSE='${ENABLE_FUSE:-no}'
-export ENABLE_TUN='${ENABLE_TUN:-no}'
-export ENABLE_GPU='${ENABLE_GPU:-no}'
-export IPV6_METHOD='${IPV6_METHOD:-auto}'
-export COMMUNITY_SCRIPTS_URL='${INCUS_COMMUNITY_SCRIPTS_URL}'
-export COMMUNITY_SCRIPTS_CORE_URL='${COMMUNITY_SCRIPTS_CORE_URL}'
-export INSTALL_LOG='/root/.install-${SESSION_ID}.log'
-export REPO_SOURCE='${REPO_SOURCE:-}'
-export REPO_SLUG='${REPO_SLUG:-}'
-export TELEMETRY_PLATFORM='incus'
-export CS_ANIMATION_OK='$([ -t 1 ] && echo 1 || echo 0)'
-export CS_STDIN_OK='$([ -t 0 ] && echo 1 || echo 0)'
-EOF
+  local -a env=(
+    DIAGNOSTICS="${DIAGNOSTICS:-no}"
+    RANDOM_UUID="${RANDOM_UUID}"
+    EXECUTION_ID="${EXECUTION_ID}"
+    SESSION_ID="${SESSION_ID}"
+    VERBOSE="${VERBOSE:-no}"
+    STD="$([ "${VERBOSE:-no}" = "yes" ] && echo "" || echo silent)"
+    APP="${APP}"
+    APPLICATION="${APP}"
+    NSAPP="${NSAPP}"
+    app="${NSAPP}"
+    PASSWORD="${PW:-}"
+    CTID="${CT_NAME}"
+    CTTYPE="${CT_TYPE:-1}"
+    PCT_OSTYPE="${var_os:-debian}"
+    PCT_OSVERSION="${var_version:-13}"
+    PCT_DISK_SIZE="${DISK_SIZE}"
+    tz="${timezone:-UTC}"
+    MODE="${METHOD:-default}"
+    ENABLE_FUSE="${ENABLE_FUSE:-no}"
+    ENABLE_TUN="${ENABLE_TUN:-no}"
+    ENABLE_GPU="${ENABLE_GPU:-no}"
+    IPV6_METHOD="${IPV6_METHOD:-auto}"
+    SSH_ROOT="${SSH:-no}"
+    CACHER="${APT_CACHER:-}"
+    CACHER_IP="${APT_CACHER_IP:-}"
+    dev_mode="${dev_mode:-}"
+    COMMUNITY_SCRIPTS_URL="${INCUS_COMMUNITY_SCRIPTS_URL}"
+    COMMUNITY_SCRIPTS_CORE_URL="${COMMUNITY_SCRIPTS_CORE_URL}"
+    INSTALL_LOG="/root/.install-${SESSION_ID}.log"
+    REPO_SOURCE="${REPO_SOURCE:-}"
+    REPO_SLUG="${REPO_SLUG:-}"
+    TELEMETRY_PLATFORM="incus"
+    TELEMETRY_URL="${TELEMETRY_URL:-}"
+    TELEMETRY_PAYLOAD_VERSION="${TELEMETRY_PAYLOAD_VERSION:-}"
+    CS_ANIMATION_OK="${_incus_tty_out:-0}"
+    CS_STDIN_OK="${_incus_tty_in:-0}"
+  )
+  # lxc-attach carries the app's var_* settings into a Proxmox container; incus exec does not.
+  local v
+  for v in $(compgen -e var_ || true); do env+=("$v=${!v}"); done
+  if [[ -n "${HTTP_PROXY:-}" ]]; then
+    env+=(HTTP_PROXY="$HTTP_PROXY" HTTPS_PROXY="$HTTP_PROXY" http_proxy="$HTTP_PROXY" https_proxy="$HTTP_PROXY"
+      NO_PROXY="${HTTP_NO_PROXY:-}" no_proxy="${HTTP_NO_PROXY:-}")
+  fi
+  echo 'export FUNCTIONS_FILE_PATH=$(cat /tmp/incus-functions)'
+  local kv
+  for kv in "${env[@]}"; do
+    printf 'export %s=%q\n' "${kv%%=*}" "${kv#*=}"
+  done
 }
 
 # bash shows a `read -p` prompt only on a terminal, so without a pty the question was invisible.
@@ -1438,7 +1563,6 @@ incus_build_container() {
   _incus_prepare_install_exports
 
   if [[ -n "${CONTAINER_STORAGE:-$STORAGE_POOL}" ]]; then
-    msg_info "Validating storage space"
     incus_validate_storage_space "${CONTAINER_STORAGE:-$STORAGE_POOL}" "${DISK_SIZE}" || true
   fi
 
@@ -1451,7 +1575,6 @@ incus_build_container() {
   incus_fix_debian13_root_ownership
   incus_customize_container
   install_ssh_keys_into_ct
-  incus_setup_motd_pve_style
   incus_run_install_script_with_recovery
 }
 

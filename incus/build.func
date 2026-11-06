@@ -65,7 +65,7 @@ incus_variables() {
   NSAPP=$(echo "${APP,,}" | tr -d ' ')
   var_install="${NSAPP}-install"
   INTEGER='^[0-9]+([.][0-9]+)?$'
-  HOST_NAME=$(hostname)
+  HOST_NAME=$(hostname 2>/dev/null || uname -n)
   PVEHOST_NAME="$HOST_NAME"
   DIAGNOSTICS="yes"
   METHOD="default"
@@ -93,7 +93,9 @@ incus_variables() {
   else
     PVEVERSION="Incus"
   fi
-  KERNEL_VERSION=$(uname -r)
+  # The summary names the machine that runs the container, which may be a remote.
+  declare -f incus_target >/dev/null 2>&1 && command -v incus >/dev/null 2>&1 && incus_target
+  KERNEL_VERSION="${INCUS_SERVER_KERNEL:-$(uname -r)}"
   if [[ -n "${var_cpu:-}" && "${var_cpu}" =~ ^[0-9]+$ ]]; then export APP_DEFAULT_CPU="${var_cpu}"; fi
   if [[ -n "${var_ram:-}" && "${var_ram}" =~ ^[0-9]+$ ]]; then export APP_DEFAULT_RAM="${var_ram}"; fi
   if [[ -n "${var_disk:-}" && "${var_disk}" =~ ^[0-9]+$ ]]; then export APP_DEFAULT_DISK="${var_disk}"; fi
@@ -246,6 +248,7 @@ _incus_sync_from_pve_settings() {
     ;;
   esac
   PROFILE="${var_profile:-default}"
+  CONTAINER_STORAGE="${CONTAINER_STORAGE:-${var_container_storage:-}}"
   STORAGE_POOL="${CONTAINER_STORAGE:-${STORAGE_POOL:-}}"
   if [[ -z "$STORAGE_POOL" ]]; then
     STORAGE_POOL=$(incus storage list -f csv,noheader 2>/dev/null | head -1 | cut -d, -f1)
@@ -306,7 +309,6 @@ pve_check() {
   fi
   incus_check
 }
-arch_check() { :; }
 arm64_notice() { :; }
 ssh_check() { :; }
 
@@ -337,6 +339,10 @@ validate_bridge() {
 }
 
 validate_gateway_in_subnet() { return 0; }
+
+# incus_check (as pve_check) already stops without a storage pool, and Incus
+# has no template storage.
+storage_content_check() { return 0; }
 
 ensure_global_default_vars_file() {
   local dir vf
@@ -420,21 +426,19 @@ ensure_storage_selection_for_vars_file() {
   [[ -z "$vf" ]] && vf="$(community_scripts_dir)/default.vars"
   [[ -f "$vf" ]] || { mkdir -p "$(dirname "$vf")" 2>/dev/null || true; touch "$vf" 2>/dev/null || true; }
 
-  local tpl ct
-  tpl=$(grep -E '^var_template_storage=' "$vf" 2>/dev/null | cut -d= -f2-)
-  ct=$(grep -E '^var_container_storage=' "$vf" 2>/dev/null | cut -d= -f2-)
+  # Incus has no template storage: only the container pool is asked for.
+  local ct="${var_container_storage:-}"
+  [[ -z "$ct" ]] && ct=$(_vars_file_value "$vf" var_container_storage)
 
-  if [[ -n "$tpl" && -n "$ct" ]] && incus storage info "$ct" &>/dev/null; then
-    TEMPLATE_STORAGE="$tpl"
+  if [[ -n "$ct" ]] && incus storage info "$ct" &>/dev/null; then
     CONTAINER_STORAGE="$ct"
     if [[ -n "${DISK_SIZE:-}" ]]; then
       validate_storage_space "$ct" "$DISK_SIZE" "yes" || true
     fi
-    return 0
+  else
+    choose_and_set_storage_for_file "$vf" container
   fi
-
-  choose_and_set_storage_for_file "$vf" template
-  choose_and_set_storage_for_file "$vf" container
+  TEMPLATE_STORAGE="$CONTAINER_STORAGE"
 }
 
 select_storage() {
@@ -551,7 +555,12 @@ header_info() {
     header_content=$(get_header "$app_name" 2>/dev/null || true)
   fi
   clear 2>/dev/null || true
-  [[ -n "$header_content" ]] && echo "$header_content"
+  if [[ -n "$header_content" ]]; then
+    echo "$header_content"
+  else
+    echo "${_CS_FALLBACK_HEADER:-Community Scripts}"
+    echo "  ${APP:-}"
+  fi
   return 0
 }
 
@@ -591,7 +600,7 @@ build_container() {
 
 description() {
   CTID="${CT_NAME:-$CTID}"
-  IP=$(incus exec "${CT_NAME}" -- hostname -I 2>/dev/null | awk '{print $1}')
+  IP=$(incus exec "${CT_NAME}" -- hostname -I 2>/dev/null | awk '{print $1}' || true)
   [[ -z "$IP" ]] && IP=$(incus_instance_field "${CT_NAME}" 4 | tr -d '"' | cut -d' ' -f1)
   export IP
   incus config set "${CT_NAME}" user.description "${APP} LXC (community-scripts)" 2>/dev/null || true
@@ -624,8 +633,20 @@ _incus_on_signal() {
   exit "$code"
 }
 
+# A closed console is not an abort. The install runs detached inside the
+# container, so losing the terminal costs the view and the keyboard, not the
+# installation. Writes to the terminal that is gone fail with EIO and would
+# end the run under errexit, hence the redirect.
+_incus_on_hangup() {
+  local log="${LOGFILE:-${_INCUS_HOST_LOGFILE:-${INCUS_BUILD_LOG:-}}}"
+  [[ -n "$log" ]] || log="/tmp/incus-hangup-${SESSION_ID:-$$}.log"
+  exec </dev/null >>"$log" 2>&1
+  export _CS_HANGUP=1 _CS_HANGUP_LOG="$log" CS_STDIN_OK=0
+  echo "[WARN] $(date '+%Y-%m-%d %H:%M:%S') The terminal closed; continuing, output follows here."
+}
+
 trap 'api_exit_script' EXIT
 trap '_incus_on_err' ERR
-trap '_incus_on_signal SIGHUP 129' SIGHUP
+trap '_incus_on_hangup' SIGHUP
 trap '_incus_on_signal SIGINT 130' SIGINT
 trap '_incus_on_signal SIGTERM 143' SIGTERM

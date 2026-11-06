@@ -4,85 +4,33 @@
 # License: MIT | https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/LICENSE
 
 # ==============================================================================
-# API.FUNC - TELEMETRY & DIAGNOSTICS API (v3 - single-reporter rewrite)
+# API.FUNC - TELEMETRY
 # ==============================================================================
+# Anonymous install telemetry for telemetry.community-scripts.org. Opt-out via
+# DIAGNOSTICS=no (/usr/local/community-scripts/diagnostics).
 #
-# Provides functions for sending anonymous telemetry data via the community
-# telemetry ingest service at telemetry.community-scripts.org.
+# Only the host sends a terminal status (success/failed/aborted), once per
+# execution. A container leaves /root/.install-<SESSION_ID>.failed and an
+# .errinfo capture behind, which the host reads after the install returns.
 #
-# DESIGN PRINCIPLES (v3):
-#   1. SINGLE REPORTER: only the HOST sends terminal statuses (success/failed/
-#      aborted). Containers never curl the telemetry endpoint for terminal
-#      events - they write local artifact files (.failed flag + .errinfo) that
-#      the host picks up. This prevents the "first terminal event wins" race
-#      on the server from persisting a metadata-less container payload and
-#      discarding the full host payload.
-#   2. FULL PAYLOAD, ALWAYS: every send includes the complete system metadata
-#      (os, pve version, arch, cpu, gpu, ram, repo attribution). No more
-#      minimal payloads that create empty records.
-#   3. FOCUSED ERROR TRACE: the error field contains exactly the output of the
-#      command that failed (captured by silent() via byte offset), prefixed
-#      with "exit_code=N | <explanation> | at line L: <command>". Not a 120KB
-#      log dump, not the wrong phase of the log.
-#   4. IDEMPOTENT FINALIZE: post_update_to_api() sends exactly one terminal
-#      status per execution, no matter how many traps fire.
-#
-# Usage:
-#   source <(curl -fsSL .../api.func)
-#   post_to_api            # Report LXC container creation ("installing")
-#   post_to_api_vm         # Report VM creation ("installing")
-#   post_progress_to_api   # Progress ping ("validation"/"configuring")
-#   post_update_to_api     # Final status ("done"/"failed"/"aborted")
-#
-# Privacy:
-#   - Only anonymous statistics (no personal data, IPs are anonymized)
-#   - User can opt-out via DIAGNOSTICS=no
-#   - Random UUID for session tracking only
-#
+#   exitcodes.func  exit status -> description and category
+#   errorlog.func   the failing step's output and the error trace
+#   sysinfo.func    repo origin, CPU, GPU, RAM, architecture
+#   telemetry.func  payload and senders
 # ==============================================================================
 
-# ==============================================================================
-# Telemetry Configuration
-# ==============================================================================
 TELEMETRY_URL="${TELEMETRY_URL:-https://telemetry.community-scripts.org/telemetry}"
-
-# Timeout for progress pings (seconds)
 TELEMETRY_TIMEOUT=5
-
-# Payload schema version, sent as a field and in the User-Agent.
-#
-# Bump it whenever the payload gains, loses or changes the meaning of a field, so
-# the server can tell an old client from a new one. Before it existed the only
-# way to guess a client's age was which fields happened to be present, which made
-# every staged change a blind rollout.
-#
-#   1  the original payload
-#   2  adds kernel_version, app_version, failed_command, failed_line;
-#      gpu_passthrough changes meaning from host capability to actual passthrough
-TELEMETRY_PAYLOAD_VERSION=2
-# Timeout for final status updates (they carry the error trace)
 STATUS_TIMEOUT=10
 
-# Max size of the error trace sent to the API (bytes) and max line count.
-# Keep this SMALL and FOCUSED - the goal is "exactly the messages from the
-# moment of failure", not the whole installation log.
+# Bump when a field is added, removed or changes meaning; sent as a field and in the User-Agent.
+#   1  original payload
+#   2  kernel_version, app_version, failed_command, failed_line; gpu_passthrough = actual passthrough
+#   3  error_message, error_step, error_phase, failed_function; step-scoped, noise-filtered trace
+TELEMETRY_PAYLOAD_VERSION=3
+
 TELEMETRY_ERROR_MAX_LINES=60
 TELEMETRY_ERROR_MAX_BYTES=10240
-
-# ==============================================================================
-# SECTION 0: REPOSITORY SOURCE DETECTION
-# ==============================================================================
-
-# ==============================================================================
-# The implementations live in api/. Splitting them was a maintenance
-# change only -- every function kept its name, its body and its behaviour, and
-# this file stays the single thing to source.
-#
-#   exitcodes.func  numeric status -> sentence and category
-#   errorlog.func   finding, trimming and formatting the failing log
-#   sysinfo.func    repo origin, GPU, CPU, RAM, architecture
-#   telemetry.func  payload, transport and the senders
-# ==============================================================================
 
 # Repeated per file rather than shared: there is nowhere to put a shared copy
 # that does not itself need downloading first. See core/build.func.
@@ -93,10 +41,14 @@ _api_source_part() {
 
   if declare -f _cs_source_func >/dev/null 2>&1; then
     _cs_source_func "api/${part}.func"
-    return
+    return 0
   fi
 
-  # Inside a container there is no resolver: fall back to the engine base.
+  if [[ -n "${COMMUNITY_SCRIPTS_CORE_DIR:-}" && -s "${COMMUNITY_SCRIPTS_CORE_DIR}/api/${part}.func" ]]; then
+    # shellcheck disable=SC1090
+    source "${COMMUNITY_SCRIPTS_CORE_DIR}/api/${part}.func"
+    return 0
+  fi
   local base="${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}"
   if command -v curl >/dev/null 2>&1; then
     # shellcheck disable=SC1090

@@ -142,11 +142,13 @@ prompt_for_github_token() {
 #   expanded_assets page
 # - For a rate-limited API: 60 calls an hour per address are soon spent behind
 #   a shared address, and retrying seconds later does not help
+# - A renamed or transferred repo redirects, and its asset links carry the new
+#   owner/name, so neither is matched against the name the caller passed
 # ------------------------------------------------------------------------------
 _github_release_noapi() {
   local repo="$1" tag="$2" out="$3" loc html
   if [[ "$tag" == "latest" ]]; then
-    loc="$(curl -sSI --connect-timeout 10 --max-time 30 "https://github.com/${repo}/releases/latest" 2>/dev/null |
+    loc="$(curl -sSIL --connect-timeout 10 --max-time 30 "https://github.com/${repo}/releases/latest" 2>/dev/null |
       tr -d '\r' | awk 'tolower($1) == "location:" {print $2}' | tail -n1)"
     [[ "$loc" == */releases/tag/* ]] || return 1
     tag="${loc##*/releases/tag/}"
@@ -155,7 +157,7 @@ _github_release_noapi() {
   html="$(curl -fsSL --connect-timeout 10 --max-time 30 "https://github.com/${repo}/releases/expanded_assets/${tag}" 2>/dev/null)" || return 1
   {
     grep -oE 'href="[^"]+"' <<<"$html" | sed -E 's/^href="//; s/"$//' |
-      grep -iF "/${repo}/releases/download/" | sort -u || true
+      grep -E '^/[^/]+/[^/]+/releases/download/' | sort -u || true
   } | jq -R -s --arg tag "$tag" '{
       tag_name: $tag, name: $tag, draft: false, prerelease: false, body: "",
       assets: (split("\n") | map(select(length > 0))
@@ -238,7 +240,7 @@ github_api_call() {
         continue
       fi
       msg_error "GitHub API connection failed (no response)."
-      msg_error "Check your network/DNS: curl -sSL https://api.github.com/rate_limit"
+      _forge_explain_failure "api.github.com"
       return 22
       ;;
     *)
@@ -532,8 +534,13 @@ _cs_clean_target_dir() {
     find "${dir:?}" -mindepth 1 -maxdepth 1 -print0 | xargs -0 rm -rf --
   else
     list="$(mktemp)" || return 1
-    find "${dir:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o -print0 >"$list"
-    xargs -0 rm -rf -- <"$list"
+    # Not rm -r on the list: it would hold the parents of a nested mount, and
+    # rm -r on one would empty the mount. Files first, then directories deepest
+    # first. rmdir fails on purpose on a parent that still holds a mount.
+    find "${dir:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o ! -type d -print0 >"$list"
+    xargs -0 rm -f -- <"$list"
+    find "${dir:?}" -mindepth 1 \( -type d -exec mountpoint -q {} \; -prune \) -o -type d -print0 >"$list"
+    sort -rz "$list" | xargs -0 rmdir -- 2>/dev/null || true
     rm -f "$list"
   fi
 
@@ -556,9 +563,10 @@ _cs_clean_target_dir() {
 # directory). Extracts <tarball_path> into <workdir>, then copies the contents
 # of that top-level directory into <target>.
 #
-#   - Honors CLEAN_INSTALL=1 (wipes <target> first, dotfiles included, mount
-#     points preserved — back up config dotfiles like .env via create_backup
-#     and call restore_backup BEFORE any build step that sources them).
+#   - Honors CLEAN_INSTALL=1 (wipes <target> once the tarball has extracted,
+#     dotfiles included, mount points preserved — back up config dotfiles like
+#     .env via create_backup and call restore_backup BEFORE any build step that
+#     sources them). A failed extraction leaves <target> as it was.
 #   - Honors CLEAN_INSTALL_KEEP, a space-separated list of paths relative to
 #     <target> that the wipe leaves alone (e.g. "geodata .env data/uploads").
 #   - Does NOT own <workdir>: the caller creates it and is responsible for its
@@ -570,11 +578,6 @@ _cs_clean_target_dir() {
 _deploy_source_tarball() {
   local tarball="$1" target="$2" workdir="$3"
 
-  mkdir -p "$target"
-  if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-    _cs_clean_target_dir "$target"
-  fi
-
   tar --no-same-owner -xzf "$tarball" -C "$workdir" || {
     msg_error "Failed to extract tarball"
     return 251
@@ -582,6 +585,16 @@ _deploy_source_tarball() {
 
   local unpack_dir
   unpack_dir=$(find "$workdir" -mindepth 1 -maxdepth 1 -type d | head -n1)
+  # Without this, an empty unpack_dir turns the cp below into "/"*.
+  [[ -n "$unpack_dir" ]] || {
+    msg_error "Tarball has no top-level directory"
+    return 251
+  }
+
+  mkdir -p "$target"
+  if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
+    _cs_clean_target_dir "$target"
+  fi
 
   shopt -s dotglob nullglob
   cp -r "$unpack_dir"/* "$target/"
@@ -603,9 +616,11 @@ _deploy_source_tarball() {
 #     a download URL need not carry a usable extension; the release helpers omit
 #     it and get the filename mapping below. This is the only place in the
 #     engine that decides how an archive is opened -- keep it that way.
-#   - Honors CLEAN_INSTALL=1 (wipes <target> first, dotfiles included, mount
-#     points preserved — back up config dotfiles like .env via create_backup
-#     and call restore_backup BEFORE any build step that sources them).
+#   - Honors CLEAN_INSTALL=1 (wipes <target> once the payload has extracted and
+#     is non-empty, dotfiles included, mount points preserved — back up config
+#     dotfiles like .env via create_backup and call restore_backup BEFORE any
+#     build step that sources them). Every failure except the copy itself
+#     leaves <target> as it was.
 #   - Honors CLEAN_INSTALL_KEEP, a space-separated list of paths relative to
 #     <target> that the wipe leaves alone (e.g. "geodata .env data/uploads").
 #   - Does NOT own <workdir>: the caller creates it and cleans it up.
@@ -625,7 +640,6 @@ _deploy_unpacked_archive() {
     esac
   fi
 
-  # Ahead of CLEAN_INSTALL: a format we cannot open must not wipe the target.
   case "$kind" in
   zip | tar | 7z) ;;
   *)
@@ -633,11 +647,6 @@ _deploy_unpacked_archive() {
     return 65
     ;;
   esac
-
-  mkdir -p "$target"
-  if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-    _cs_clean_target_dir "$target"
-  fi
 
   case "$kind" in
   zip)
@@ -666,38 +675,42 @@ _deploy_unpacked_archive() {
     ;;
   esac
 
-  local top_entries inner_dir
+  local top_entries inner_dir="" source_dir
   top_entries=$(find "$workdir" -mindepth 1 -maxdepth 1)
   if [[ "$(echo "$top_entries" | wc -l)" -eq 1 && -d "$top_entries" ]]; then
     inner_dir="$top_entries"
-    shopt -s dotglob nullglob
-    if compgen -G "$inner_dir/*" >/dev/null; then
-      cp -r "$inner_dir"/* "$target/" || {
-        msg_error "Failed to copy contents from $inner_dir to $target"
-        shopt -u dotglob nullglob
-        return 252
-      }
-    else
-      msg_error "Inner directory is empty: $inner_dir"
-      shopt -u dotglob nullglob
-      return 252
-    fi
-    shopt -u dotglob nullglob
+    source_dir="$inner_dir"
   else
-    shopt -s dotglob nullglob
-    if compgen -G "$workdir/*" >/dev/null; then
-      cp -r "$workdir"/* "$target/" || {
-        msg_error "Failed to copy contents to $target"
-        shopt -u dotglob nullglob
-        return 252
-      }
+    source_dir="$workdir"
+  fi
+
+  shopt -s dotglob nullglob
+  if ! compgen -G "$source_dir/*" >/dev/null; then
+    if [[ -n "$inner_dir" ]]; then
+      msg_error "Inner directory is empty: $inner_dir"
     else
       msg_error "Unpacked archive is empty"
-      shopt -u dotglob nullglob
-      return 252
     fi
     shopt -u dotglob nullglob
+    return 252
   fi
+
+  # Wipe only here, so a failed or empty extract leaves <target> as it was.
+  mkdir -p "$target"
+  if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
+    _cs_clean_target_dir "$target"
+  fi
+
+  if ! cp -r "$source_dir"/* "$target/"; then
+    if [[ -n "$inner_dir" ]]; then
+      msg_error "Failed to copy contents from $inner_dir to $target"
+    else
+      msg_error "Failed to copy contents to $target"
+    fi
+    shopt -u dotglob nullglob
+    return 252
+  fi
+  shopt -u dotglob nullglob
   return 0
 }
 
@@ -720,7 +733,7 @@ _deploy_unpacked_archive() {
 #   $4 - Target directory (default: /opt/$app)
 #
 # Notes:
-#   - Supports CLEAN_INSTALL=1 to wipe target before extracting
+#   - Supports CLEAN_INSTALL=1 to wipe target once the tarball has extracted
 #   - For repos that only publish tags, not GitHub Releases
 # ------------------------------------------------------------------------------
 fetch_and_deploy_gh_tag() {
@@ -876,7 +889,7 @@ get_latest_gl_tag() {
 #   $4 - Target directory (default: /opt/$app)
 #
 # Notes:
-#   - Supports CLEAN_INSTALL=1 to wipe target before extracting
+#   - Supports CLEAN_INSTALL=1 to wipe target once the tarball has extracted
 #   - Supports GITLAB_TOKEN for private/rate-limited projects
 #   - Supports GITLAB_URL for self-hosted GitLab (default: https://gitlab.com)
 #   - For repos that only publish tags, not formal GitLab Releases
@@ -1089,7 +1102,10 @@ check_for_gh_branch() {
 #   $4 - target directory (optional, defaults to /opt/<app>)
 #
 # Variables:
-#   CLEAN_INSTALL - set to 1 to wipe the target before cloning
+#   CLEAN_INSTALL - set to 1 to replace the target with a fresh clone, even if
+#                   it is already a checkout
+#   CLEAN_INSTALL_KEEP - paths relative to the target that the replacement leaves
+#                        alone (see _cs_clean_target_dir)
 # ------------------------------------------------------------------------------
 
 fetch_and_deploy_gh_branch() {
@@ -1110,11 +1126,7 @@ fetch_and_deploy_gh_branch() {
   local -a clone_args=(--depth 1)
   [[ -n "$branch" ]] && clone_args+=(--branch "$branch")
 
-  if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-    rm -rf "$target"
-  fi
-
-  if [[ -d "$target/.git" ]]; then
+  if [[ "${CLEAN_INSTALL:-0}" != "1" && -d "$target/.git" ]]; then
     msg_info "Updating ${app}"
     local ref="HEAD"
     [[ -n "$branch" ]] && ref="$branch"
@@ -1129,12 +1141,30 @@ fetch_and_deploy_gh_branch() {
     $STD git -C "$target" clean -fd
   else
     msg_info "Fetching ${app}"
-    rm -rf "$target"
-    mkdir -p "$(dirname "$target")"
-    $STD git clone "${clone_args[@]}" "https://github.com/${source}" "$target" || {
+    # Cloned beside the target, so a failed clone leaves <target> as it was.
+    local parent clone_tmp copy_rc=0
+    target="$(realpath -m -- "$target")"
+    parent="$(dirname "$target")"
+    mkdir -p "$parent"
+    clone_tmp="$(mktemp -d -p "$parent" ".${app_lc}-clone.XXXXXX")" || {
+      msg_error "Failed to create a clone directory in ${parent}"
+      return 22
+    }
+    $STD git clone "${clone_args[@]}" "https://github.com/${source}" "$clone_tmp/repo" || {
+      rm -rf "$clone_tmp"
       msg_error "Failed to clone ${source}"
       return 22
     }
+    mkdir -p "$target"
+    _cs_clean_target_dir "$target"
+    # With the /. the target takes the clone's owner and mode too. Git refuses a
+    # worktree owned by someone else.
+    cp -a "$clone_tmp/repo/." "$target/" || copy_rc=$?
+    rm -rf "$clone_tmp"
+    if ((copy_rc != 0)); then
+      msg_error "Failed to copy ${app} to ${target}"
+      return 22
+    fi
   fi
 
   git -C "$target" rev-parse --short=7 HEAD >"$HOME/.${app_lc}"
@@ -1228,16 +1258,27 @@ _forge_descriptor() {
 # version: a patch backported to an older line is published after the newer
 # minor. Order by version instead. This only decides between tags of the same
 # shape; which release line is current is the forge's answer, not ours.
-_FORGE_JQ_VKEY='((.tag_name // "") | sub("^[vV]";"") | [scan("[0-9]+")] | map(tonumber))'
+#
+# The key used to be every digit run in the tag, so the label was lost:
+# 1.0.0-beta38 became 1.0.0.38 and beat 1.0.0-rc.1 (1.0.0.1), and an install
+# on beta38 never saw the rc. The numeric core is now padded to one width and
+# followed by a rank for the pre-release label (dev < alpha < beta < pre < rc
+# < none), then the digits that follow it. Any other suffix ranks as a final
+# release, so -ls45 or -1 revisions still order by their number.
+_FORGE_JQ_VKEY_DEF='def _forge_vkey:
+  sub("^[^0-9]*"; "")
+  | (capture("^(?<b>[0-9]+(?:[.][0-9]+)*)(?<r>.*)$") // {b: "", r: .}) as $m
+  | [$m.b | scan("[0-9]+") | tonumber] as $core
+  | ($m.r | ascii_downcase) as $rest
+  | ($rest | capture("^[-._+]?(?<l>dev|alpha|beta|preview|pre|rc)(?=[-._0-9]|$)") // {l: ""}).l as $lbl
+  | $core + [range($core | length; 6) | 0]
+  + [{"dev": 1, "alpha": 2, "beta": 3, "preview": 4, "pre": 4, "rc": 5}[$lbl] // 9]
+  + [$rest | scan("[0-9]+") | tonumber];'
+_FORGE_JQ_VKEY="(${_FORGE_JQ_VKEY_DEF} (.tag_name // \"\") | _forge_vkey)"
 
-# Highest of the versions on stdin.
+# Highest of the versions on stdin, on the same key as _FORGE_JQ_VKEY.
 _forge_highest_version() {
-  local line key
-  while IFS= read -r line; do
-    [[ -n "$line" ]] || continue
-    key="$(printf '%s' "$line" | grep -oE '[0-9]+' | tr '\n' '.')"
-    printf '%s\t%s\n' "${key:-0}" "$line"
-  done | sort -V -k1,1 | tail -n1 | cut -f2-
+  jq -Rrs "${_FORGE_JQ_VKEY_DEF} split(\"\n\") | map(select(length > 0)) | sort_by(_forge_vkey) | last // empty"
 }
 
 # Do both carry a separator between digits? 20260823 and nightly-20260511-414
@@ -1280,6 +1321,35 @@ _forge_curl() {
   status=$?
   ((status != 0)) && code="000"
   printf '%s' "${code:-000}"
+}
+
+# The fetch helpers run curl with -s and only see 000. Reproduce the failure
+# once with the message visible and say what the exit code points to.
+_forge_explain_failure() {
+  local host="${1:?host}" msg rc v4
+  msg="$(curl -sS -o /dev/null --connect-timeout 5 --max-time 15 "https://${host}/" 2>&1)"
+  rc=$?
+  msg="$(printf '%s' "$msg" | tail -n1 | sed 's/^curl: ([0-9]*) //')"
+  [[ -n "$msg" ]] && msg_error "curl: ${msg}"
+  case "$rc" in
+  0) msg_error "${host} answers now; the failure looks transient, run the script again" ;;
+  6) msg_error "${host} does not resolve here: check /etc/resolv.conf and whether a DNS filter (Pi-hole, AdGuard) blocks it" ;;
+  7 | 28)
+    v4="$(curl -4 -sS -o /dev/null --connect-timeout 5 --max-time 15 -w '%{http_code}' "https://${host}/" 2>/dev/null)" || v4="000"
+    if [[ "$v4" != "000" ]] && ip -6 addr show scope global 2>/dev/null | grep -q inet6; then
+      msg_error "IPv4 reaches ${host}, IPv6 does not: this container has an IPv6 address without a working route. Disable IPv6 for it or fix the route."
+    elif [[ "$v4" != "000" ]]; then
+      msg_error "${host} answered an IPv4 probe just now; the failure looks transient, run the script again"
+    elif ((rc == 28)); then
+      msg_error "Connection to ${host} timed out: a firewall or proxy is holding the traffic (set HTTP_PROXY if one is required)"
+    else
+      msg_error "No route to ${host}: check the gateway, firewall and proxy (HTTP_PROXY)"
+    fi
+    ;;
+  35 | 60) msg_error "TLS handshake with ${host} failed: check the clock ($(date -u '+%F %T') UTC), ca-certificates, and whether something intercepts TLS" ;;
+  56) msg_error "Connection to ${host} was reset: a filtering proxy or a regional block" ;;
+  *) msg_error "curl exit ${rc} reaching ${host}; try: curl -v https://${host}/" ;;
+  esac
 }
 
 # ------------------------------------------------------------------------------
@@ -1441,6 +1511,15 @@ _forge_release_json() {
   local forge="${1:?forge}" repo="${2:?repo}" version="${3:-latest}"
   local tag_prefix="${4:-}" out="${5:?outfile}"
 
+  # The install path arrives here without check_for_release; a Proxmox host has no jq.
+  # VM scripts load this file without system.func and bring jq themselves.
+  if declare -F ensure_dependencies >/dev/null; then
+    ensure_dependencies jq || return 100
+  elif ! command -v jq >/dev/null 2>&1; then
+    msg_error "jq is required to read ${repo}'s releases"
+    return 100
+  fi
+
   local base repo_path list one
   base="$(_forge_descriptor "$forge" base)"
   repo_path="$repo"
@@ -1473,7 +1552,7 @@ _forge_release_json() {
   fi
 
   local -a timeouts=(60 120 240)
-  local raw attempt=1 delay=2 code ok=false
+  local raw attempt=1 delay=2 code ok=false curl_rc
   raw="$(mktemp /tmp/tools-forge-rel-XXXXXX)" || return 73
 
   local -a headers=()
@@ -1485,13 +1564,18 @@ _forge_release_json() {
   [[ -n "$auth" ]] && headers+=(-H "$auth")
 
   while ((attempt <= ${#timeouts[@]})); do
+    curl_rc=0
     code="$(curl -sSL -w "%{http_code}" -o "$raw" \
       --max-time "${timeouts[$((attempt - 1))]}" \
-      "${headers[@]}" "$api_url" 2>/dev/null)" || true
+      "${headers[@]}" "$api_url" 2>/dev/null)" || curl_rc=$?
 
     if [[ "$code" == "200" ]]; then
-      ok=true
-      break
+      # A body cut short still reports 200, and jq then finds no release at all.
+      if ((curl_rc == 0)) && jq -e 'type == "array" or type == "object"' "$raw" >/dev/null 2>&1; then
+        ok=true
+        break
+      fi
+      code="000"
     fi
 
     if [[ "$forge" == "github" && "$code" == "401" ]]; then
@@ -1546,9 +1630,18 @@ _forge_release_json() {
 
   if [[ "$ok" != "true" ]]; then
     if [[ "$code" == "000" ]]; then
-      msg_error "Connection to ${forge} failed"
+      if ((curl_rc == 0)); then
+        local excerpt
+        excerpt="$(head -c 160 "$raw" | tr -cd '[:print:]')"
+        rm -f "$raw"
+        msg_error "${forge} answered, but not with JSON: a captive portal or a proxy error page is in the way"
+        msg_error "The response starts with: ${excerpt:-(empty)}"
+        return 22
+      fi
       rm -f "$raw"
-      return 7
+      msg_error "Connection to ${forge} failed"
+      _forge_explain_failure "$host"
+      return "$curl_rc"
     fi
     msg_error "${forge} API returned HTTP ${code} for ${repo}"
     rm -f "$raw"
@@ -1607,6 +1700,17 @@ _forge_release_json() {
 #   still reads as an update. Version-aware ordering would change what every
 #   app sees and belongs in its own change
 # ------------------------------------------------------------------------------
+# The version a run started from: the marker of an unfinished run, otherwise
+# the stamp. Empty on a fresh install.
+_forge_previous_version() {
+  local version_file="${1:?version file}"
+  if [[ -f "${version_file}.pending" ]]; then
+    printf '%s' "$(<"${version_file}.pending")"
+  elif [[ -f "$version_file" ]]; then
+    printf '%s' "$(<"$version_file")"
+  fi
+}
+
 check_for_release() {
   local forge="${1:?forge}" app="${2:?app}" source="${3:?repo}"
   local pinned_version_in="${4:-}" pin_reason="${5:-}" tag_prefix="${6:-}"
@@ -1649,6 +1753,14 @@ check_for_release() {
     if _forge_http_get "$forge" "${base}/${repo_path}${one}/${enc}" "$json_file"; then
       [[ -s "$json_file" ]] && releases_json="[$(<"$json_file")]"
     fi
+  fi
+
+  # The deploy path takes the release the maintainer marked as latest. Sorting
+  # the list here instead offered unflagged betas with higher numbers, which the
+  # deploy then refused as "already installed" on every run.
+  if [[ -z "$releases_json" && -z "$pinned_version_in" && -z "$tag_prefix" && "${GH_INCLUDE_PRERELEASE:-0}" != "1" ]] &&
+    _forge_designated_release "$forge" "$base" "$repo_path" "$json_file"; then
+    releases_json="[$(<"$json_file")]"
   fi
 
   if [[ -z "$releases_json" ]]; then
@@ -1723,6 +1835,13 @@ check_for_release() {
     fi
   fi
   current="$(_forge_strip_v "$current")"
+  CS_PREVIOUS_VERSION="$(_forge_strip_v "$(_forge_previous_version "$current_file")")"
+  export CS_PREVIOUS_VERSION
+  local unfinished=""
+  if [[ -f "${current_file}.pending" ]]; then
+    unfinished=" (the last run did not finish, doing it again)"
+    current="$CS_PREVIOUS_VERSION"
+  fi
 
   if [[ -n "$pinned_version_in" ]]; then
     local pin_clean match_raw="" i
@@ -1739,9 +1858,9 @@ check_for_release() {
       return 250
     fi
 
-    if [[ "$current" != "$pin_clean" ]]; then
+    if [[ "$current" != "$pin_clean" || -n "$unfinished" ]]; then
       CHECK_UPDATE_RELEASE="$match_raw"
-      msg_ok "Update available: ${app} ${current:-not installed} -> ${pin_clean}"
+      msg_ok "Update available: ${app} ${current:-not installed} -> ${pin_clean}${unfinished}"
       return 0
     fi
 
@@ -1753,13 +1872,13 @@ check_for_release() {
     return 1
   fi
 
-  if _forge_is_current "$current" "$latest_clean"; then
+  if [[ -z "$unfinished" ]] && _forge_is_current "$current" "$latest_clean"; then
     msg_ok "No update available: ${app} (${current})"
     return 1
   fi
 
   CHECK_UPDATE_RELEASE="$latest_raw"
-  msg_ok "Update available: ${app} ${current:-not installed} -> ${latest_clean}"
+  msg_ok "Update available: ${app} ${current:-not installed} -> ${latest_clean}${unfinished}"
   return 0
 }
 
@@ -1959,6 +2078,23 @@ _gh_scan_older_releases() {
   return 250
 }
 
+# True when a fetched release is the script's own app. Release names often add
+# or drop a part of the app's name (adguard/adguardhome, paperless-ngx/paperless),
+# so either containing the other counts, from four characters up. Without a
+# known script app (a caller outside the engine) every release counts, as before.
+_forge_is_script_app() {
+  local fetched script short
+  fetched="$(printf '%s' "${1,,}" | tr -cd 'a-z0-9')"
+  script="$(printf '%s' "${2,,}" | tr -cd 'a-z0-9')"
+  [[ -z "$script" ]] && return 0
+  [[ -n "$fetched" ]] || return 1
+  [[ "$fetched" == "$script" ]] && return 0
+  short="$fetched"
+  ((${#script} < ${#fetched})) && short="$script"
+  ((${#short} >= 4)) || return 1
+  [[ "$fetched" == *"$script"* || "$script" == *"$fetched"* ]]
+}
+
 # ------------------------------------------------------------------------------
 # fetch_and_deploy_release()
 #
@@ -1972,11 +2108,13 @@ _gh_scan_older_releases() {
 #   normalisation notes at each site.
 # ------------------------------------------------------------------------------
 fetch_and_deploy_release() {
+  # Read before the local below hides the exported app name.
+  local script_app="${NSAPP:-${app:-}}"
   local forge="${1:?forge}"
   local app="${2:-}"
   local repo="${3:?repo}"
   local mode="${4:-tarball}"
-  local version="${var_appversion:-${5:-latest}}"
+  local version="${5:-latest}"
   local target="${6:-}"
   local asset_pattern="${7:-}"
   local tag_prefix="${8:-}"
@@ -1993,6 +2131,13 @@ fetch_and_deploy_release() {
       msg_error "fetch_and_deploy_release requires an app name or a valid repo"
       return 65
     fi
+  fi
+
+  # var_appversion pins the script's own app. Applied to every call it also
+  # asked the other releases a script fetches (Subwave: liquidsoap, piper) for
+  # that tag, and those calls failed.
+  if [[ -n "${var_appversion:-}" ]] && _forge_is_script_app "$app" "$script_app"; then
+    version="$var_appversion"
   fi
 
   local app_lc version_file
@@ -2024,9 +2169,27 @@ fetch_and_deploy_release() {
   # throughout, which mangles tags like version-2.
   version="$(_forge_strip_v "$tag_name")"
 
+  # The stamp written at the end only says "deployed". The marker beside it
+  # holds the version this update started from and stays until a run that
+  # deployed exits 0 (on_exit); check_for_release redoes the update while it
+  # exists, and CS_PREVIOUS_VERSION still names the real old version on that
+  # redo (ProxmoxVE #18050).
+  CS_PREVIOUS_VERSION="$(_forge_previous_version "$version_file")"
+  export CS_PREVIOUS_VERSION
+  # A redo deploys again: the failed run may already have patched the files (ProxmoxVE #18060).
+  local redo=""
+  if [[ -f "${version_file}.pending" ]]; then
+    redo=1
+  else
+    printf '%s' "$CS_PREVIOUS_VERSION" >"${version_file}.pending" 2>/dev/null || true
+  fi
+  _CS_DEPLOYED=1
+
   local current_version=""
   [[ -f "$version_file" ]] && current_version="$(<"$version_file")"
-  if [[ "$current_version" == "$version" && -d "$target" && "${FORCE_UPDATE:-}" != "1" ]]; then
+  # A .deb installs into the system, never into $target, so the stamp alone says
+  # it is there. Requiring the directory downloaded it again on every update.
+  if [[ -z "$redo" && "$current_version" == "$version" && (-d "$target" || "$mode" == "binary") && "${FORCE_UPDATE:-}" != "1" ]]; then
     msg_ok "${app} ${version} already installed"
     return 0
   fi

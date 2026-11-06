@@ -19,6 +19,9 @@
 [[ -n "${_CORE_FUNC_LOADED:-}" ]] && return
 _CORE_FUNC_LOADED=1
 
+# Scripts run as root; without this Composer waits at a "Continue as root?" prompt that $STD hides
+export COMPOSER_ALLOW_SUPERUSER=1
+
 if [[ -z "${HOME:-}" ]]; then
   HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
   export HOME="${HOME:-/root}"
@@ -194,6 +197,11 @@ ensure_profile_loaded() {
   # false conditional makes `source` return that status, which as the final
   # command of an && list is not exempt from errexit -- that took whole updates
   # with it.
+  # RHEL's lang.sh reads LC_ALL unguarded; under nounset that ends the shell
+  # before `|| true` gets a say.
+  local nounset=0
+  [[ $- == *u* ]] && nounset=1
+  set +u
   if [[ -d /etc/profile.d ]]; then
     for script in /etc/profile.d/*.sh; do
       [[ -r "$script" ]] || continue
@@ -207,6 +215,7 @@ ensure_profile_loaded() {
   if [[ -r "${HOME:-/root}/.profile" ]]; then
     source "${HOME:-/root}/.profile" >/dev/null 2>&1 || true
   fi
+  ((nounset)) && set -u
 
   # Also ensure /usr/local/bin is in PATH (common install location)
   if [[ ":$PATH:" != *":/usr/local/bin:"* ]]; then
@@ -368,12 +377,21 @@ default_vars() {
 # - If VERBOSE=no: STD="silent" (suppress output via silent() wrapper)
 # - If DEV_MODE_TRACE=true: Enables bash tracing (set -x)
 # ------------------------------------------------------------------------------
+# Debian-style architecture of the machine that will run the container: the
+# Incus server when driving a remote, otherwise this host. Needs no dpkg.
+_cs_host_arch() {
+  local a="${INCUS_SERVER_ARCH:-}"
+  [[ -n "$a" ]] || a="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+  case "$a" in
+  x86_64) a="amd64" ;;
+  aarch64) a="arm64" ;;
+  esac
+  printf '%s' "$a"
+}
+
 set_std_mode() {
-  if [ "${VERBOSE:-no}" = "yes" ]; then
-    STD=""
-  else
-    STD="silent"
-  fi
+  # Verbose shows the output live and still keeps it in the log; silent() reads VERBOSE.
+  STD="silent"
 
   # Enable bash tracing if trace mode active
   if [[ "${DEV_MODE_TRACE:-false}" == "true" ]]; then
@@ -389,12 +407,12 @@ set_std_mode() {
 # do not ship. A bare call there returns 127, and under errexit that aborted the
 # run before it had done anything -- `update` on a fresh Fedora container died on
 # this line. The escape sequence does the same job wherever clear is missing.
+# clear also exits 1 when TERM is unset or dumb, which is how an unattended
+# update runs, and header_info ended it there. Clearing is cosmetic, so it is
+# skipped without a terminal and never fails the run.
 _cs_clear() {
-  if command -v clear >/dev/null 2>&1; then
-    clear
-  else
-    printf '\033[H\033[2J\033[3J'
-  fi
+  [[ -t 1 && "${TERM:-dumb}" != "dumb" ]] || return 0
+  clear 2>/dev/null || printf '\033[H\033[2J\033[3J'
 }
 
 # ==============================================================================
@@ -531,16 +549,50 @@ _cs_runtime_cache_dir() {
   return 1
 }
 
+# _cs_probe_read <name> - output of a host probe that core/build.func started at
+# load, once it has finished; fails when there is none or it failed, and the
+# caller runs the command itself. Polls a file, so it works inside $( ) too.
+_cs_probe_read() {
+  local rc
+  rc="$(_cs_probe_rc "$1")" && [[ "$rc" == "0" ]] || return 1
+  cat "${CS_PROBE_DIR}/$1.out"
+}
+
+# _cs_probe_rc <name> - a finished probe's exit code, for checks that answer
+# with one; fails when there is no such probe
+_cs_probe_rc() {
+  local dir="${CS_PROBE_DIR:-}" n=0
+  [[ -n "$dir" && -f "${dir}/$1.out" ]] || return 1
+  while [[ ! -f "${dir}/$1.rc" ]]; do
+    ((n++ < 1200)) || return 1
+    sleep 0.05
+  done
+  cat "${dir}/$1.rc"
+}
+
+# _cs_probe_drop <name>... - forget probes whose answer a change made stale
+_cs_probe_drop() {
+  local name
+  for name in "$@"; do
+    rm -f "${CS_PROBE_DIR:-/nonexistent}/${name}.out" "${CS_PROBE_DIR:-/nonexistent}/${name}.rc" 2>/dev/null
+  done
+  return 0
+}
+
+_cs_pveversion_out() {
+  _cs_probe_read pveversion || pveversion 2>/dev/null
+}
+
 _pve_version() {
   [[ -n "${PVEVERSION:-}" ]] && { printf '%s' "$PVEVERSION"; return 0; }
   local dir cache
   dir="$(_cs_runtime_cache_dir)" || {
-    pveversion 2>/dev/null | awk -F'/' '{print $2}' | awk -F'-' '{print $1}'
-    return
+    _cs_pveversion_out | awk -F'/' '{print $2}' | awk -F'-' '{print $1}'
+    return 0
   }
   cache="${dir}/cs-pveversion.$$"
   [[ -s "$cache" ]] ||
-    pveversion 2>/dev/null | awk -F'/' '{print $2}' | awk -F'-' '{print $1}' >"$cache"
+    _cs_pveversion_out | awk -F'/' '{print $2}' | awk -F'-' '{print $1}' >"$cache"
   cat "$cache" 2>/dev/null
 }
 
@@ -548,7 +600,9 @@ _pve_version() {
 # reports it verbatim as pve_version. A fixed "PVE Version" prefix therefore
 # printed "PVE Version Incus 7.3" on Incus hosts.
 _cs_host_version_line() {
-  local v="${PVEVERSION:-unknown}"
+  local v="${PVEVERSION:-}"
+  [[ -z "$v" ]] && command -v pveversion >/dev/null 2>&1 && v="$(_pve_version)"
+  v="${v:-unknown}"
   if [[ "$v" == Incus* ]]; then
     v="${v#Incus}"
     v="${v# }"
@@ -625,11 +679,11 @@ _cs_scripts_ref_line() {
 _pveam_available() {
   local dir cache
   dir="$(_cs_runtime_cache_dir)" || {
-    pveam available -section system 2>/dev/null
-    return
+    _cs_probe_read pveam || pveam available -section system 2>/dev/null
+    return 0
   }
   cache="${dir}/cs-pveam.$$"
-  [[ -s "$cache" ]] || pveam available -section system 2>/dev/null >"$cache"
+  [[ -s "$cache" ]] || { _cs_probe_read pveam || pveam available -section system 2>/dev/null; } >"$cache"
   cat "$cache" 2>/dev/null
 }
 
@@ -638,6 +692,7 @@ _pveam_available() {
 _pveam_update() {
   local dir
   dir="$(_cs_runtime_cache_dir)" && rm -f "${dir}/cs-pveam.$$"
+  _cs_probe_drop pveam
   if command -v timeout &>/dev/null; then
     timeout 30 pveam update >/dev/null 2>&1 || return 1
   else
@@ -717,7 +772,7 @@ pmxcfs_check() {
     exit 228
   fi
 
-  if [[ -f /etc/pve/corosync.conf ]] && ! pvecm status 2>/dev/null | grep -qE '^Quorate:[[:space:]]+Yes'; then
+  if [[ -f /etc/pve/corosync.conf ]] && ! { _cs_probe_read pvecm || pvecm status 2>/dev/null; } | grep -qE '^Quorate:[[:space:]]+Yes'; then
     msg_error "This cluster node has no quorum, so /etc/pve is read-only and nothing can be created."
     msg_custom "🔧" "${YW}" "Bring enough cluster nodes online, then check: pvecm status"
     exit 210
@@ -739,7 +794,11 @@ pmxcfs_check() {
 # ------------------------------------------------------------------------------
 arch_check() {
   local arch
-  arch="$(dpkg --print-architecture)"
+  arch="$(_cs_host_arch)"
+  case "$arch" in
+  x86_64) arch="amd64" ;;
+  aarch64) arch="arm64" ;;
+  esac
   if [[ "$arch" != "amd64" && "$arch" != "arm64" ]]; then
     msg_error "This script requires amd64 or arm64 (detected: $arch)."
     sleep 2
@@ -841,10 +900,14 @@ get_active_logfile() {
   elif [[ -n "${BUILD_LOG:-}" ]]; then
     echo "$BUILD_LOG"
   else
-    # Fallback for legacy scripts
-    echo "/tmp/build-$(date +%Y%m%d_%H%M%S).log"
+    # No build log (the host tools): one file for the run, named at load. A
+    # name taken per call made a new file every second, so a failure's step
+    # and output were never in the log telemetry reads.
+    echo "${_CS_RUN_LOG:-/tmp/build-$(date +%Y%m%d_%H%M%S).log}"
   fi
 }
+
+_CS_RUN_LOG="${_CS_RUN_LOG:-/tmp/build-$(date +%Y%m%d_%H%M%S).log}"
 
 # Legacy compatibility: SILENT_LOGFILE points to active log
 SILENT_LOGFILE="$(get_active_logfile)"
@@ -877,8 +940,8 @@ log_msg() {
   local logfile
   logfile="$(get_active_logfile)"
 
-  [[ -z "$msg" ]] && return
-  [[ -z "$logfile" ]] && return
+  [[ -z "$msg" ]] && return 0
+  [[ -z "$logfile" ]] && return 0
 
   # Ensure log directory exists
   mkdir -p "$(dirname "$logfile")" 2>/dev/null || true
@@ -886,7 +949,8 @@ log_msg() {
   # Strip ANSI codes and write with timestamp
   local clean_msg
   clean_msg=$(strip_ansi "$msg")
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $clean_msg" >>"$logfile"
+  # A log that cannot be written (full disk, removed directory) must not end the run.
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $clean_msg" >>"$logfile" 2>/dev/null || true
 }
 
 # ------------------------------------------------------------------------------
@@ -901,7 +965,7 @@ log_section() {
   local logfile
   logfile="$(get_active_logfile)"
 
-  [[ -z "$logfile" ]] && return
+  [[ -z "$logfile" ]] && return 0
   mkdir -p "$(dirname "$logfile")" 2>/dev/null || true
 
   {
@@ -909,7 +973,7 @@ log_section() {
     echo "================================================================================"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $section"
     echo "================================================================================"
-  } >>"$logfile"
+  } >>"$logfile" 2>/dev/null || true
 }
 
 # ------------------------------------------------------------------------------
@@ -923,8 +987,53 @@ log_section() {
 #   for telemetry (the host builds the error trace from this file)
 # - Temporarily disables error trap to capture exit code correctly
 # ------------------------------------------------------------------------------
+# After a hangup the shell's stdout and stderr still point at the terminal that
+# is gone, and every write to it fails. The trap redirects them to the log, but
+# bash saves and restores fd 1 and 2 around a redirected call to a shell
+# function -- silent() makes exactly such a call -- so the redirect is undone
+# the moment that call returns. Re-apply it where no redirection is in effect.
+#
+# The flag is exported, so a script started after the hangup gets here too. A
+# pipe or a file on stdin is input its caller handed over -- the "y" in
+# `bash -c "$(curl ...)" <<<"y"` -- and stays; only a terminal is swapped out.
+_cs_reattach_output() {
+  [[ "${_CS_HANGUP:-}" == "1" ]] || return 0
+  local log="${_CS_HANGUP_LOG:-}"
+  [[ -n "$log" ]] || log="$(get_active_logfile)"
+  [[ -n "$log" ]] || return 0
+  if [[ -p /dev/stdin || -f /dev/stdin ]]; then
+    exec >>"$log" 2>&1
+  else
+    exec </dev/null >>"$log" 2>&1
+  fi
+}
+
+# A closed console sends SIGHUP to every process in the foreground group, and a
+# program that does not handle it dies. Run the long ones through here: the
+# subshell sets the signal to ignore, which exec carries into the program, so
+# it finishes even though the terminal is gone.
+_cs_shield_hangup() {
+  (
+    trap '' HUP
+    exec "$@"
+  )
+}
+
+# A silent() failure its step handled is history once a step starts or ends.
+_cs_drop_silent_record() {
+  [[ -n "${_SILENT_FAILED_LOG:-}" ]] && rm -f "${_SILENT_FAILED_LOG}.errinfo" 2>/dev/null
+  unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG
+}
+
 silent() {
+  _cs_reattach_output
+  # A failure the caller handled (a retry loop) must not be reported for a later, unrelated error.
+  unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG
   local cmd="$*"
+  # apt warns about its CLI whenever stdout is not a terminal, and here it never is.
+  if [[ "${1:-}" == "apt" ]]; then
+    set -- apt -o Apt::Cmd::Disable-Script-Warning=true "${@:2}"
+  fi
   local caller_line="${BASH_LINENO[0]:-unknown}"
   local logfile="$(get_active_logfile)"
   local errinfo="${logfile}.errinfo"
@@ -944,8 +1053,27 @@ silent() {
   [[ -f "$logfile" ]] && start_bytes=$(stat -c%s "$logfile" 2>/dev/null || echo 0)
   [[ ! "$start_bytes" =~ ^[0-9]+$ ]] && start_bytes=0
 
-  "$@" >>"$logfile" 2>&1
-  local rc=$?
+  # A closed console sends SIGHUP to everything in the foreground. A function
+  # stays in this shell, which handles the signal itself; an external program
+  # inherits "ignore" and keeps running.
+  local rc run=("$@")
+  case "$(type -t "$1" 2>/dev/null)" in
+  function | builtin | "") ;;
+  *) run=(_cs_shield_hangup "$@") ;;
+  esac
+  if [[ "${VERBOSE:-no}" == "yes" ]]; then
+    # Not a pipe: the command must stay in this shell so functions keep their side effects.
+    "${run[@]}" > >(tee -a "$logfile") 2>&1
+    rc=$?
+    local tee_pid=$! waited
+    for ((waited = 0; waited < 30; waited++)); do
+      kill -0 "$tee_pid" 2>/dev/null || break
+      sleep 0.1
+    done
+  else
+    "${run[@]}" >>"$logfile" 2>&1
+    rc=$?
+  fi
 
   # Restore error handling ONLY if it was active before this call.
   if $_restore_errexit; then
@@ -959,32 +1087,19 @@ silent() {
     export _SILENT_FAILED_LINE="$caller_line"
     export _SILENT_FAILED_LOG="$logfile"
 
-    # ── Structured error capture (.errinfo) ──
-    # Extract exactly THIS command's output (from the recorded byte offset),
-    # strip ANSI/progress noise, keep the last 60 lines. This file is the
-    # primary source for the telemetry error trace - self-contained, no
-    # api.func dependency (containers don't source api.func).
-    local flat_cmd
-    flat_cmd=$(printf '%s' "$cmd" | tr '\n' ' ' | head -c 300)
     {
       echo "EXIT_CODE=${rc}"
       echo "LINE=${caller_line}"
-      echo "COMMAND=${flat_cmd}"
+      echo "COMMAND=$(printf '%s' "$cmd" | tr '\n' ' ' | head -c 300)"
+      echo "FUNCTION=${FUNCNAME[1]:-}"
+      echo "STEP=${CS_STEP:-}"
       echo "--- OUTPUT ---"
       if [[ -s "$logfile" ]]; then
-        local segment
-        segment=$(tail -c +"$((start_bytes + 1))" "$logfile" 2>/dev/null |
-          sed 's/\r$//' |
-          sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' |
-          grep -avE '^(Get:|Hit:|Ign:|Fetched |Reading package lists|Reading state information|Building dependency tree|Selecting previously|Preparing to unpack|Unpacking |Processing triggers for|\(Reading database|[0-9]+%[[:space:]]*\[)' |
-          grep -avE '^[[:space:]]*$' |
-          tail -n 60)
-        # If the noise filter swallowed everything, fall back to the raw tail
-        if [[ -z "$segment" ]]; then
-          segment=$(tail -c +"$((start_bytes + 1))" "$logfile" 2>/dev/null |
-            sed 's/\r$//' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | tail -n 60)
+        if declare -f _tm_clean_log >/dev/null 2>&1; then
+          tail -c +"$((start_bytes + 1))" "$logfile" 2>/dev/null | _tm_clean_log | tail -n 60 | head -c 10240
+        else
+          tail -c +"$((start_bytes + 1))" "$logfile" 2>/dev/null | sed 's/\r$//; s/\x1b\[[0-9;]*[a-zA-Z]//g' | tail -n 200 | head -c 32768
         fi
-        printf '%s' "$segment" | head -c 10240
       fi
     } >"$errinfo" 2>/dev/null || true
 
@@ -1092,7 +1207,7 @@ _msg_block_resume() {
   color_spinner
   spinner &
   SPINNER_PID=$!
-  echo "$SPINNER_PID" >/tmp/.spinner.pid
+  { echo "$SPINNER_PID" >/tmp/.spinner.pid; } 2>/dev/null || true
   disown "$SPINNER_PID" 2>/dev/null || true
 }
 
@@ -1208,8 +1323,13 @@ fi
 # - Backgrounds spinner process and stores PID for later cleanup
 # ------------------------------------------------------------------------------
 msg_info() {
+  _cs_reattach_output
   local msg="$1"
   [[ -z "$msg" ]] && return
+  # Read by the error handler and telemetry: which step failed, and what it said.
+  CS_STEP="$(strip_ansi "$msg")"
+  CS_ERROR_MSG=""
+  _cs_drop_silent_record
 
   if ! declare -p MSG_INFO_SHOWN &>/dev/null || ! declare -A MSG_INFO_SHOWN &>/dev/null; then
     declare -gA MSG_INFO_SHOWN=()
@@ -1246,7 +1366,7 @@ msg_info() {
   color_spinner
   spinner &
   SPINNER_PID=$!
-  echo "$SPINNER_PID" >/tmp/.spinner.pid
+  { echo "$SPINNER_PID" >/tmp/.spinner.pid; } 2>/dev/null || true
   disown "$SPINNER_PID" 2>/dev/null || true
 
   # Pause mode: Stop spinner and wait
@@ -1266,8 +1386,13 @@ msg_info() {
 # - Uses green color for success indication
 # ------------------------------------------------------------------------------
 msg_ok() {
+  _cs_reattach_output
   local msg="$1"
   [[ -z "$msg" ]] && return
+  CS_STEP_DONE="$(strip_ansi "$msg")"
+  CS_STEP=""
+  CS_ERROR_MSG=""
+  _cs_drop_silent_record
   stop_spinner
   ((${#_MSG_BLOCKS[@]})) && unset '_MSG_BLOCKS[-1]'
   clear_line
@@ -1288,9 +1413,11 @@ msg_ok() {
 # - Outputs to stderr
 # ------------------------------------------------------------------------------
 msg_error() {
+  _cs_reattach_output
   stop_spinner
   _MSG_BLOCKS=()
   local msg="$1"
+  [[ -z "${CS_ERROR_MSG:-}" && -z "${_EH_REPORTING:-}" ]] && CS_ERROR_MSG="$(strip_ansi "$msg")"
   echo -e "${BFR:-}${CROSS:-✖️}${RD}${msg}${CL}" >&2
   log_msg "[ERROR] $msg"
 }
@@ -1304,6 +1431,7 @@ msg_error() {
 # - Outputs to stderr
 # ------------------------------------------------------------------------------
 msg_warn() {
+  _cs_reattach_output
   stop_spinner
   _MSG_BLOCKS=()
   local msg="$1"
@@ -1320,6 +1448,7 @@ msg_warn() {
 # - Useful for specialized status messages
 # ------------------------------------------------------------------------------
 msg_custom() {
+  _cs_reattach_output
   local symbol="${1:-"[*]"}"
   local color="${2:-"\e[36m"}"
   local msg="${3:-}"
@@ -1395,6 +1524,15 @@ exit_script() {
 # - Determines app type (ct/vm) from APP_TYPE variable
 # - Returns header content or empty string on failure
 # ------------------------------------------------------------------------------
+# Drawn until the generator has produced a script's own banner (figlet slant,
+# like the generated ones); the app name follows in plain text.
+_CS_FALLBACK_HEADER='   ______                                      _ __           _____           _       __
+  / ____/___  ____ ___  ____ ___  __  ______  (_) /___  __   / ___/__________(_)___  / /______
+ / /   / __ \/ __ `__ \/ __ `__ \/ / / / __ \/ / __/ / / /   \__ \/ ___/ ___/ / __ \/ __/ ___/
+/ /___/ /_/ / / / / / / / / / / / /_/ / / / / / /_/ /_/ /   ___/ / /__/ /  / / /_/ / /_(__  )
+\____/\____/_/ /_/ /_/_/ /_/ /_/\__,_/_/ /_/_/\__/\__, /   /____/\___/_/  /_/ .___/\__/____/
+                                                 /____/                    /_/'
+
 get_header() {
   # Slug must match what the generator writes: APP lowercased, spaces removed.
   local app_name=$(echo "${APP,,}" | tr -d ' ')
@@ -1477,6 +1615,9 @@ header_info() {
 
   if [ -n "$header_content" ]; then
     echo "$header_content"
+  else
+    echo "${_CS_FALLBACK_HEADER:-Community Scripts}"
+    echo "  ${APP:-}"
   fi
 }
 
@@ -1827,6 +1968,39 @@ prompt_confirm() {
     else
       return 1
     fi
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# confirm_external_installer()
+#
+#   confirm_external_installer <source> <installer>
+#
+# - Warns that a third-party installer is about to run and asks to continue
+# - var_external_installer answers it, so unattended runs can say yes or no.
+#   prompt_confirm is no use here: it takes its default without asking in
+#   every non-advanced mode, and the default has to be no
+# - Exits 10 when declined
+# ------------------------------------------------------------------------------
+confirm_external_installer() {
+  local source="$1" installer="$2" answer="${var_external_installer:-}"
+  msg_warn "WARNING: This script will run an external installer from a third-party source (${source})."
+  msg_warn "The following code is NOT maintained or audited by our repository."
+  msg_warn "If you have any doubts or concerns, please review the installer code before proceeding:"
+  msg_custom "${TAB3}${GATEWAY}${BGN}${CL}" "\e[1;34m" "→  ${installer}"
+  echo
+  # 254 is the user declining; 10 would read as "needs privileged mode".
+  if [[ -z "$answer" ]] && ! read -r -p "${TAB3}Do you want to continue? [y/N]: " answer; then
+    msg_error "No terminal to confirm on. Set var_external_installer=yes to run it unattended."
+    exit 254
+  fi
+  if [[ ! "${answer,,}" =~ ^(y|yes|true)$ ]]; then
+    if [[ -n "${var_external_installer:-}" ]]; then
+      msg_error "var_external_installer=${var_external_installer} declines the upstream installer, and this script has no other way to install. Set it to yes, or leave it unset to be asked."
+    else
+      msg_error "Aborted by user. No changes have been made."
+    fi
+    exit 254
   fi
 }
 
@@ -2251,7 +2425,8 @@ cs_testing_state() {
 # cleanup_lxc()
 #
 # - Cleans package manager and language caches (safe for installs AND updates)
-# - Supports Alpine (apk), Debian/Ubuntu (apt), Python, Node.js, Go, Rust, Ruby, PHP
+# - Supports Alpine (apk), Debian/Ubuntu (apt), other distros through install.func's
+#   pkg_clean, and Python, Node.js, Go, Rust, Ruby, PHP caches
 # - Uses fallback error handling to prevent cleanup failures from breaking installs
 # ------------------------------------------------------------------------------
 cleanup_lxc() {
@@ -2265,10 +2440,18 @@ cleanup_lxc() {
     # problem worth reporting.
     $STD apk cache clean 2>/dev/null || true
     rm -rf /var/cache/apk/*
-  else
+  elif command -v dnf &>/dev/null; then
+    $STD dnf -y autoremove 2>/dev/null || msg_warn "dnf autoremove failed (non-critical)"
+    $STD dnf clean all 2>/dev/null || msg_warn "dnf clean failed (non-critical)"
+  elif command -v zypper &>/dev/null; then
+    $STD zypper clean 2>/dev/null || msg_warn "zypper clean failed (non-critical)"
+  elif command -v pacman &>/dev/null; then
+    $STD pacman -Sc --noconfirm 2>/dev/null || msg_warn "pacman clean failed (non-critical)"
+  elif command -v apt-get &>/dev/null; then
     $STD apt -y autoremove 2>/dev/null || msg_warn "apt autoremove failed (non-critical)"
-    $STD apt -y autoclean 2>/dev/null || msg_warn "apt autoclean failed (non-critical)"
     $STD apt -y clean 2>/dev/null || msg_warn "apt clean failed (non-critical)"
+  elif declare -f pkg_clean >/dev/null 2>&1; then
+    pkg_clean 2>/dev/null || msg_warn "Package cache cleanup failed (non-critical)"
   fi
 
   find /tmp /var/tmp -type f -name 'tmp*' -delete 2>/dev/null || true
@@ -2516,7 +2699,7 @@ apt_update_safe() {
 _cs_conffile_list() {
   # 2>/dev/null hides find's message about an unreadable /etc/credstore, not its
   # exit status, which pipefail then passes on as if sort had failed.
-  { find "${_CS_CONFFILE_ROOT:-/etc}" -maxdepth 6 \( -name '*.dpkg-dist' -o -name '*.dpkg-new' \) 2>/dev/null || true; } | sort
+  { find "${_CS_CONFFILE_ROOT:-/etc}" -maxdepth 6 \( -name '*.dpkg-dist' -o -name '*.dpkg-new' \) 2>/dev/null || true; } | LC_ALL=C sort
 }
 
 apt_conffile_guard() {
@@ -2540,7 +2723,7 @@ apt_conffile_report() {
   [[ -n "${_CS_CONFFILE_GUARD:-}" ]] || return 0
 
   local added
-  added="$(comm -13 <(printf '%s\n' "${_CS_CONFFILE_BASELINE:-}") <(_cs_conffile_list) 2>/dev/null)"
+  added="$(LC_ALL=C comm -13 <(printf '%s\n' "${_CS_CONFFILE_BASELINE:-}") <(_cs_conffile_list) 2>/dev/null)"
   rm -f "$_CS_CONFFILE_GUARD"
   _CS_CONFFILE_GUARD=""
   unset APT_CONFIG
@@ -2580,7 +2763,7 @@ ensure_whiptail() {
 # - Shows a short warning when running scripts on ARM64 systems
 # ------------------------------------------------------------------------------
 arm64_notice() {
-  [[ "$(dpkg --print-architecture)" == "arm64" ]] || return 0
+  [[ "$(_cs_host_arch)" == "arm64" ]] || return 0
 
   whiptail --backtitle "Proxmox VE Helper Scripts" \
     --title "ARM64 SUPPORT" \
@@ -2613,7 +2796,7 @@ on_hup_keepalive() {
 arch_resolve() {
   local amd64_val="${1:-amd64}"
   local arm64_val="${2:-arm64}"
-  local arch="${PCT_ARCH:-$(dpkg --print-architecture 2>/dev/null || uname -m)}"
+  local arch="${PCT_ARCH:-$(_cs_host_arch)}"
   case "$arch" in
   amd64 | x86_64) echo "$amd64_val" ;;
   arm64 | aarch64) echo "$arm64_val" ;;

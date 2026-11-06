@@ -63,7 +63,7 @@ variables() {
   NSAPP=$(echo "${APP,,}" | tr -d ' ')              # This function sets the NSAPP variable by converting the value of the APP variable to lowercase and removing any spaces.
   var_install="${NSAPP}-install"                    # sets the var_install variable by appending "-install" to the value of NSAPP.
   INTEGER='^[0-9]+([.][0-9]+)?$'                    # it defines the INTEGER regular expression pattern.
-  PVEHOST_NAME=$(hostname)                          # gets the Proxmox Hostname and sets it to Uppercase
+  PVEHOST_NAME=$(hostname 2>/dev/null || uname -n)  # Oracle and Amazon Linux images ship without hostname
   DIAGNOSTICS="yes"                                 # sets the DIAGNOSTICS variable to "yes", used for the API call.
   METHOD="default"                                  # sets the METHOD variable to "default", used for the API call.
   RANDOM_UUID="$(cat /proc/sys/kernel/random/uuid)" # generates a random UUID and sets it to the RANDOM_UUID variable.
@@ -90,13 +90,19 @@ variables() {
     combined_log="/var/log/community-scripts/install-${SESSION_ID}-combined-$(date +%Y%m%d_%H%M%S).log"
   fi
 
-  # Get Proxmox VE version and kernel version
-  if command -v pveversion >/dev/null 2>&1; then
-    PVEVERSION="$(_pve_version)"
-  else
-    PVEVERSION="N/A"
-  fi
+  # On a PVE host the version is read where it is shown (_pve_version, cached):
+  # asking here held the header for the whole pveversion start.
+  command -v pveversion >/dev/null 2>&1 || PVEVERSION="N/A"
   KERNEL_VERSION=$(uname -r)
+
+  # pve-container's verdict on the release is a Perl start too; the script set
+  # the release before calling this, and lxc_os_support_check reads the answer.
+  case "${var_os:-}" in
+  debian | ubuntu)
+    [[ -n "${CS_PROBE_DIR:-}" && -n "${var_version:-}" ]] && declare -f lxc_os_supported >/dev/null 2>&1 &&
+      _cs_probe "$CS_PROBE_DIR" "lxcos-${var_os}-${var_version}" lxc_os_supported "$var_os" "$var_version"
+    ;;
+  esac
 
   # Capture app-declared defaults (for precedence logic)
   # These values are set by the app script BEFORE default.vars is loaded
@@ -178,6 +184,12 @@ run_preflight() {
 # - Exits with dedicated error codes when limits cannot be read or are exceeded
 # ------------------------------------------------------------------------------
 maxkeys_check() {
+  # The limits are the server's; a client driving a remote Incus cannot read them.
+  if ! command -v pveversion >/dev/null 2>&1 && command -v incus >/dev/null 2>&1 &&
+    [[ "$(LC_ALL=C incus remote get-default 2>/dev/null || echo local)" != "local" ]]; then
+    return 0
+  fi
+
   local per_user_maxkeys per_user_maxbytes used_lxc_keys used_lxc_bytes
   local threshold_keys threshold_bytes new_limit_keys new_limit_bytes
   local failure=0

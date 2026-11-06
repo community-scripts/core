@@ -22,6 +22,49 @@ on:
       - "vm/**"
       - "pve/**"
       - "incus/**"
+      - "tests/vm-iso-storage.sh"
+      - "tests/vm-consoles.sh"
+      - "tests/vm-helpers.sh"
+      - "tests/vm-host-limits.sh"
+      - "tests/mongodb-upgrade.sh"
+      - "tests/uv-required-version.sh"
+      - "tests/docker-lxcfs.sh"
+      - "tests/java-memory.sh"
+      - "tests/external-installer.sh"
+      - "tests/forge-version-key.sh"
+      - "tests/nodejs-key-refresh.sh"
+      - "tests/nodejs-in-place.sh"
+      - "tests/nodejs-npm-restore.sh"
+      - "tests/forge-connection.sh"
+      - "tests/failed-command-output.sh"
+      - "tests/stale-silent-record.sh"
+      - "tests/tool-run-log.sh"
+      - "tests/exit-code-hints.sh"
+      - "tests/telemetry-trace.sh"
+      - "tests/host-probes.sh"
+      - "tests/forge-release-json.sh"
+      - "tests/install-cleanup.sh"
+      - "tests/console-hangup.sh"
+      - "tests/setup-step-failures.sh"
+      - "tests/pct-create-settings.sh"
+      - "tests/container-removal-offer.sh"
+      - "tests/incus-target.sh"
+      - "tests/incus-storage-space.sh"
+      - "tests/release-stamp-pending.sh"
+      - "tests/pct-start-reason.sh"
+      - "tests/vm-silent.sh"
+      - "tests/vm-failure-reasons.sh"
+      - "tests/silent-verbose.sh"
+      - "tests/github-release-noapi.sh"
+      - "tests/vm-dialog-esc.sh"
+      - "tests/forge-clean-install.sh"
+      - "tests/cs-clear.sh"
+      - "tests/forge-appversion-scope.sh"
+      - "tests/motd-os-version.sh"
+      - "tests/gpg-key-reason.sh"
+      - "tests/forge-branch-clean-install.sh"
+      - "tests/alpine-clean-install.sh"
+      - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
     paths:
@@ -34,6 +77,49 @@ on:
       - "vm/**"
       - "pve/**"
       - "incus/**"
+      - "tests/vm-iso-storage.sh"
+      - "tests/vm-consoles.sh"
+      - "tests/vm-helpers.sh"
+      - "tests/vm-host-limits.sh"
+      - "tests/mongodb-upgrade.sh"
+      - "tests/uv-required-version.sh"
+      - "tests/docker-lxcfs.sh"
+      - "tests/java-memory.sh"
+      - "tests/external-installer.sh"
+      - "tests/forge-version-key.sh"
+      - "tests/nodejs-key-refresh.sh"
+      - "tests/nodejs-in-place.sh"
+      - "tests/nodejs-npm-restore.sh"
+      - "tests/forge-connection.sh"
+      - "tests/failed-command-output.sh"
+      - "tests/stale-silent-record.sh"
+      - "tests/tool-run-log.sh"
+      - "tests/exit-code-hints.sh"
+      - "tests/telemetry-trace.sh"
+      - "tests/host-probes.sh"
+      - "tests/forge-release-json.sh"
+      - "tests/install-cleanup.sh"
+      - "tests/console-hangup.sh"
+      - "tests/setup-step-failures.sh"
+      - "tests/pct-create-settings.sh"
+      - "tests/container-removal-offer.sh"
+      - "tests/incus-target.sh"
+      - "tests/incus-storage-space.sh"
+      - "tests/release-stamp-pending.sh"
+      - "tests/pct-start-reason.sh"
+      - "tests/vm-silent.sh"
+      - "tests/vm-failure-reasons.sh"
+      - "tests/silent-verbose.sh"
+      - "tests/github-release-noapi.sh"
+      - "tests/vm-dialog-esc.sh"
+      - "tests/forge-clean-install.sh"
+      - "tests/cs-clear.sh"
+      - "tests/forge-appversion-scope.sh"
+      - "tests/motd-os-version.sh"
+      - "tests/gpg-key-reason.sh"
+      - "tests/forge-branch-clean-install.sh"
+      - "tests/alpine-clean-install.sh"
+      - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
 env:
@@ -53,6 +139,112 @@ jobs:
             bash -n "$f" || { echo "::error file=$f::syntax error"; fail=1; }
           done < <(find $ENGINE_DIRS -name '*.func' -type f)
           exit $fail
+
+      - name: ISO storage regression tests
+        run: bash tests/vm-iso-storage.sh
+
+      - name: VM console regression tests
+        run: bash tests/vm-consoles.sh
+
+      - name: VM helper regression tests
+        run: bash tests/vm-helpers.sh
+
+      - name: VM host limit tests
+        run: bash tests/vm-host-limits.sh
+
+      - name: MongoDB upgrade regression tests
+        run: bash tests/mongodb-upgrade.sh
+
+      - name: uv pin regression tests
+        run: bash tests/uv-required-version.sh
+
+      - name: Docker lxcfs visibility regression tests
+        run: bash tests/docker-lxcfs.sh
+
+      - name: Java memory drop-in tests
+        run: bash tests/java-memory.sh
+
+      - name: External installer confirmation tests
+        run: bash tests/external-installer.sh
+
+      - name: Forge version key regression tests
+        run: bash tests/forge-version-key.sh
+
+      - name: Node.js key refresh tests
+        run: bash tests/nodejs-key-refresh.sh
+
+      - name: Node.js in-place upgrade tests
+        run: bash tests/nodejs-in-place.sh
+
+      - name: Node.js npm restore tests
+        run: bash tests/nodejs-npm-restore.sh
+
+      - name: Forge connection diagnosis tests
+        run: bash tests/forge-connection.sh
+
+      - name: Failed command output tests
+        run: bash tests/failed-command-output.sh
+      - name: Stale silent record tests
+        run: bash tests/stale-silent-record.sh
+      - name: Tool run log tests
+        run: bash tests/tool-run-log.sh
+
+      - name: Exit code hint tests
+        run: bash tests/exit-code-hints.sh
+
+      - name: Telemetry trace tests
+        run: bash tests/telemetry-trace.sh
+
+      - name: Host probe tests
+        run: bash tests/host-probes.sh
+
+      - name: Forge release lookup tests
+        run: bash tests/forge-release-json.sh
+
+      - name: Install cleanup and uv trap tests
+        run: bash tests/install-cleanup.sh
+      - name: Console hangup tests
+        run: bash tests/console-hangup.sh
+      - name: Setup step failure tests
+        run: bash tests/setup-step-failures.sh
+      - name: pct create settings tests
+        run: bash tests/pct-create-settings.sh
+      - name: Container removal offer tests
+        run: bash tests/container-removal-offer.sh
+
+      - name: Incus target tests
+        run: bash tests/incus-target.sh
+
+      - name: Incus storage space tests
+        run: bash tests/incus-storage-space.sh
+      - name: Release stamp pending marker tests
+        run: bash tests/release-stamp-pending.sh
+      - name: pct start reason tests
+        run: bash tests/pct-start-reason.sh
+      - name: VM silent helper tests
+        run: bash tests/vm-silent.sh
+      - name: VM failure reason tests
+        run: bash tests/vm-failure-reasons.sh
+      - name: Verbose silent tests
+        run: bash tests/silent-verbose.sh
+      - name: VM dialog Esc tests
+        run: bash tests/vm-dialog-esc.sh
+      - name: MOTD OS version tests
+        run: bash tests/motd-os-version.sh
+      - name: GitHub release without the API tests
+        run: bash tests/github-release-noapi.sh
+      - name: Clean install keeps the target until extraction succeeds
+        run: bash tests/forge-clean-install.sh
+      - name: Screen clear without a terminal tests
+        run: bash tests/cs-clear.sh
+      - name: App version pin and .deb stamp tests
+        run: bash tests/forge-appversion-scope.sh
+      - name: GPG key failure reason tests
+        run: bash tests/gpg-key-reason.sh
+      - name: Clean install from a git branch tests
+        run: bash tests/forge-branch-clean-install.sh
+      - name: Clean install on Alpine tests
+        run: bash tests/alpine-clean-install.sh
 
       - name: Prefetch lists cover every engine file
         run: |
@@ -141,3 +333,6 @@ jobs:
             fail=1
           done
           exit $fail
+
+      - name: Update mode prompt tests
+        run: bash tests/update-mode-prompt.sh

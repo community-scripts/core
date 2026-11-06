@@ -92,7 +92,7 @@ _list_os_versions() {
   # Templates are per-architecture. Without this the catalog offers amd64
   # images on an arm64 host, which fail only after the download.
   local arch
-  arch="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+  arch="$(_cs_host_arch)"
   _pveam_available |
     grep -E "_${arch}\.(tar\.zst|tar\.xz|tar\.gz)([[:space:]]|$)" |
     awk '{print $2}' |
@@ -109,7 +109,7 @@ _list_templates() {
   local search="${1:-}" pattern="${2:-}"
   [[ -n "$search" ]] || return 0
   local arch
-  arch="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+  arch="$(_cs_host_arch)"
   _pveam_available |
     grep -E "_${arch}\.(tar\.zst|tar\.xz|tar\.gz)([[:space:]]|$)" |
     awk '{print $2}' |
@@ -128,7 +128,7 @@ resolve_os_version() {
   [[ -n "$ostype" && -n "$want" ]] || return 0
 
   # ARM64 pulls from linuxcontainers.org, the pveam catalog says nothing there
-  [[ "$(dpkg --print-architecture 2>/dev/null)" == "arm64" ]] && return 0
+  [[ "$(_cs_host_arch)" == "arm64" ]] && return 0
 
   local -a versions=()
   mapfile -t versions < <(_list_os_versions "$ostype")
@@ -145,8 +145,22 @@ resolve_os_version() {
     return 0
   fi
 
-  local candidate
-  candidate=$(printf '%s\n' "${versions[@]}" | awk -v want="$want" '
+  # Proxmox does not ship it, but linuxcontainers.org may carry exactly this
+  # release; the template stage falls back there when pveam has nothing.
+  local catalog_index
+  catalog_index="$(mktemp)"
+  if _lxc_catalog_fetch "$catalog_index" 2>/dev/null &&
+    _lxc_catalog_path "$ostype" "$want" "$(_cs_host_arch)" "$catalog_index" >/dev/null 2>&1; then
+    rm -f "$catalog_index"
+    msg_custom "ℹ️" "${YW}" "${ostype^} ${want} is not in this host's template catalog; using the linuxcontainers.org image"
+    return 0
+  fi
+  rm -f "$catalog_index"
+
+  # Nearest only means something between version numbers. A release name such
+  # as tumbleweed or excalibur scored 0 and became the oldest version on offer.
+  local candidate=""
+  [[ "$want" =~ ^[0-9]+(\.[0-9]+)?$ ]] && candidate=$(printf '%s\n' "${versions[@]}" | awk -v want="$want" '
     function num(v,   a) { split(v, a, "."); return a[1] * 10000 + (a[2] + 0) }
     BEGIN { w = num(want); best = ""; bestd = -1 }
     {
@@ -158,7 +172,7 @@ resolve_os_version() {
   ')
   [[ -n "$candidate" ]] || return 0
 
-  msg_warn "${ostype^} ${want} is not in this host's template catalog (PVE ${PVEVERSION:-unknown})"
+  msg_warn "${ostype^} ${want} is not in this host's template catalog (PVE ${PVEVERSION:-$(_pve_version)})"
 
   if [[ "${PHS_SILENT:-0}" != "1" ]] && command -v whiptail &>/dev/null && [ -t 0 ] && [[ "$TERM" != "dumb" ]]; then
     local -a menu=()
@@ -352,6 +366,7 @@ base_settings() {
   ENABLE_MKNOD=${var_mknod:-"0"}
   ALLOW_MOUNT_FS=${var_mount_fs:-""}
   PROTECT_CT=${var_protection:-"no"}
+  CT_CMODE=${var_cmode:-""}
   CT_TIMEZONE=${var_timezone:-"$timezone"}
   [[ "${CT_TIMEZONE:-}" == Etc/* ]] && CT_TIMEZONE="host" # pct doesn't accept Etc/* zones
 
@@ -400,7 +415,7 @@ base_settings() {
 # The frontend's .vars export mirrors both lists.
 # ------------------------------------------------------------------------------
 declare -ag VAR_WHITELIST=(
-  var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
+  var_apt_cacher var_apt_cacher_ip var_brg var_cmode var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
   var_gateway var_hostname var_ipv6_method var_mac var_mknod var_mount_fs var_mtu
   var_net var_nesting var_ns var_os var_post_install var_protection var_pw var_ram var_sdn_vnet var_searchdomain var_tags var_timezone var_tun var_unprivileged
   var_verbose var_version var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
@@ -608,6 +623,12 @@ load_vars_file() {
             continue
           fi
           ;;
+        var_cmode)
+          if [[ "$var_val" != "shell" && "$var_val" != "console" && "$var_val" != "tty" ]]; then
+            msg_warn "Invalid console mode '$var_val' for $var_key in $file (must be shell/console/tty), ignoring"
+            continue
+          fi
+          ;;
         var_ipv6_method)
           if [[ "$var_val" != "auto" && "$var_val" != "dhcp" && "$var_val" != "static" && "$var_val" != "none" ]]; then
             msg_warn "Invalid IPv6 method '$var_val' in $file (must be auto/dhcp/static/none), ignoring"
@@ -772,10 +793,11 @@ var_tun=no
 # Advanced Settings (Proxmox-official features)
 var_nesting=1          # Allow nesting (required for Docker/LXC in CT)
 var_keyctl=0           # Allow keyctl() - needed for Docker (systemd-networkd workaround)
-var_mknod=0            # Allow device node creation (requires kernel 5.3+, experimental)
+var_mknod=0            # Allow device node creation
 var_mount_fs=          # Allow specific filesystems: nfs,fuse,ext4,etc (leave empty for defaults)
 var_protection=no      # Prevent accidental deletion of container
 var_timezone=          # Container timezone (e.g. Europe/Berlin, leave empty for host timezone)
+var_cmode=             # Console mode: shell, console or tty (leave empty for the Proxmox default)
 var_tags=community-script
 var_verbose=no
 
@@ -995,6 +1017,7 @@ _build_current_app_vars_tmp() {
   _mknod="${ENABLE_MKNOD:-0}"
   _mount_fs="${ALLOW_MOUNT_FS:-}"
   _protect="${PROTECT_CT:-no}"
+  _cmode="${CT_CMODE:-}"
   _timezone="${CT_TIMEZONE:-}"
   _tags="${TAGS:-}"
   _verbose="${VERBOSE:-no}"
@@ -1048,6 +1071,7 @@ _build_current_app_vars_tmp() {
     [ -n "$_mknod" ] && echo "var_mknod=$(_sanitize_value "$_mknod")"
     [ -n "$_mount_fs" ] && echo "var_mount_fs=$(_sanitize_value "$_mount_fs")"
     [ -n "$_protect" ] && echo "var_protection=$(_sanitize_value "$_protect")"
+    [ -n "$_cmode" ] && echo "var_cmode=$(_sanitize_value "$_cmode")"
     [ -n "$_timezone" ] && echo "var_timezone=$(_sanitize_value "$_timezone")"
     [ -n "$_tags" ] && echo "var_tags=$(_sanitize_value "$_tags")"
     [ -n "$_verbose" ] && echo "var_verbose=$(_sanitize_value "$_verbose")"
@@ -1166,13 +1190,27 @@ maybe_offer_save_app_defaults() {
   rm -f "$new_tmp" "$diff_tmp"
 }
 
+# One var_* value from a .vars file, read the way load_vars_file reads it:
+# one pair of quotes dropped, an unquoted value ends at #.
+_vars_file_value() {
+  local line val
+  line=$(grep -E "^[[:space:]]*$2=" "$1" 2>/dev/null | tail -n1 || true)
+  [[ -z "$line" ]] && return 0
+  line="${line#"${line%%[![:space:]]*}"}"
+  val="${line#*=}"
+  [[ "$val" =~ ^[\"\'] ]] || val="${val%%#*}"
+  val="${val%"${val##*[![:space:]]}"}"
+  if [[ "$val" =~ ^\"(.*)\"$ || "$val" =~ ^\'(.*)\'$ ]]; then val="${BASH_REMATCH[1]}"; fi
+  printf '%s' "$val"
+}
+
 ensure_storage_selection_for_vars_file() {
   local vf="$1"
 
   # Read stored values (if any)
   local tpl ct
-  tpl=$(grep -E '^var_template_storage=' "$vf" | cut -d= -f2-)
-  ct=$(grep -E '^var_container_storage=' "$vf" | cut -d= -f2-)
+  tpl=$(_vars_file_value "$vf" var_template_storage)
+  ct=$(_vars_file_value "$vf" var_container_storage)
 
   if [[ -n "$tpl" && -n "$ct" ]]; then
     TEMPLATE_STORAGE="$tpl"
