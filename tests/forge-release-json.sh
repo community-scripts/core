@@ -3,7 +3,8 @@ set -uo pipefail
 
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 eval "$(sed -n '/^_FORGE_JQ_VKEY_DEF=/,/^_FORGE_JQ_VKEY=/p' "$CORE_DIR/lib/forge.func")"
-eval "$(awk '/^_forge_(descriptor|curl|designated_release|stable_filter|keep_raw|release_json|explain_failure)[(][)] [{]/,/^}/' "$CORE_DIR/lib/forge.func")"
+eval "$(awk '/^_forge_(descriptor|curl|designated_release|stable_filter|keep_raw|release_json|explain_failure|require_jq)[(][)] [{]/,/^}/' "$CORE_DIR/lib/forge.func")"
+eval "$(awk '/^get_latest_gh_tag[(][)] [{]/,/^}/' "$CORE_DIR/lib/forge.func")"
 
 TEST_DIR="$(mktemp -d)"
 trap 'rm -rf -- "$TEST_DIR" "${TOOLS_GH_REL_JSON:-}"' EXIT
@@ -98,6 +99,27 @@ MOCK_LATEST_CODE=200 MOCK_LATEST_BODY='{"tag_name":"v3.0.0","draft":false,"prere
 expect "the designated release still resolves" 0 "$?"
 expect "the designated release is used" v3.0.0 "$(jq -r .tag_name "$OUT")"
 expect "only one request was needed" 1 "$(grep -c curl "$CALLS")"
+
+# databasement: without jq the prefixed lookup read "no tags" and built a URL without a version.
+(
+  ensure_dependencies() {
+    echo "ensure_dependencies $*" >>"$CALLS"
+    echo "apt output"
+  }
+  github_api_call() { printf '%s' '[{"ref":"refs/tags/100.9.0"},{"ref":"refs/tags/100.10.1"}]' >"$2"; }
+  : >"$CALLS"
+  get_latest_gh_tag mongodb/mongo-tools 100. >"$OUT" 2>/dev/null
+)
+expect "a tag lookup ensures jq" 1 "$(grep -c 'ensure_dependencies jq' "$CALLS")"
+expect "the tag is all that reaches stdout" 100.10.1 "$(cat "$OUT")"
+
+(
+  github_api_call() { echo "api" >>"$CALLS"; }
+  : >"$CALLS"
+  MOCK_DEPS_RC=1 get_latest_gh_tag mongodb/mongo-tools 100. >"$OUT"
+)
+expect "a tag lookup without jq stops" 100 "$?"
+expect "a tag lookup without jq asks nothing" 0 "$(grep -c api "$CALLS")"
 
 printf '%s passed, %s failed\n' "$passed" "$failed"
 ((failed == 0))

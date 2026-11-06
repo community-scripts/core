@@ -2121,7 +2121,8 @@ EOF
 
   # Enable and restart PHP-FPM if requested
   if [[ "$PHP_FPM" == "YES" ]]; then
-    if systemctl list-unit-files | grep -q "php${PHP_VERSION}-fpm.service"; then
+    # Not list-unit-files | grep -q: under pipefail the SIGPIPE reads as "no unit"
+    if systemctl cat "php${PHP_VERSION}-fpm.service" &>/dev/null; then
       $STD systemctl enable php${PHP_VERSION}-fpm
       safe_service_restart php${PHP_VERSION}-fpm
     fi

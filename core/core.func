@@ -1096,9 +1096,9 @@ silent() {
       echo "--- OUTPUT ---"
       if [[ -s "$logfile" ]]; then
         if declare -f _tm_clean_log >/dev/null 2>&1; then
-          tail -c +"$((start_bytes + 1))" "$logfile" 2>/dev/null | _tm_clean_log | tail -n 60 | head -c 10240
+          tail -c +"$((start_bytes + 1))" "$logfile" 2>/dev/null | _tm_clean_log | cut -c1-1000 | tail -n 60 | tail -c 10240
         else
-          tail -c +"$((start_bytes + 1))" "$logfile" 2>/dev/null | sed 's/\r$//; s/\x1b\[[0-9;]*[a-zA-Z]//g' | tail -n 200 | head -c 32768
+          tail -c +"$((start_bytes + 1))" "$logfile" 2>/dev/null | sed 's/\r$//; s/\x1b\[[0-9;]*[a-zA-Z]//g' | cut -c1-1000 | tail -n 200 | tail -c 32768
         fi
       fi
     } >"$errinfo" 2>/dev/null || true
