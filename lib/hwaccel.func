@@ -338,7 +338,9 @@ setup_hwaccel() {
     fi
     if [[ "$HWACCEL_VENDOR" == "none" ]]; then
       case "$_gpu_type" in
-      AMD*) HWACCEL_VENDOR="amd" ;;
+      AMD) HWACCEL_VENDOR="amd" ;;
+      # Not amd: consumers read that as ROCm, and an APU gets Mesa only.
+      AMD_APU) HWACCEL_VENDOR="amd_apu" ;;
       INTEL*) HWACCEL_VENDOR="intel" ;;
       esac
     fi
@@ -672,8 +674,8 @@ ENVEOF
 # NVIDIA GPU Setup
 # ══════════════════════════════════════════════════════════════════════════════
 
-# The host's exact release first, else its series: a release newer than the
-# loaded kernel module fails like a wrong major.
+# The host's exact release first; the series fallback may end up newer than
+# the kernel module, which the caller warns about.
 _cuda_pick_version() {
   local host="$1" madison exact
   madison=$(apt-cache madison libcuda1 2>/dev/null | awk '{print $3}') || return 0
@@ -787,7 +789,7 @@ _setup_nvidia_gpu() {
     fi
 
     local nvidia_pin_file="/etc/apt/preferences.d/nvidia-cuda-pin"
-    _nvidia_apt_pins >"$nvidia_pin_file"
+    [[ -f "$nvidia_pin_file" ]] || _nvidia_apt_pins >"$nvidia_pin_file"
 
     # Extract major version for flexible matching (580.126.09 -> 580)
     local nvidia_major_version="${nvidia_host_version%%.*}"
@@ -822,7 +824,9 @@ _setup_nvidia_gpu() {
       _nvidia_apt_pins "$available_version" >"$nvidia_pin_file"
       msg_info "Installing NVIDIA userspace ${available_version} from ${chosen_repo}"
       local nvidia_pkgs="libcuda1=${available_version} libnvcuvid1=${available_version} libnvidia-encode1=${available_version} libnvidia-ml1=${available_version}"
-      if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends $nvidia_pkgs 2>/dev/null; then
+      # -y refuses the downgrade a host rollback needs, pin or not.
+      local -a apt_install=(apt-get -y --allow-downgrades -o Dpkg::Options::="--force-confold" install --no-install-recommends)
+      if $STD "${apt_install[@]}" $nvidia_pkgs 2>/dev/null; then
         # Say which kind of match this was. NVIDIA wants the full version to
         # agree; the fallback above only guarantees the series, so 580.178.04
         # on the host and 580.126.20 here would both land here. State both and
@@ -837,11 +841,10 @@ _setup_nvidia_gpu() {
         # A partly pinned retry cannot resolve either; report apt's reason.
         msg_error "NVIDIA userspace ${available_version} would not install from ${chosen_repo}"
         local apt_reason="" reason_line
-        apt_reason="$(apt-get -s install --no-install-recommends $nvidia_pkgs 2>&1 | grep -E 'Depends:|^E: ' | sed 's/^ *//' | head -3 || true)"
+        apt_reason="$("${apt_install[@]}" -s $nvidia_pkgs 2>&1 | grep -E 'Depends:|^E: ' | sed 's/^ *//' | head -3 || true)"
         while IFS= read -r reason_line; do
           if [[ -n "$reason_line" ]]; then msg_warn "apt: ${reason_line}"; fi
         done <<<"$apt_reason"
-        _nvidia_apt_pins >"$nvidia_pin_file"
       fi
     else
       # Deliberately install nothing. The previous code fell back to whatever
