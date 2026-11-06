@@ -347,9 +347,13 @@ setup_hwaccel() {
 
   cache_installed_version "hwaccel" "1.0"
   if [[ "$HWACCEL_VENDOR" == "none" ]]; then
+    # Close the step like msg_ok, or a later failure is reported under it.
+    # shellcheck disable=SC2034
+    CS_STEP_DONE="Setup Hardware Acceleration" CS_STEP="" CS_ERROR_MSG=""
+    _cs_drop_silent_record
     msg_warn "Hardware acceleration is not available - see the messages above"
   else
-    msg_ok "Setup Hardware Acceleration (${HWACCEL_VENDOR})"
+    msg_ok "Setup Hardware Acceleration"
   fi
 }
 
@@ -668,16 +672,11 @@ ENVEOF
 # NVIDIA GPU Setup
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Pick the host's exact version when the repo has it, and only then settle
-# for another release in the same series. Taking the newest of the series
-# unconditionally is the wrong direction: a host on 580.126 would be handed
-# 580.178, which is newer than the loaded kernel module and therefore fails
-# the same way a whole major mismatch does.
+# The host's exact release first, else its series: a release newer than the
+# loaded kernel module fails like a wrong major.
 _cuda_pick_version() {
   local host="$1" madison exact
   madison=$(apt-cache madison libcuda1 2>/dev/null | awk '{print $3}') || return 0
-  # Dots are escaped: unescaped they are regex wildcards, so 580.178.04
-  # would also match a hypothetical 580x178x04.
   exact=$(printf '%s\n' "$madison" | grep -E "^${host//./\\.}(-|$)" | head -1 || true)
   if [[ -n "$exact" ]]; then
     printf '%s\n' "$exact"
@@ -686,11 +685,8 @@ _cuda_pick_version() {
   printf '%s\n' "$madison" | grep -E "^${host%%.*}\." | head -1 || true
 }
 
-# libcuda1 needs libnvidia-ptxjitcompiler1, libnvidia-gpucomp and usually
-# libnvidia-pkcs11-openssl3 at exactly its own version; without a version pin
-# apt resolves them to the newest release and the install fails. Pinned rather
-# than listed: the repo carries libcuda1 builds with and without the pkcs11
-# dependency. The priority has to stay above the origin pin's.
+# libcuda1 needs its libnvidia-* dependencies at exactly its own version.
+# The priority has to stay above the origin pin's.
 _nvidia_version_pin() {
   cat <<NVIDIA_VERSION_PIN
 Package: libcuda* libnvcuvid* libnvidia-*
@@ -699,13 +695,8 @@ Pin-Priority: 1002
 NVIDIA_VERSION_PIN
 }
 
-# The origin pin is scoped to the NVIDIA userspace packages. It used to be
-# Package: *, which gave that repository priority over every package it happens
-# to carry -- and a priority above 1000 permits downgrades, so a later apt
-# upgrade in the container could replace unrelated packages. The file is not
-# removed afterwards, so the scope is what limits the damage.
-# The version stanza, when there is one, goes first: apt takes the first stanza
-# that matches a package version, so behind the origin pin it is never read.
+# Version stanza first: apt uses the first stanza that matches a version.
+# The origin pin stays scoped, since above 1000 apt may downgrade what it matches.
 _nvidia_apt_pins() {
   if [[ -n "${1:-}" ]]; then
     _nvidia_version_pin "$1"
@@ -843,9 +834,7 @@ _setup_nvidia_gpu() {
           msg_warn "Same driver series, different release. CUDA workloads may still fail on this."
         fi
       else
-        # No retry with the rest unpinned: libnvcuvid1 at the newest release
-        # depends on libcuda1 (= that release), so it cannot sit next to a
-        # libcuda1 held at the host's. Say what apt refused instead.
+        # A partly pinned retry cannot resolve either; report apt's reason.
         msg_error "NVIDIA userspace ${available_version} would not install from ${chosen_repo}"
         local apt_reason="" reason_line
         apt_reason="$(apt-get -s install --no-install-recommends $nvidia_pkgs 2>&1 | grep -E 'Depends:|^E: ' | sed 's/^ *//' | head -3 || true)"

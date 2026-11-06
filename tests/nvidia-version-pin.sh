@@ -17,7 +17,7 @@ check() {
   fi
 }
 
-# madison lists newest first, as the NVIDIA debian13 repo did for issue #209.
+# Newest first, like madison.
 apt-cache() {
   local v
   for v in 620.70.06-1 595.112.07-1 595.71.05-1 590.48.01-1; do
@@ -39,7 +39,6 @@ version_prio="$(priority "$pins" "Pin: version")"
 origin_prio="$(priority "$pins" "Pin: origin")"
 check "the version pin outranks the origin pin" yes "$([[ "$version_prio" -gt "$origin_prio" ]] && echo yes || echo no)"
 
-# Every package of the dependency chain has to fall under the version stanza.
 globs="$(grep -m1 '^Package:' <<<"$pins" | cut -d' ' -f2-)"
 covered() {
   local glob
