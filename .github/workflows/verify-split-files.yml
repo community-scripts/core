@@ -64,6 +64,7 @@ on:
       - "tests/gpg-key-reason.sh"
       - "tests/forge-branch-clean-install.sh"
       - "tests/alpine-clean-install.sh"
+      - "tests/app-vars-files.sh"
       - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
@@ -119,6 +120,7 @@ on:
       - "tests/gpg-key-reason.sh"
       - "tests/forge-branch-clean-install.sh"
       - "tests/alpine-clean-install.sh"
+      - "tests/app-vars-files.sh"
       - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
@@ -245,6 +247,8 @@ jobs:
         run: bash tests/forge-branch-clean-install.sh
       - name: Clean install on Alpine tests
         run: bash tests/alpine-clean-install.sh
+      - name: App .vars file tests
+        run: bash tests/app-vars-files.sh
 
       - name: Prefetch lists cover every engine file
         run: |
@@ -316,6 +320,23 @@ jobs:
           check lib/tools.func    lib/API.txt    || fail=1
           check ui/build-ui.func  ui/API.txt     || fail=1
           check api/api.func      api/API.txt    || fail=1
+          exit $fail
+      - name: Every var_* the engine reads is classified
+        # An app's own .vars file may set any var_* outside VAR_RESERVED, so each
+        # one the engine reads has to be placed: VAR_WHITELIST (validated),
+        # VAR_RESERVED (never from a file), VAR_PER_RUN (never saved from a run)
+        # or FILE_OK (harmless unvalidated).
+        run: |
+          set -euo pipefail
+          FILE_OK="var_docker_lxcfs var_extra_disk var_extra_disk_path var_profile var_ssh_import_glob"
+          LOCALS="var_key var_val"
+          listed=" $(sed -n '/^declare -ag VAR_\(WHITELIST\|RESERVED\|PER_RUN\)=(/,/^)/p' ui/defaults.func | grep -oE '\bvar_[a-z0-9_]+' | tr '\n' ' ') $FILE_OK $LOCALS "
+          fail=0
+          for v in $(grep -rhoE '\$\{?!?#?var_[a-z0-9_]+' $ENGINE_DIRS --include='*.func' | grep -oE 'var_[a-z0-9_]+' | sort -u); do
+            [[ "$listed" == *" $v "* ]] && continue
+            echo "::error file=ui/defaults.func::$v is read by the engine but in neither VAR_WHITELIST, VAR_RESERVED nor FILE_OK"
+            fail=1
+          done
           exit $fail
 
       - name: Update mode prompt tests

@@ -72,7 +72,7 @@ over.
 
 ## Two things left out on purpose
 
-**Not in `VAR_WHITELIST`.** `var_testurl` is not settable from a `.vars` file.
+**In `VAR_RESERVED`.** `var_testurl` is not settable from a `.vars` file.
 It describes the script, not the user's preferences, and making it configurable
 would mainly serve as a way to switch the request off.
 
