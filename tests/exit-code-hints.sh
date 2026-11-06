@@ -3,7 +3,7 @@ set -uo pipefail
 
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 eval "$(awk '/^(explain_exit_code|categorize_error)[(][)] [{]/,/^}/' "$CORE_DIR/api/exitcodes.func")"
-eval "$(awk '/^_eh_(hint_from_log|explanation|tools_for|command_is|command_word)[(][)] [{]/,/^}/' "$CORE_DIR/core/error_handler.func")"
+eval "$(awk '/^_eh_(hint_from_log|explanation|tools_for|command_is|command_word|hint_missing_command)[(][)] [{]/,/^}/' "$CORE_DIR/core/error_handler.func")"
 eval "$(awk '/^(_tm_explain|_tm_one_line|_tm_error_context|_tm_format_error|build_error_string)[(][)] [{]/,/^}/' "$CORE_DIR/api/errorlog.func")"
 _tm_find_errinfo() { return 1; }
 get_error_log() { :; }
@@ -15,6 +15,7 @@ LOG="$TEST_DIR/log"
 WARN="$TEST_DIR/warn"
 passed=0 failed=0
 _eh_warn() { echo "$1" >>"$WARN"; }
+_eh_info() { :; }
 
 expect() {
   if [[ "$2" == "$3" ]]; then
@@ -80,6 +81,23 @@ expect "the network check line raises no hint" 0 "$(wc -l <"$WARN" | tr -d ' ')"
 # The host classifies the combined log itself; a bare DNS used to match the network check line.
 expect "pve host grep no longer matches the word DNS alone" 0 "$(grep -c 'resolve|DNS|' "$CORE_DIR/pve/backend.func")"
 expect "incus host grep no longer matches the word DNS alone" 0 "$(grep -c 'resolve|DNS|' "$CORE_DIR/incus/backend.func")"
+
+# gitea-runner named the curl flag: RELEASE=$(curl -fsSL ... | jq ...) lacked jq.
+missing_hint() {
+  : >"$WARN"
+  _eh_hint_missing_command 127 "$1"
+  head -n1 "$WARN"
+}
+expect "a missing tool in a substituted pipe is named" "cs_no_such_tool is not installed or not on PATH" \
+  "$(missing_hint 'RELEASE=$(curl -fsSL https://x | cs_no_such_tool -r .tag_name | sed s/^v//)')"
+expect "the function of an assignment is named, not its argument" "cs_no_such_fn is not installed or not on PATH" \
+  "$(missing_hint 't=$(cs_no_such_fn mongodb/mongo-tools 100.)')"
+expect "a leading assignment is still skipped" "cs_no_such_tool is not installed or not on PATH" \
+  "$(missing_hint 'FOO=1 cs_no_such_tool --flag')"
+expect "callable commands name nothing" "" "$(missing_hint 'bash -c * | sed s/a/b/')"
+
+# setup_php: list-unit-files | grep -q ends in SIGPIPE, and pipefail made the FPM restart skip.
+expect "no unit lookup pipes into grep -q" 0 "$(grep -cE '^[^#]*list-unit-files[^|]*\| *grep -q' "$CORE_DIR/lib/runtime.func")"
 
 printf '%s passed, %s failed\n' "$passed" "$failed"
 ((failed == 0))
