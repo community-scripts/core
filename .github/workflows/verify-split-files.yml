@@ -45,6 +45,8 @@ on:
       - "tests/forge-release-json.sh"
       - "tests/install-cleanup.sh"
       - "tests/console-hangup.sh"
+      - "tests/setup-step-failures.sh"
+      - "tests/pct-create-settings.sh"
       - "tests/container-removal-offer.sh"
       - "tests/incus-target.sh"
       - "tests/incus-storage-space.sh"
@@ -98,6 +100,8 @@ on:
       - "tests/forge-release-json.sh"
       - "tests/install-cleanup.sh"
       - "tests/console-hangup.sh"
+      - "tests/setup-step-failures.sh"
+      - "tests/pct-create-settings.sh"
       - "tests/container-removal-offer.sh"
       - "tests/incus-target.sh"
       - "tests/incus-storage-space.sh"
@@ -201,6 +205,10 @@ jobs:
         run: bash tests/install-cleanup.sh
       - name: Console hangup tests
         run: bash tests/console-hangup.sh
+      - name: Setup step failure tests
+        run: bash tests/setup-step-failures.sh
+      - name: pct create settings tests
+        run: bash tests/pct-create-settings.sh
       - name: Container removal offer tests
         run: bash tests/container-removal-offer.sh
 

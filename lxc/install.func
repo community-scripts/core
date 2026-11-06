@@ -303,11 +303,19 @@ detect_os() {
 # rather than naming the file that could not be fetched. The probe catches the
 # other half — a truncated response that parses but is missing what we need.
 _bootstrap_die() {
-  if declare -f msg_error >/dev/null 2>&1; then
-    msg_error "$1"
-  else
-    echo "FATAL: $1" >&2
+  local msg="$1" url probe
+  if [[ -n "${2:-}" ]] && command -v curl >/dev/null 2>&1; then
+    url="$(_cs_core_url "$2")"
+    probe="$(curl -sS -o /dev/null -w 'HTTP %{http_code}' --max-time 15 "$url" 2>&1 | tr '\n' ' ')"
+    msg="${msg} from ${url} (${probe% })"
   fi
+  if declare -f msg_error >/dev/null 2>&1; then
+    msg_error "$msg"
+  else
+    echo "FATAL: $msg" >&2
+  fi
+  # core.func is not loaded yet, so nothing else writes the log the host collects
+  [[ -n "${INSTALL_LOG:-}" ]] && echo "[ERROR] $msg" >>"$INSTALL_LOG" 2>/dev/null
   exit 115
 }
 
@@ -318,7 +326,7 @@ _bootstrap_source() {
     source "${COMMUNITY_SCRIPTS_CORE_DIR}/${rel}"
   else
     content="$(_cs_engine_read "$rel")" && [[ -n "$content" ]] ||
-      _bootstrap_die "Failed to download ${rel}"
+      _bootstrap_die "Failed to download ${rel}" "$rel"
     source /dev/stdin <<<"$content"
   fi
   declare -f "$probe" >/dev/null 2>&1 ||

@@ -19,6 +19,11 @@ setup_clickhouse() {
   DISTRO_ID=$(get_os_info id)
   DISTRO_CODENAME=$(get_os_info codename)
 
+  if [[ "$(uname -m)" == "x86_64" ]] && ! grep -qw -m1 'avx2' /proc/cpuinfo; then
+    msg_error "ClickHouse builds for x86 require AVX2 (Intel Haswell, AMD Excavator or newer), which this CPU does not have."
+    return 236
+  fi
+
   # Ensure non-interactive mode for all apt operations
   export DEBIAN_FRONTEND=noninteractive
   export NEEDRESTART_MODE=a

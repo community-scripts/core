@@ -352,14 +352,14 @@ incus_log_msg() {
   local logfile
   logfile="$(get_active_incus_logfile)"
 
-  [[ -z "$msg" ]] && return
-  [[ -z "$logfile" ]] && return
+  [[ -z "$msg" ]] && return 0
+  [[ -z "$logfile" ]] && return 0
 
   mkdir -p "$(dirname "$logfile")" 2>/dev/null || true
 
   local clean_msg
   clean_msg=$(incus_strip_ansi "$msg")
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $clean_msg" >>"$logfile"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $clean_msg" >>"$logfile" 2>/dev/null || true
 }
 
 # ------------------------------------------------------------------------------
