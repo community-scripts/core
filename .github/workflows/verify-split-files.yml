@@ -48,6 +48,7 @@ on:
       - "tests/setup-step-failures.sh"
       - "tests/pct-create-settings.sh"
       - "tests/container-removal-offer.sh"
+      - "tests/incus-restricted-project.sh"
       - "tests/incus-target.sh"
       - "tests/incus-storage-space.sh"
       - "tests/release-stamp-pending.sh"
@@ -103,6 +104,7 @@ on:
       - "tests/setup-step-failures.sh"
       - "tests/pct-create-settings.sh"
       - "tests/container-removal-offer.sh"
+      - "tests/incus-restricted-project.sh"
       - "tests/incus-target.sh"
       - "tests/incus-storage-space.sh"
       - "tests/release-stamp-pending.sh"
@@ -211,6 +213,9 @@ jobs:
         run: bash tests/pct-create-settings.sh
       - name: Container removal offer tests
         run: bash tests/container-removal-offer.sh
+
+      - name: Incus restricted project tests
+        run: bash tests/incus-restricted-project.sh
 
       - name: Incus target tests
         run: bash tests/incus-target.sh

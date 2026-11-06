@@ -353,6 +353,22 @@ _incus_prepare_install_exports() {
   _HOST_LOGFILE="${BUILD_LOG:-$INCUS_BUILD_LOG}"
 }
 
+# A restricted project refuses the whole launch over a single config key --
+# restricted.containers.nesting and restricted.containers.interception both
+# default to block -- so retrying other images cannot help. Incus names the key
+# and the project it refused; echo them as "<key>|<project>".
+_incus_launch_refusal() {
+  local out="$1" rest="" key="" project="" q='"'
+  [[ "$out" == *"is forbidden"* && "$out" == *"for config $q"* ]] || return 1
+  rest="${out##*for config $q}"
+  key="${rest%%$q*}"
+  if [[ "$rest" == *"of project $q"* ]]; then
+    project="${rest#*of project $q}"
+    project="${project%%$q*}"
+  fi
+  printf '%s|%s\n' "$key" "${project:-default}"
+}
+
 incus_create_lxc_container() {
   LOGFILE="${INCUS_BUILD_LOG}"
 
@@ -451,7 +467,20 @@ incus_create_lxc_container() {
     echo "user: $(id -un) uid=$(id -u)"
   } >>"$LOGFILE"
 
+  local launch_mark
+  launch_mark="$(wc -l <"$LOGFILE" 2>/dev/null || echo 0)"
   if ! incus launch "${image_name}" "${CT_NAME}" "${launch_args[@]}" >>"$LOGFILE" 2>&1; then
+    local refusal=""
+    refusal="$(_incus_launch_refusal "$(tail -n +$((launch_mark + 1)) "$LOGFILE" 2>/dev/null)")" || refusal=""
+    if [[ -n "$refusal" ]]; then
+      local refused_project="${refusal#*|}"
+      msg_error "Project '${refused_project}' forbids ${refusal%|*}"
+      echo -e "${YW}Allow it on the host, then run the script again:${CL}"
+      echo -e "  incus project set ${refused_project} restricted.containers.nesting allow"
+      echo -e "  incus project set ${refused_project} restricted.containers.interception allow"
+      echo -e "${YW}Log: ${BL}${LOGFILE}${CL}"
+      exit 229
+    fi
     # Retry alternate candidates once if primary pull failed
     local retry_img="" launched=0 tried=" ${image_name} "
     for retry_img in "images:${IMAGE_OS}/${IMAGE_VERSION}/cloud" \
