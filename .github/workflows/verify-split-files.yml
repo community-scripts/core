@@ -30,6 +30,7 @@ on:
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
       - "tests/java-memory.sh"
+      - "tests/nvidia-version-pin.sh"
       - "tests/external-installer.sh"
       - "tests/forge-version-key.sh"
       - "tests/nodejs-key-refresh.sh"
@@ -85,6 +86,7 @@ on:
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
       - "tests/java-memory.sh"
+      - "tests/nvidia-version-pin.sh"
       - "tests/external-installer.sh"
       - "tests/forge-version-key.sh"
       - "tests/nodejs-key-refresh.sh"
@@ -163,6 +165,9 @@ jobs:
 
       - name: Java memory drop-in tests
         run: bash tests/java-memory.sh
+
+      - name: NVIDIA userspace version pin tests
+        run: bash tests/nvidia-version-pin.sh
 
       - name: External installer confirmation tests
         run: bash tests/external-installer.sh
