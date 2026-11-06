@@ -363,6 +363,7 @@ extract_version_from_json() {
 get_latest_gh_tag() {
   local repo="$1"
   local prefix="${2:-}"
+  _forge_require_jq "$repo" || return $?
   local temp_file
   temp_file=$(mktemp)
 
@@ -439,6 +440,7 @@ get_latest_github_release() {
 get_latest_codeberg_release() {
   local repo="$1"
   local strip_v="${2:-true}"
+  _forge_require_jq "$repo" || return $?
   local temp_file=$(mktemp)
 
   # Codeberg API: get all releases and pick the first non-draft/non-prerelease
@@ -805,6 +807,7 @@ fetch_and_deploy_gh_tag() {
 get_latest_gl_tag() {
   local repo="$1"
   local pattern="${2:-}"
+  _forge_require_jq "$repo" || return $?
 
   local repo_encoded
   repo_encoded=$(printf '%s' "$repo" | sed 's|/|%2F|g')
@@ -1507,18 +1510,23 @@ _forge_keep_raw() {
   return 0
 }
 
+# VM scripts load this file without system.func and bring jq themselves.
+# stderr: callers capture the version from stdout, and verbose apt prints there.
+_forge_require_jq() {
+  if declare -F ensure_dependencies >/dev/null; then
+    ensure_dependencies jq >&2 || return 100
+  elif ! command -v jq >/dev/null 2>&1; then
+    msg_error "jq is required to read ${1}'s releases"
+    return 100
+  fi
+}
+
 _forge_release_json() {
   local forge="${1:?forge}" repo="${2:?repo}" version="${3:-latest}"
   local tag_prefix="${4:-}" out="${5:?outfile}"
 
   # The install path arrives here without check_for_release; a Proxmox host has no jq.
-  # VM scripts load this file without system.func and bring jq themselves.
-  if declare -F ensure_dependencies >/dev/null; then
-    ensure_dependencies jq || return 100
-  elif ! command -v jq >/dev/null 2>&1; then
-    msg_error "jq is required to read ${repo}'s releases"
-    return 100
-  fi
+  _forge_require_jq "$repo" || return $?
 
   local base repo_path list one
   base="$(_forge_descriptor "$forge" base)"
@@ -2527,6 +2535,7 @@ fetch_and_deploy_from_url() {
 get_latest_gitlab_release() {
   local repo="$1"
   local strip_v="${2:-true}"
+  _forge_require_jq "$repo" || return $?
 
   local repo_encoded
   repo_encoded=$(printf '%s' "$repo" | sed 's|/|%2F|g')
