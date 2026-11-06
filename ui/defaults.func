@@ -421,7 +421,7 @@ declare -ag VAR_WHITELIST=(
   var_verbose var_version var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
 )
 declare -ag VAR_RESERVED=(
-  var_arm64 var_bridge var_ctid var_force_breaking_update var_ignore_breaking_changes
+  var_arm64 var_bridge var_ctid var_external_installer var_force_breaking_update var_ignore_breaking_changes
   var_ignore_disable var_ignore_os_mismatch var_install var_ipv6_static var_testurl
 )
 

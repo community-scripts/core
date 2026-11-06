@@ -64,6 +64,7 @@ on:
       - "tests/gpg-key-reason.sh"
       - "tests/forge-branch-clean-install.sh"
       - "tests/alpine-clean-install.sh"
+      - "tests/app-vars-files.sh"
       - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
@@ -119,6 +120,7 @@ on:
       - "tests/gpg-key-reason.sh"
       - "tests/forge-branch-clean-install.sh"
       - "tests/alpine-clean-install.sh"
+      - "tests/app-vars-files.sh"
       - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
@@ -245,6 +247,8 @@ jobs:
         run: bash tests/forge-branch-clean-install.sh
       - name: Clean install on Alpine tests
         run: bash tests/alpine-clean-install.sh
+      - name: App .vars file tests
+        run: bash tests/app-vars-files.sh
 
       - name: Prefetch lists cover every engine file
         run: |
@@ -323,7 +327,7 @@ jobs:
         # VAR_RESERVED (never from a file) or FILE_OK (harmless unvalidated).
         run: |
           set -euo pipefail
-          FILE_OK="var_appversion var_extra_disk var_extra_disk_path var_full_verbose var_profile var_ssh_import_glob var_unattended"
+          FILE_OK="var_appversion var_docker_lxcfs var_extra_disk var_extra_disk_path var_full_verbose var_profile var_ssh_import_glob var_unattended"
           LOCALS="var_key var_val"
           listed=" $(sed -n '/^declare -ag VAR_\(WHITELIST\|RESERVED\)=(/,/^)/p' ui/defaults.func | grep -oE '\bvar_[a-z0-9_]+' | tr '\n' ' ') $FILE_OK $LOCALS "
           fail=0
