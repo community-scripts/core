@@ -324,12 +324,13 @@ jobs:
       - name: Every var_* the engine reads is classified
         # An app's own .vars file may set any var_* outside VAR_RESERVED, so each
         # one the engine reads has to be placed: VAR_WHITELIST (validated),
-        # VAR_RESERVED (never from a file) or FILE_OK (harmless unvalidated).
+        # VAR_RESERVED (never from a file), VAR_PER_RUN (never saved from a run)
+        # or FILE_OK (harmless unvalidated).
         run: |
           set -euo pipefail
-          FILE_OK="var_appversion var_docker_lxcfs var_extra_disk var_extra_disk_path var_full_verbose var_profile var_ssh_import_glob var_unattended"
+          FILE_OK="var_docker_lxcfs var_extra_disk var_extra_disk_path var_profile var_ssh_import_glob"
           LOCALS="var_key var_val"
-          listed=" $(sed -n '/^declare -ag VAR_\(WHITELIST\|RESERVED\)=(/,/^)/p' ui/defaults.func | grep -oE '\bvar_[a-z0-9_]+' | tr '\n' ' ') $FILE_OK $LOCALS "
+          listed=" $(sed -n '/^declare -ag VAR_\(WHITELIST\|RESERVED\|PER_RUN\)=(/,/^)/p' ui/defaults.func | grep -oE '\bvar_[a-z0-9_]+' | tr '\n' ' ') $FILE_OK $LOCALS "
           fail=0
           for v in $(grep -rhoE '\$\{?!?#?var_[a-z0-9_]+' $ENGINE_DIRS --include='*.func' | grep -oE 'var_[a-z0-9_]+' | sort -u); do
             [[ "$listed" == *" $v "* ]] && continue

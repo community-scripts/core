@@ -411,8 +411,10 @@ base_settings() {
 # VAR_RESERVED: never taken from a file, not even an app's own. Unique per
 #   container, declared by the script, read before any file is loaded, or a
 #   safety override that has to be asked for on the run that needs it.
+# VAR_PER_RUN: an app file may hold them, but saving app defaults never takes
+#   them from the current run; they describe that run, not the app.
 # Any other var_* is an app's own setting and loads only from its app file.
-# The frontend's .vars export mirrors both lists.
+# The frontend's .vars export mirrors VAR_WHITELIST and VAR_RESERVED.
 # ------------------------------------------------------------------------------
 declare -ag VAR_WHITELIST=(
   var_apt_cacher var_apt_cacher_ip var_brg var_cmode var_cpu var_disk var_fuse var_github_token var_gpu var_http_no_proxy var_http_proxy var_inherit_host_ca var_keyctl
@@ -423,6 +425,9 @@ declare -ag VAR_WHITELIST=(
 declare -ag VAR_RESERVED=(
   var_arm64 var_bridge var_ctid var_external_installer var_force_breaking_update var_ignore_breaking_changes
   var_ignore_disable var_ignore_os_mismatch var_install var_ipv6_static var_testurl
+)
+declare -ag VAR_PER_RUN=(
+  var_appversion var_full_verbose var_unattended
 )
 
 _is_whitelisted_key() {
@@ -1097,7 +1102,7 @@ _build_current_app_vars_tmp() {
     fi
     for _k in $(compgen -e var_); do
       [[ "$_k" =~ ^var_[a-z0-9_]+$ && "${!_k}" != *$'\n'* ]] || continue
-      if _is_whitelisted_key "$_k" || _is_reserved_var_key "$_k"; then continue; fi
+      if _is_whitelisted_key "$_k" || _is_reserved_var_key "$_k" || [[ " ${VAR_PER_RUN[*]} " == *" $_k "* ]]; then continue; fi
       _own["$_k"]="\"${!_k}\""
     done
     if ((${#_own[@]} > 0)); then

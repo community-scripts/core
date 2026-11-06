@@ -3,7 +3,7 @@ set -euo pipefail
 
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULTS="$CORE_DIR/ui/defaults.func"
-eval "$(awk '/^declare -ag VAR_(WHITELIST|RESERVED)=\(/,/^\)/' "$DEFAULTS")"
+eval "$(awk '/^declare -ag VAR_(WHITELIST|RESERVED|PER_RUN)=\(/,/^\)/' "$DEFAULTS")"
 for fn in _is_whitelisted_key _is_reserved_var_key load_vars_file _load_vars_file_to_map; do
   eval "$(awk "/^${fn}\\(\\) \\{/,/^}/" "$DEFAULTS")"
 done
@@ -33,6 +33,7 @@ var_foo_name="My App"
 var_ctid=150
 var_external_installer=yes
 var_Upper=1
+var_appversion=1.2.3
 EOF
 
 # $1: app_keys; prints the variables a load leaves set
@@ -48,13 +49,20 @@ check "default.vars takes whitelisted keys only" "4||||||" "$(loaded no)"
 check "an app file also takes the app's own keys" "4|8080|My App||||" "$(loaded yes)"
 loaded yes >/dev/null
 check "each reserved key is reported" 2 "$(grep -c 'is ignored' "$WARNINGS")"
+check "a per-run key written into an app file by hand loads" 1.2.3 "$(load_vars_file "$WORK/test.vars" no "" yes && echo "${var_appversion:-}")"
+check "default.vars does not take a per-run key" "" "$(load_vars_file "$WORK/test.vars" no "" no && echo "${var_appversion:-}")"
 
 _load_vars_file_to_map "$WORK/test.vars"
 check "the map keeps the app's own keys" 8080 "${_VARS_IN[var_foo_port]:-}"
 check "the map drops reserved keys" "" "${_VARS_IN[var_ctid]:-}${_VARS_IN[var_external_installer]:-}"
 
-for key in "${VAR_WHITELIST[@]}"; do
+for key in "${VAR_WHITELIST[@]}" "${VAR_PER_RUN[@]}"; do
   if _is_reserved_var_key "$key"; then
+    check "$key is in one list only" no yes
+  fi
+done
+for key in "${VAR_PER_RUN[@]}"; do
+  if _is_whitelisted_key "$key"; then
     check "$key is in one list only" no yes
   fi
 done

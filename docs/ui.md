@@ -35,7 +35,8 @@ saved default no longer matches what the script wants.
 `default.vars` takes the keys in `VAR_WHITELIST`, each one validated. An app's
 own `defaults/<app>.vars` also takes the app's own settings (any other `var_*`)
 as they are, since only the script knows what they mean. Keys in
-`VAR_RESERVED` are never read from a file.
+`VAR_RESERVED` are never read from a file. Saving app defaults keeps the app's
+own settings, but never takes the keys in `VAR_PER_RUN` from the current run.
 
 ## [`advanced.func`](../ui/advanced.func)
 
