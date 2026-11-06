@@ -92,6 +92,26 @@ for mode in tarball prebuild; do
   check "$mode: nested mount survives" "0 ./app ./data/mnt/file " "$(CLEAN_INSTALL=1 deploy "$mode" good.tar.gz)"
 done
 
+# busybox mountpoint misses a bind mount from the same filesystem. mountinfo has it.
+mkdir -p "$TEST_DIR/bin-bind"
+printf '#!/usr/bin/env bash\nexit 1\n' >"$TEST_DIR/bin-bind/mountpoint"
+cat >"$TEST_DIR/bin-bind/grep" <<'EOF'
+#!/usr/bin/env bash
+[[ "$2" == *"/data/bind " && "$3" == "/proc/self/mountinfo" ]]
+EOF
+chmod +x "$TEST_DIR/bin-bind/mountpoint" "$TEST_DIR/bin-bind/grep"
+setup
+mkdir -p "$target/data/bind"
+echo mounted >"$target/data/bind/file"
+PATH="$TEST_DIR/bin-bind:$PATH" _cs_clean_target_dir "$target"
+check "bind mount from the same filesystem survives" "./data/bind/file " "$(listing)"
+
+setup
+mv "$target" "$TEST_DIR/opt/real"
+ln -s "$TEST_DIR/opt/real" "$target"
+_cs_clean_target_dir "$target"
+check "symlinked target stays and is emptied" "yes " "$([[ -L "$target" ]] && echo yes) $(listing)"
+
 # The engine runs under set -e, and rmdir fails on purpose on a mount's parent.
 setup
 mkdir -p "$target/data/mnt"
