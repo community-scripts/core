@@ -2,7 +2,7 @@
 set -euo pipefail
 
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-eval "$(awk '/^(_cs_clean_target_dir|_deploy_source_tarball|_deploy_unpacked_archive)\(\) \{/,/^}/' "$CORE_DIR/lib/forge.func")"
+eval "$(awk '/^(_cs_clean_target_dir|_deploy_source_tarball|_deploy_unpacked_archive|_forge_workdir)\(\) \{/,/^}/' "$CORE_DIR/lib/forge.func")"
 
 TEST_DIR="$(mktemp -d)"
 trap 'rm -rf -- "$TEST_DIR"' EXIT
@@ -75,6 +75,22 @@ check "source: truncated download leaves the install" "251 $intact" "$(source_ta
 check "source: no top-level dir leaves the install" "251 $intact" "$(source_tarball flat.tar.gz)"
 check "source: clean install replaces the target" "0 ./app " "$(source_tarball good.tar.gz)"
 check "source: CLEAN_INSTALL_KEEP survives" "0 ./app ./data/db " "$(CLEAN_INSTALL_KEEP="data" source_tarball good.tar.gz)"
+
+# Releases stage on disk, so a large one does not count against the memory limit.
+workdir_under() {
+  local dir rc=0
+  dir="$(TMPDIR="$1" _forge_workdir)" || rc=$?
+  echo "$rc ${dir%/*}"
+  rm -rf -- "$dir"
+}
+mkdir "$TEST_DIR/staging"
+check "workdir: TMPDIR wins" "0 $TEST_DIR/staging" "$(workdir_under "$TEST_DIR/staging")"
+check "workdir: an unusable TMPDIR falls back to /tmp" "0 /tmp" "$(workdir_under "$TEST_DIR/missing")"
+unset TMPDIR
+default_workdir="$(_forge_workdir)"
+check "workdir: defaults to /var/tmp, not /tmp" "/var/tmp" "${default_workdir%/*}"
+rm -rf -- "$default_workdir"
+check "no helper stages in the mktemp default" "0" "$(awk '/^(fetch_and_deploy_[a-z_]+|_forge_[a-z_]+)\(\) \{/,/^}/' "$CORE_DIR/lib/forge.func" | grep -c '_tmp="\{0,1\}$(mktemp -d)\|tmpdir="\{0,1\}$(mktemp -d)')"
 
 echo "${passed} passed, ${failed} failed"
 ((failed == 0))

@@ -82,7 +82,7 @@ rm -f "$HOME/.npm"
 expect "a fresh install has no previous version" "" "$(_forge_previous_version "$HOME/.npm")"
 
 # fetch_and_deploy_release: a redo deploys again, the failed run may have patched the files
-eval "$(awk '/^fetch_and_deploy_release[(][)] [{]/,/^}/' "$CORE_DIR/lib/forge.func")"
+eval "$(awk '/^(fetch_and_deploy_release|_forge_workdir)[(][)] [{]/,/^}/' "$CORE_DIR/lib/forge.func")"
 _forge_release_json() { printf '%s' '{"tag_name":"v2.16.0"}' >"$5"; }
 _forge_source_url() { echo "https://example.invalid/src.tar.gz"; }
 _download_source_tarball() { :; }
