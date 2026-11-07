@@ -25,6 +25,7 @@ _forge_is_script_app
 _forge_keep_raw
 _forge_previous_version
 _forge_release_json
+_forge_require_jq
 _forge_same_shape
 _forge_scan_older
 _forge_source_url

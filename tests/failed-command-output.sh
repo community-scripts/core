@@ -114,5 +114,17 @@ rm -f "$LOGFILE.errinfo"
 out="$(handler_output)"
 expect "without errinfo the raw tail remains" 1 "$(printf '%s\n' "$out" | grep -c 'Last 20 lines of log')"
 
+minified() {
+  printf '%*s\n' 40000 '' | tr ' ' x
+  echo "Error: the real reason"
+  return 1
+}
+reset
+export VERBOSE=no
+set_std_mode
+$STD minified
+expect "the error after a minified line is captured" 1 "$(grep -c '^Error: the real reason$' "$LOGFILE.errinfo")"
+expect "the minified line is cut" 0 "$(awk 'length > 1000' "$LOGFILE.errinfo" | wc -l | tr -d ' ')"
+
 printf '%s passed, %s failed\n' "$passed" "$failed"
 ((failed == 0))

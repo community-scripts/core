@@ -334,18 +334,34 @@ _eh_hint_missing_command() {
   [[ -n "$command" ]] || return 0
 
   # 127 is the shell saying it could not find something to run, but not what.
-  # That is the first word which is not a leading VAR=value assignment.
-  local word missing=""
-  for word in $command; do
-    [[ "$word" == *=* && "$word" != /* && "$word" != ./* ]] && continue
-    missing="$word"
-    break
+  # Candidates are the command words: the first that is not a VAR=value
+  # assignment, and the first after "$(", a pipe, && , || or ;. In
+  # V=$(curl -fsSL x | jq .a) that is curl and jq, never -fsSL.
+  local -a words=()
+  local word missing="" start=1 subst='$('
+  read -ra words <<<"$command" || true
+  for word in "${words[@]}"; do
+    if [[ "$word" == *"$subst"* ]]; then
+      word="${word##*"$subst"}"
+      start=1
+    fi
+    case "$word" in
+    '|' | '||' | '&&' | ';') start=1 ;;
+    *)
+      if ((start)) && [[ -n "$word" ]] && ! [[ "$word" == *=* && "$word" != /* && "$word" != ./* ]]; then
+        start=0
+        word="${word%%)*}"
+        # Callable: the 127 came from elsewhere -- a later stage, a script's own
+        # shebang, a nested call -- and naming this would point at the wrong thing.
+        if ! command -v "$word" >/dev/null 2>&1; then
+          missing="$word"
+          break
+        fi
+      fi
+      ;;
+    esac
   done
   [[ -n "$missing" ]] || return 0
-
-  # Callable after all: then the 127 came from deeper in -- a script's own
-  # shebang, a nested call -- and naming this would point at the wrong thing.
-  command -v "$missing" >/dev/null 2>&1 && return 0
 
   _eh_warn "${missing} is not installed or not on PATH"
   case "$missing" in
