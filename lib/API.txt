@@ -7,6 +7,7 @@ _cs_drop_pm_shim
 _cs_repair_dpkg
 _cs_write_cargo_net
 _cs_write_cargo_profile
+_cuda_pick_version
 _deploy_source_tarball
 _deploy_unpacked_archive
 _diagnose_deb_failure
@@ -39,6 +40,8 @@ _install_uvx_wrapper
 _mongodb_in_place_precheck
 _mongodb_in_place_simulate
 _nodejs_in_place_simulate
+_nvidia_apt_pins
+_nvidia_version_pin
 _purge_is_safe
 _resolve_igc_tag
 _setup_amd_apu
