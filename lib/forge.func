@@ -556,6 +556,18 @@ _cs_clean_target_dir() {
 }
 
 # ------------------------------------------------------------------------------
+# _forge_workdir
+#
+# A private directory for a download and its extraction, on disk. /tmp is tmpfs
+# on Debian 13, so a release staged there counts against the container's memory
+# limit and nothing can reclaim it: without swap, a 273 MiB archive that unpacks
+# to 725 MiB gets the install OOM-killed in a 1 GiB container. TMPDIR still wins.
+# ------------------------------------------------------------------------------
+_forge_workdir() {
+  mktemp -d -p "${TMPDIR:-/var/tmp}" 2>/dev/null || mktemp -d -p /tmp
+}
+
+# ------------------------------------------------------------------------------
 # _deploy_source_tarball <tarball_path> <target> <workdir>
 #
 # Shared tail for the *source tarball* modes of the fetch_and_deploy_* helpers
@@ -761,7 +773,7 @@ fetch_and_deploy_gh_tag() {
   fi
 
   local tmpdir
-  tmpdir=$(mktemp -d) || return 1
+  tmpdir=$(_forge_workdir) || return 1
   trap 'rm -rf "$tmpdir"; trap - RETURN' RETURN
   local tarball_url="https://github.com/${repo}/archive/refs/tags/${version}.tar.gz"
   local filename="${app_lc}-${version}.tar.gz"
@@ -940,7 +952,7 @@ fetch_and_deploy_gl_tag() {
   local tarball_url="${gitlab_url}/${repo}/-/archive/${resolved_tag}/${app_lc}-${version_safe}.tar.gz"
 
   local tmpdir
-  tmpdir=$(mktemp -d) || return 1
+  tmpdir=$(_forge_workdir) || return 1
   trap 'rm -rf "$tmpdir"; trap - RETURN' RETURN
   local filename="${app_lc}-${version_safe}.tar.gz"
 
@@ -2149,7 +2161,7 @@ fetch_and_deploy_release() {
   json="$(mktemp /tmp/tools-forge-sel-XXXXXX)" || return 73
 
   local tmpdir unpack_tmp=""
-  tmpdir="$(mktemp -d)" || {
+  tmpdir="$(_forge_workdir)" || {
     rm -f "$json"
     return 1
   }
@@ -2341,7 +2353,7 @@ fetch_and_deploy_release() {
         msg_error "Download failed: $asset_url"
         return 250
       }
-      unpack_tmp="$(mktemp -d)"
+      unpack_tmp="$(_forge_workdir)"
       _deploy_unpacked_archive "$tmpdir/$filename" "$target" "$unpack_tmp" || return
     else
       mkdir -p "$target"
@@ -2449,7 +2461,7 @@ fetch_and_deploy_from_url() {
   msg_info "Downloading from $url"
 
   local tmpdir
-  tmpdir=$(mktemp -d) || {
+  tmpdir=$(_forge_workdir) || {
     msg_error "Failed to create temporary directory"
     return 252
   }
@@ -2512,7 +2524,7 @@ fetch_and_deploy_from_url() {
   msg_info "Extracting archive to $directory"
 
   local unpack_tmp
-  unpack_tmp=$(mktemp -d)
+  unpack_tmp=$(_forge_workdir)
 
   _deploy_unpacked_archive "$tmpdir/$filename" "$directory" "$unpack_tmp" "$archive_type" || return
 
