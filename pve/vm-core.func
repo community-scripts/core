@@ -1118,9 +1118,14 @@ vm_prompt_vmid() {
 
   while true; do
     if vm_dialog inputbox "VIRTUAL MACHINE ID" "Set Virtual Machine ID" 8 58 "$default_vmid" --cancel-button Exit-Script; then
-      VMID="$VM_DIALOG_RESULT"
+      VMID="${VM_DIALOG_RESULT//[[:space:]]/}"
       if [ -z "$VMID" ]; then
         VMID=$(get_valid_nextid)
+      fi
+      if [[ ! "$VMID" =~ ^[1-9][0-9]{2,8}$ ]]; then
+        echo -e "${CROSS}${RD} ID $VMID is not a number from 100 to 999999999${CL}"
+        sleep 2
+        continue
       fi
       if pct status "$VMID" &>/dev/null || qm status "$VMID" &>/dev/null; then
         echo -e "${CROSS}${RD} ID $VMID is already in use${CL}"
@@ -1581,15 +1586,23 @@ vm_prompt_ram() {
 vm_prompt_bridge() {
   local default_bridge="${1:-vmbr0}"
 
-  if vm_dialog inputbox "BRIDGE" "Set a Bridge" 8 58 "$default_bridge" --cancel-button Exit-Script; then
-    BRG="$VM_DIALOG_RESULT"
-    if [ -z "$BRG" ]; then
-      BRG="$default_bridge"
+  while true; do
+    if vm_dialog inputbox "BRIDGE" "Set a Bridge" 8 58 "$default_bridge" --cancel-button Exit-Script; then
+      BRG="${VM_DIALOG_RESULT//[[:space:]]/}"
+      if [ -z "$BRG" ]; then
+        BRG="$default_bridge"
+      fi
+      if ! ip -o link show "$BRG" &>/dev/null; then
+        echo -e "${CROSS}${RD} Bridge $BRG does not exist on this host${CL}"
+        sleep 2
+        continue
+      fi
+      echo -e "${BRIDGE}${BOLD}${DGN}Bridge: ${BGN}$BRG${CL}"
+      break
+    else
+      exit_script
     fi
-    echo -e "${BRIDGE}${BOLD}${DGN}Bridge: ${BGN}$BRG${CL}"
-  else
-    exit_script
-  fi
+  done
 }
 
 vm_prompt_mac() {
