@@ -1390,7 +1390,7 @@ setup_postgresql() {
 
   setup_deb822_repo \
     "pgdg" \
-    "https://www.postgresql.org/media/keys/ACCC4CF8.asc" \
+    "https://apt.postgresql.org/pub/repos/apt/ACCC4CF8.asc" \
     "https://apt.postgresql.org/pub/repos/apt" \
     "$SUITE" \
     "main"

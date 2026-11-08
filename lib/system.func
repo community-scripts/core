@@ -1954,7 +1954,7 @@ setup_deb822_repo() {
   # Import GPG key (auto-detect binary vs ASCII-armored format)
   local tmp_gpg
   tmp_gpg=$(mktemp) || return 252
-  curl -fsSL "$gpg_url" -o "$tmp_gpg" || {
+  CURL_RETRIES=4 CURL_TIMEOUT=30 curl_with_retry "$gpg_url" "$tmp_gpg" || {
     msg_error "Failed to download GPG key for ${name} from: ${gpg_url}"
     msg_error "Hint: Check network connectivity. If behind a proxy or firewall, ensure HTTPS access to $(echo "$gpg_url" | grep -oE 'https?://[^/]+') is allowed."
     rm -f "$tmp_gpg"
