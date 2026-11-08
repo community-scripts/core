@@ -6,7 +6,7 @@
 set -uo pipefail
 
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-eval "$(awk '/^(silent|_cs_shield_hangup|_cs_reattach_output)[(][)] [{]/,/^}/' "$CORE_DIR/core/core.func")"
+eval "$(awk '/^(silent|_cs_shield_hangup|_cs_reattach_output|on_hup_keepalive)[(][)] [{]/,/^}/' "$CORE_DIR/core/core.func")"
 eval "$(awk '/^(on_hangup|on_exit|_eh_quiet_spinner)[(][)] [{]/,/^}/' "$CORE_DIR/core/error_handler.func")"
 eval "$(awk '/^(_pve_wait_for_detached_install|_pve_ct_stopped_by|_pve_ct_gone_during_setup)[(][)] [{]/,/^}/' "$CORE_DIR/pve/backend.func")"
 
@@ -55,6 +55,26 @@ expect "nothing more reaches the terminal" "" "$out"
 expect "later output lands in the log" 1 "$(grep -c 'after hangup' "$LOG")"
 expect "the hangup is noted in the log" 1 "$(grep -c 'The terminal closed' "$LOG")"
 expect "the run knows it is detached" 1 "$(grep -c 'flag=1' "$LOG")"
+
+# A hangup during silent(): on_hangup moved the output inside the call's own
+# redirection, bash undid it on return, and the next echo hit the dead terminal.
+: >"$LOG"
+out="$( (VERBOSE=no; trap on_hangup HUP; silent sh -c 'kill -HUP $PPID; sleep 0.3'; echo "after silent") 2>&1 )"
+expect "output after the interrupted call stays off the terminal" "" "$out"
+expect "and lands in the log" 1 "$(grep -c 'after silent' "$LOG")"
+out="$(echo piped | _cs_shield_hangup cat)"
+expect "a piped stdin still reaches the shielded command" "piped" "$out"
+
+# on_hup_keepalive(): tools without catch_errors kept writing to the dead
+# terminal, and the next echo or read ended them.
+: >"$LOG"
+out="$( (unset -f on_hangup; log_msg() { echo "$*"; }; trap on_hup_keepalive HUP; kill -HUP $BASHPID; echo "after hangup"; read -r x || echo "read eof"; echo "flag=${_CS_HANGUP:-}") 2>&1 )"
+expect "a tool survives the hangup without on_hangup" "" "$out"
+expect "its output lands in the log" 1 "$(grep -c 'after hangup' "$LOG")"
+expect "a prompt reads EOF instead of the dead terminal" 1 "$(grep -c 'read eof' "$LOG")"
+expect "and the tool knows it is detached" 1 "$(grep -c 'flag=1' "$LOG")"
+out="$( (trap on_hup_keepalive HUP; kill -HUP $BASHPID; echo "flag=${_CS_HANGUP:-}") 2>&1 )"
+expect "with on_hangup loaded it delegates" 1 "$(grep -c 'The terminal closed' "$LOG")"
 
 # on_exit(): a clean install leaves .done for the host; a failed one does not.
 INSTALL_LOG="$ROOT/.install-abc.log"
