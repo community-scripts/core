@@ -1043,6 +1043,10 @@ silent() {
   # disabled it.
   local _restore_errexit=false
   [[ "$-" == *e* ]] && _restore_errexit=true
+  # A script run through pct exec has no error_handler, so re-arming it turned
+  # the next failure into "error_handler: command not found" (exit 127).
+  local _err_trap
+  _err_trap="$(trap -p ERR)"
 
   set +Eeuo pipefail
   trap - ERR
@@ -1078,7 +1082,11 @@ silent() {
   # Restore error handling ONLY if it was active before this call.
   if $_restore_errexit; then
     set -Eeuo pipefail
-    trap 'error_handler' ERR
+    if [[ -n "$_err_trap" ]]; then
+      eval "$_err_trap"
+    elif declare -F error_handler >/dev/null; then
+      trap 'error_handler' ERR
+    fi
   fi
 
   if [[ $rc -ne 0 ]]; then
