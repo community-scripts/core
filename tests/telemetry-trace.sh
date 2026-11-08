@@ -173,6 +173,16 @@ reset
 _telemetry_report_exit 255 'whiptail --backtitle x --msgbox "About fstrim" 16 88'
 expect "Esc in a dialog is an abort" aborted "$(json_field "$SENT" status)"
 reset
+_telemetry_report_exit 1 'read -rp "This will add Tailscale to an existing LXC Container ONLY. Proceed (y/n)? " yn'
+expect "a prompt that reads no answer is an abort" aborted "$(json_field "$SENT" status)"
+reset
+FAILED_COMMAND='read -rp "Proceed (y/n)? " yn'
+_telemetry_report_exit 1 'exit "$exit_code"'
+expect "so is one an ERR trap ended with exit" aborted "$(json_field "$SENT" status)"
+reset
+_telemetry_report_exit 2 'read -r line <"$file"'
+expect "a read that fails otherwise stays a failure" failed "$(json_field "$SENT" status)"
+reset
 _telemetry_report_exit 255 'fstrim_output=$(pct fstrim 105 2>&1)'
 expect "any other command stays a failure" failed "$(json_field "$SENT" status)"
 expect "and is named" 'fstrim_output=$(pct fstrim 105 2>&1)' "$(json_field "$SENT" failed_command)"

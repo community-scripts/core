@@ -202,8 +202,10 @@ _pve_ct_stopped_by() {
 # when someone stopped it (an abort), 199 when it stopped by itself.
 # ------------------------------------------------------------------------------
 _pve_ct_gone_during_setup() {
-  local by
-  [[ "$(pct status "$CTID" 2>/dev/null)" == "status: running" ]] && return 1
+  local by st
+  # A closed console killed pct status itself, and its empty answer read as "not running".
+  st="$(_cs_shield_hangup pct status "$CTID" 2>/dev/null)" || st="$(_cs_shield_hangup pct status "$CTID" 2>/dev/null)"
+  [[ "$st" == "status: running" ]] && return 1
   by="$(_pve_ct_stopped_by)"
   if [[ -n "$by" ]]; then
     msg_warn "Container ${CTID} was stopped during its setup (${by})"
@@ -1190,10 +1192,10 @@ EOF
 https://dl-cdn.alpinelinux.org/alpine/latest-stable/main
 https://dl-cdn.alpinelinux.org/alpine/latest-stable/community
 EOF'
-   pct exec "$CTID" -- ash -c 'set -a; [ -f /etc/profile.d/90-http-proxy.sh ] && . /etc/profile.d/90-http-proxy.sh; set +a; apk add bash newt curl openssh nano mc ncurses jq' >>"$BUILD_LOG" 2>&1 || {
+   _cs_shield_hangup pct exec "$CTID" -- ash -c 'set -a; [ -f /etc/profile.d/90-http-proxy.sh ] && . /etc/profile.d/90-http-proxy.sh; set +a; apk add bash newt curl openssh nano mc ncurses jq' >>"$BUILD_LOG" 2>&1 || {
      msg_warn "apk install failed (dl-cdn.alpinelinux.org), trying alternate mirrors..."
      local alpine_exit=0
-     pct exec "$CTID" -- ash -c '
+     _cs_shield_hangup pct exec "$CTID" -- ash -c '
        set -a
        [ -f /etc/profile.d/90-http-proxy.sh ] && . /etc/profile.d/90-http-proxy.sh
        set +a
@@ -1271,7 +1273,7 @@ EOF
       pct exec "$CTID" -- bash -c "echo -e 'nameserver 8.8.8.8\nnameserver 1.1.1.1' >/etc/resolv.conf"
     fi
 
-    pct exec "$CTID" -- bash -c "set -a; [ -f /etc/profile.d/90-http-proxy.sh ] && . /etc/profile.d/90-http-proxy.sh; set +a; ${_ct_env} apt-get update 2>&1 && apt-get install -y ${_base_pkgs} 2>&1" >>"$BUILD_LOG" 2>&1 || if _pve_ct_gone_during_setup; then
+    _cs_shield_hangup pct exec "$CTID" -- bash -c "set -a; [ -f /etc/profile.d/90-http-proxy.sh ] && . /etc/profile.d/90-http-proxy.sh; set +a; ${_ct_env} apt-get update 2>&1 && apt-get install -y ${_base_pkgs} 2>&1" >>"$BUILD_LOG" 2>&1 || if _pve_ct_gone_during_setup; then
       install_exit_code=$_CS_SETUP_GONE_RC
     else
       local failed_mirror
@@ -1279,7 +1281,7 @@ EOF
       msg_warn "apt-get update failed (${failed_mirror})."
       msg_custom "ℹ️" "${YW}" "Probing alternate mirrors (this can take 1-2 minutes on network issues)"
       local mirror_exit=0
-      pct exec "$CTID" -- env APT_BASE="$_base_pkgs" bash -c '
+      _cs_shield_hangup pct exec "$CTID" -- env APT_BASE="$_base_pkgs" bash -c '
         set -a
         [ -f /etc/profile.d/90-http-proxy.sh ] && . /etc/profile.d/90-http-proxy.sh
         set +a

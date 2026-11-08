@@ -373,7 +373,8 @@ telemetry_new_attempt() {
 # does whiptail without a terminal. The user decided; the tool did not fail.
 _tm_dialog_exit() {
   [[ "$2" == 1 || "$2" == 255 ]] || return 1
-  [[ "$1" =~ ^((local|export|declare)[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=\$\()?whiptail[[:space:]] ]]
+  [[ "$1" =~ ^((local|export|declare)[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=\$\()?whiptail[[:space:]] ]] && return 0
+  [[ "$2" == 1 && "$1" =~ ^(read|select)[[:space:]] ]]
 }
 
 # EXIT trap set by init_tool_telemetry. <command> is the one running when the
@@ -384,7 +385,7 @@ _telemetry_report_exit() {
   local status="success" reason=""
   if [[ "$ec" -ne 0 ]]; then
     status="failed"
-    if _tm_dialog_exit "$cmd" "$ec"; then
+    if _tm_dialog_exit "${FAILED_COMMAND:-$cmd}" "$ec"; then
       status="aborted"
       reason="Dialog cancelled, or no terminal to show it"
     elif [[ -z "${FAILED_COMMAND:-}" && -n "$cmd" && ! "$cmd" =~ ^(exit|return)([[:space:]]|$) ]]; then

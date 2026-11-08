@@ -160,13 +160,19 @@ advanced_settings() {
         default_on="OFF"
         default_off="ON"
       }
+      # Users of apps that need a privileged container followed "recommended" and the install refused.
+      local unpriv_label="Unprivileged (recommended)" priv_label="Privileged"
+      [[ "${var_unprivileged:-1}" == "0" ]] && {
+        unpriv_label="Unprivileged"
+        priv_label="Privileged (app default)"
+      }
 
       if result=$(whiptail --backtitle "Proxmox VE Helper Scripts [Step $STEP/$MAX_STEP]" \
         --title "CONTAINER TYPE" \
         --ok-button "Next" --cancel-button "Exit" \
         --radiolist "\nChoose container type:\n\nUse SPACE to select, ENTER to confirm." 14 58 2 \
-        "1" "Unprivileged (recommended)" $default_on \
-        "0" "Privileged" $default_off \
+        "1" "$unpriv_label" $default_on \
+        "0" "$priv_label" $default_off \
         3>&1 1>&2 2>&3); then
         [[ -n "$result" ]] && _ct_type="$result"
         ((STEP++))

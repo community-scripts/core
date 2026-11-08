@@ -616,7 +616,8 @@ error_handler() {
 
   # Before any output, or the spinner overwrites it
   declare -f stop_spinner >/dev/null 2>&1 && { stop_spinner 2>/dev/null || true; }
-  printf "\e[?25h"
+  declare -f _cs_reattach_output >/dev/null 2>&1 && _cs_reattach_output
+  printf "\e[?25h" 2>/dev/null || true
 
   local explanation
   explanation="$(_eh_explanation "$exit_code" "$command")"
@@ -691,7 +692,11 @@ _stop_container_if_installing() {
 # ------------------------------------------------------------------------------
 on_exit() {
   local exit_code=$?
-  [[ "${_CS_HANGUP:-}" == "1" ]] && echo "[INFO] $(date '+%Y-%m-%d %H:%M:%S') on_exit with code ${exit_code} (pid $$)"
+  # A write to the dead terminal ended this trap before the host got its marker.
+  if [[ "${_CS_HANGUP:-}" == "1" ]]; then
+    declare -f _cs_reattach_output >/dev/null 2>&1 && _cs_reattach_output
+    echo "[INFO] $(date '+%Y-%m-%d %H:%M:%S') on_exit with code ${exit_code} (pid $$)" || true
+  fi
 
   # Before anything else: the timings are only useful if they survive a failure.
   declare -f dev_mode_timing_summary >/dev/null 2>&1 && dev_mode_timing_summary
