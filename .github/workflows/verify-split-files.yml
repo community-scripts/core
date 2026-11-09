@@ -30,6 +30,7 @@ on:
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
       - "tests/java-memory.sh"
+      - "tests/gpu-pci-class.sh"
       - "tests/nvidia-version-pin.sh"
       - "tests/external-installer.sh"
       - "tests/forge-version-key.sh"
@@ -88,6 +89,7 @@ on:
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
       - "tests/java-memory.sh"
+      - "tests/gpu-pci-class.sh"
       - "tests/nvidia-version-pin.sh"
       - "tests/external-installer.sh"
       - "tests/forge-version-key.sh"
@@ -169,6 +171,9 @@ jobs:
 
       - name: Java memory drop-in tests
         run: bash tests/java-memory.sh
+
+      - name: GPU detection by PCI class tests
+        run: bash tests/gpu-pci-class.sh
 
       - name: NVIDIA userspace version pin tests
         run: bash tests/nvidia-version-pin.sh

@@ -662,7 +662,7 @@ incus_detect_gpu_devices() {
     elif grep -q '\[10de:' <<<"$line"; then
       NVIDIA_GPUS+=("pci=${pci}")
     fi
-  done < <(lspci -nn -D 2>/dev/null | grep -E 'VGA|Display|3D' || true)
+  done < <(lspci -nn -D 2>/dev/null | grep -E '^[^ ]+ (VGA compatible|XGA compatible|3D|Display) controller[ :]' || true)
 
   # DRM sysfs fallback (useful on ARM / non-PCI GPUs)
   if [[ ${#INTEL_GPUS[@]} -eq 0 && ${#AMD_GPUS[@]} -eq 0 && ${#NVIDIA_GPUS[@]} -eq 0 && -d /sys/class/drm ]]; then
