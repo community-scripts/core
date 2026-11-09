@@ -136,7 +136,8 @@ setup_hwaccel() {
       GPU_NAMES+=("$gpu_name")
       ((gpu_count++)) || true
     fi
-  done < <(lspci 2>/dev/null | grep -Ei 'vga|3d|display')
+  # The class field only: the whole line matched "Device 43d0" and "SanDisk Ultra 3D".
+  done < <(lspci 2>/dev/null | grep -E '^[^ ]+ (VGA compatible|XGA compatible|3D|Display) controller[ :]')
 
   # Check for AMD APU via CPU vendor if no discrete GPU found
   local cpu_vendor

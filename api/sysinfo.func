@@ -125,7 +125,8 @@ detect_gpu() {
   GPU_PASSTHROUGH="unknown"
 
   local gpu_line
-  gpu_line=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display" | head -1 || true)
+  # The class field only: the whole line matched "Device 43d0" and "SanDisk Ultra 3D".
+  gpu_line=$(lspci 2>/dev/null | grep -E '^[^ ]+ (VGA compatible|XGA compatible|3D|Display) controller[ :]' | head -1 || true)
 
   if [[ -n "$gpu_line" ]]; then
     GPU_MODEL=$(echo "$gpu_line" | sed 's/.*: //' | sed 's/ (rev .*)$//' | cut -c1-64)
