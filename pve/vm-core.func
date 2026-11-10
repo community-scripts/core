@@ -2630,6 +2630,12 @@ vm_resize_disk() {
 # entry the import added. Scripts used to guess the name or take the last
 # `pvesm list` line, which sorts disk-10 before disk-9. The format defaults to
 # DISK_IMPORT_FORMAT from vm_select_storage.
+#
+# The image is flushed to disk first. Images are often just extracted or
+# converted (xz, gzip, qemu-img, virt-customize), leaving gigabytes of dirty
+# pages. When they live on the same ZFS pool as the target (rpool/var-lib-vz
+# and rpool/data on a default install), the zvol create inside the import runs
+# into Proxmox's zfs command timeout ("got timeout") while ZFS writes them back.
 vm_import_disk() {
   local vmid="${1:?vmid}" file="${2:?image}" storage="${3:?storage}" format="${4:-${DISK_IMPORT_FORMAT:-}}"
   local out before volume
@@ -2639,6 +2645,10 @@ vm_import_disk() {
   qm disk import --help >/dev/null 2>&1 && cmd=(qm disk import)
   [[ -n "$format" ]] && opts=(--format "$format")
   before="$(qm config "$vmid" 2>/dev/null | sed -n 's/^unused[0-9]*: //p')" || before=""
+
+  msg_info "Flushing $(basename "$file") to disk"
+  # Best effort: a failed flush is no reason to skip the import.
+  sync -f "$file" 2>/dev/null || sync 2>/dev/null || true
 
   msg_info "Importing $(basename "$file") to ${storage}"
   if ! out="$("${cmd[@]}" "$vmid" "$file" "$storage" "${opts[@]}" 2>&1)"; then
