@@ -237,6 +237,7 @@ qm() {
   *) return 0 ;;
   esac
 }
+sync() { printf 'sync %s\n' "$*" >>"$LOG"; return "${SYNC_RC:-0}"; }
 pct() { return 1; }
 lvs() { :; }
 pvesh() { printf '%s\n' "${NEXTID:-105}"; }
@@ -255,6 +256,21 @@ vm_import_disk 100 "$IMAGE" local-lvm || fail "modern import"
 assert_eq "$VM_IMPORTED_DISK" "local-lvm:vm-100-disk-1" "volume from qm's report, without the unused0: prefix"
 assert_contains "$LOG" "qm disk import 100 $IMAGE local-lvm --format raw"
 ok "vm_import_disk uses qm disk import and the reported volume"
+
+# Dirty pages from extraction stall the zvol create on the same ZFS pool (#18580).
+sync_line="$(grep -n "^sync -f $IMAGE\$" "$LOG" | cut -d: -f1)"
+import_line="$(grep -n "^qm disk import 100 " "$LOG" | cut -d: -f1)"
+[[ -n "$sync_line" && -n "$import_line" && "$sync_line" -lt "$import_line" ]] ||
+  fail "the image must be flushed before qm disk import"
+ok "vm_import_disk flushes the image before importing it"
+
+import_case
+SYNC_RC=1
+vm_import_disk 100 "$IMAGE" local-lvm || fail "a failed flush must not stop the import"
+assert_eq "$VM_IMPORTED_DISK" "local-lvm:vm-100-disk-1" "imported despite the failed flush"
+assert_contains "$LOG" "qm disk import 100 $IMAGE local-lvm"
+SYNC_RC=0
+ok "vm_import_disk imports even when the flush fails"
 
 import_case
 QM_MODERN=no
