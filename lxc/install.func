@@ -1371,6 +1371,10 @@ network_check() {
 # Updates container OS and sources appropriate tools.func
 # ------------------------------------------------------------------------------
 update_os() {
+  # Scripts write a package's config before installing it; dpkg then asked about
+  # the conffile with no terminal and the install failed.
+  _CS_CONFFILE_QUIET=1
+  declare -f apt_conffile_guard >/dev/null 2>&1 && apt_conffile_guard
   msg_info "Updating Container OS"
   configure_http_proxy
 
