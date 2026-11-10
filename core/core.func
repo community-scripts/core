@@ -2741,7 +2741,7 @@ apt_conffile_report() {
   rm -f "$_CS_CONFFILE_GUARD"
   _CS_CONFFILE_GUARD=""
   unset APT_CONFIG
-  [[ -n "${added//[[:space:]]/}" ]] || return 0
+  [[ -n "${added//[[:space:]]/}" && -z "${_CS_CONFFILE_QUIET:-}" ]] || return 0
 
   msg_warn "Kept your version of these config files - upstream shipped changes to them too:"
   local f
