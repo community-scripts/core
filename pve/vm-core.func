@@ -2641,7 +2641,16 @@ vm_import_disk() {
   before="$(qm config "$vmid" 2>/dev/null | sed -n 's/^unused[0-9]*: //p')" || before=""
 
   msg_info "Importing $(basename "$file") to ${storage}"
-  if ! out="$("${cmd[@]}" "$vmid" "$file" "$storage" "${opts[@]}" 2>&1)"; then
+  # A freshly extracted image still has writes pending; on ZFS the volume create
+  # then waited behind them and failed with "got timeout".
+  sync -f "$file" 2>/dev/null || sync
+  local attempt rc
+  for attempt in 1 2 3; do
+    out="$("${cmd[@]}" "$vmid" "$file" "$storage" "${opts[@]}" 2>&1)" && rc=0 || rc=$?
+    [[ $rc -ne 0 && "$out" == *"got timeout"* && $attempt -lt 3 ]] || break
+    sleep $((attempt * 10))
+  done
+  if [[ $rc -ne 0 ]]; then
     msg_error "Importing $(basename "$file") into VM ${vmid} failed"
     # Into the log too: the failure trace is read from there.
     printf '%s\n' "$out" | tail -n 5 | tee -a "$(get_active_logfile)" >&2 || true

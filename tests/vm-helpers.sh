@@ -208,11 +208,17 @@ QM_CONFIG_BEFORE=""
 QM_CONFIG_AFTER=""
 # A file, not a variable: the import runs inside a command substitution.
 QM_IMPORTED_FLAG="$TEST_DIR/qm-imported"
+QM_TIMEOUTS_FILE="$TEST_DIR/qm-timeouts"
 qm() {
   printf 'qm %s\n' "$*" >>"$LOG"
   case "$1 ${2:-}" in
   "disk import")
     if [[ "${3:-}" == --help ]]; then [[ "$QM_MODERN" == yes ]]; return; fi
+    if [[ -s "$QM_TIMEOUTS_FILE" && "$(cat "$QM_TIMEOUTS_FILE")" -gt 0 ]]; then
+      echo $(($(cat "$QM_TIMEOUTS_FILE") - 1)) >"$QM_TIMEOUTS_FILE"
+      echo "command 'zfs create -s -V 33554432k rpool/data/vm-100-disk-0' failed: got timeout"
+      return 255
+    fi
     : >"$QM_IMPORTED_FLAG"
     printf '%s\n' "$QM_IMPORT_OUT"
     return "$QM_IMPORT_RC"
@@ -255,6 +261,19 @@ vm_import_disk 100 "$IMAGE" local-lvm || fail "modern import"
 assert_eq "$VM_IMPORTED_DISK" "local-lvm:vm-100-disk-1" "volume from qm's report, without the unused0: prefix"
 assert_contains "$LOG" "qm disk import 100 $IMAGE local-lvm --format raw"
 ok "vm_import_disk uses qm disk import and the reported volume"
+
+import_case
+echo 1 >"$QM_TIMEOUTS_FILE"
+vm_import_disk 100 "$IMAGE" local-lvm || fail "import after a zfs timeout"
+assert_eq "$(grep -c 'qm disk import 100' "$LOG")" 2 "one timeout, one retry"
+ok "vm_import_disk retries after a ZFS got timeout"
+
+import_case
+echo 9 >"$QM_TIMEOUTS_FILE"
+vm_import_disk 100 "$IMAGE" local-lvm 2>/dev/null && fail "three timeouts still fail"
+assert_eq "$(grep -c 'qm disk import 100' "$LOG")" 3 "gives up after three attempts"
+: >"$QM_TIMEOUTS_FILE"
+ok "vm_import_disk gives up after three timeouts"
 
 import_case
 QM_MODERN=no
