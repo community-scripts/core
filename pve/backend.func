@@ -4035,7 +4035,8 @@ EOF
   fi
 
   if [[ -f /etc/systemd/system/ping-instances.service ]]; then
-    systemctl start ping-instances.service
+    systemctl start ping-instances.service 2>/dev/null ||
+      msg_warn "The monitoring service ping-instances would not start again (see: systemctl status ping-instances); the container itself is fine"
   fi
 
   # Optional host-side post-install hook
