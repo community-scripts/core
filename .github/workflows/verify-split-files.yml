@@ -31,6 +31,7 @@ on:
       - "tests/docker-lxcfs.sh"
       - "tests/java-memory.sh"
       - "tests/sudo-env.sh"
+      - "tests/template-broken.sh"
       - "tests/deb822-local-keyring.sh"
       - "tests/gpu-pci-class.sh"
       - "tests/nvidia-version-pin.sh"
@@ -92,6 +93,7 @@ on:
       - "tests/docker-lxcfs.sh"
       - "tests/java-memory.sh"
       - "tests/sudo-env.sh"
+      - "tests/template-broken.sh"
       - "tests/deb822-local-keyring.sh"
       - "tests/gpu-pci-class.sh"
       - "tests/nvidia-version-pin.sh"
@@ -178,6 +180,9 @@ jobs:
 
       - name: sudo environment tests
         run: bash tests/sudo-env.sh
+
+      - name: Broken template tests
+        run: bash tests/template-broken.sh
 
       - name: deb822 local keyring tests
         run: bash tests/deb822-local-keyring.sh
