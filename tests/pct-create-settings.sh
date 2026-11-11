@@ -64,5 +64,12 @@ _cs_shield_hangup() { "$@"; }
 pveam() { [[ -d "$TEST_DIR/nas/template/cache" ]] && echo saved || echo "No such file or directory"; }
 expect "a storage without template/cache gets it before the download" saved "$(_pveam_download nas debian-13-standard_13.6-1_amd64.tar.zst)"
 
+# From the telemetry: five hosts, three futile attempts each.
+printf '%s\n' "Failed to parse bus message: Transport endpoint is not connected" \
+  "unable to create CT 110 - command 'timedatectl show '--property=Timezone' --value' failed: exit code 1" >"$TEST_DIR/pct.log"
+expect "a host whose timedatectl fails is named before any retry" 1 \
+  "$(awk '/First attempt/,/already exists\|already in use/' "$CORE_DIR/pve/backend.func" | grep -c "grep -q \"command 'timedatectl show\" \"\$LOGFILE\"")"
+expect "and the pattern matches what pct create prints" 0 "$(grep -q "command 'timedatectl show" "$TEST_DIR/pct.log"; echo $?)"
+
 printf '%s passed, %s failed\n' "$passed" "$failed"
 ((failed == 0))
