@@ -30,6 +30,7 @@ on:
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
       - "tests/java-memory.sh"
+      - "tests/pve-no-ip-facts.sh"
       - "tests/sudo-env.sh"
       - "tests/deb822-local-keyring.sh"
       - "tests/gpu-pci-class.sh"
@@ -91,6 +92,7 @@ on:
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
       - "tests/java-memory.sh"
+      - "tests/pve-no-ip-facts.sh"
       - "tests/sudo-env.sh"
       - "tests/deb822-local-keyring.sh"
       - "tests/gpu-pci-class.sh"
@@ -175,6 +177,9 @@ jobs:
 
       - name: Java memory drop-in tests
         run: bash tests/java-memory.sh
+
+      - name: No-IP diagnosis tests
+        run: bash tests/pve-no-ip-facts.sh
 
       - name: sudo environment tests
         run: bash tests/sudo-env.sh

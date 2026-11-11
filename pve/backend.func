@@ -145,6 +145,38 @@ _pct_create() {
 }
 
 # ------------------------------------------------------------------------------
+# _pve_no_ip_facts <ctid> <bridge>
+#
+# What the host can see about a container that got no address. It goes to the
+# log, where "No IP assigned" used to be all a quarter of the network failures
+# said.
+# ------------------------------------------------------------------------------
+_pve_no_ip_facts() {
+  local ctid="$1" brg="$2" net0 ip4 tag link port uplinks=0
+  net0="$(pct config "$ctid" 2>/dev/null | sed -n 's/^net0: //p')"
+  ip4="$(grep -oE '(^|,)ip=[^,]+' <<<"$net0" | cut -d= -f2 || true)"
+  tag="$(grep -oE '(^|,)tag=[^,]+' <<<"$net0" | cut -d= -f2 || true)"
+  link="$(pct exec "$ctid" -- ip -br link show dev eth0 2>/dev/null | awk '{print $2}' || true)"
+  msg_warn "Container network: ip=${ip4:-none}${tag:+, VLAN ${tag}}, eth0 ${link:-missing}"
+
+  if [[ ! -d "/sys/class/net/${brg}" ]]; then
+    msg_warn "Bridge ${brg} does not exist on this host"
+  elif [[ -d "/sys/class/net/${brg}/brif" ]]; then
+    for port in "/sys/class/net/${brg}/brif"/*; do
+      [[ -e "$port" ]] || continue
+      case "${port##*/}" in
+      veth* | tap* | fwpr* | fwln*) ;;
+      *) uplinks=$((uplinks + 1)) ;;
+      esac
+    done
+    ((uplinks)) || msg_warn "Bridge ${brg} has no uplink port, so nothing outside this host can answer on it"
+  fi
+  if [[ "$ip4" == "dhcp" ]]; then
+    msg_warn "No DHCP server answered on ${brg}${tag:+ (VLAN ${tag})}"
+  fi
+}
+
+# ------------------------------------------------------------------------------
 # _pct_start_failed <ctid> [pct start output]
 #
 # pct says only that the startup failed; lxc writes why to the container's
@@ -1128,6 +1160,7 @@ EOF
 
     if [ -z "$ip_in_lxc" ]; then
       msg_error "No IP assigned to CT $CTID after 60 attempts"
+      _pve_no_ip_facts "$CTID" "$BRG"
       msg_custom "🔧" "${YW}" "Troubleshooting:"
       echo "  • Verify bridge ${BRG} exists and has connectivity"
       echo "  • Check if DHCP server is reachable (if using DHCP)"
