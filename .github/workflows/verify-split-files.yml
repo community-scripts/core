@@ -30,6 +30,7 @@ on:
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
       - "tests/java-memory.sh"
+      - "tests/deb822-local-keyring.sh"
       - "tests/gpu-pci-class.sh"
       - "tests/nvidia-version-pin.sh"
       - "tests/external-installer.sh"
@@ -89,6 +90,7 @@ on:
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
       - "tests/java-memory.sh"
+      - "tests/deb822-local-keyring.sh"
       - "tests/gpu-pci-class.sh"
       - "tests/nvidia-version-pin.sh"
       - "tests/external-installer.sh"
@@ -171,6 +173,9 @@ jobs:
 
       - name: Java memory drop-in tests
         run: bash tests/java-memory.sh
+
+      - name: deb822 local keyring tests
+        run: bash tests/deb822-local-keyring.sh
 
       - name: GPU detection by PCI class tests
         run: bash tests/gpu-pci-class.sh

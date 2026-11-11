@@ -55,14 +55,15 @@ curl_with_retry() {
   local success=false
   local backoff=1
 
-  # Extract hostname for DNS pre-check
-  local host
-  host=$(echo "$url" | sed -E 's|^https?://([^/:]+).*|\1|')
-
-  # DNS pre-check - fail fast if host is unresolvable
-  if ! getent hosts "$host" &>/dev/null; then
-    debug_log "DNS resolution failed for $host"
-    return 6
+  # DNS pre-check - fail fast if host is unresolvable. http(s) only: a file://
+  # URL has no host, and the lookup then ran on the whole URL and failed.
+  if [[ "$url" =~ ^https?:// ]]; then
+    local host
+    host=$(echo "$url" | sed -E 's|^https?://([^/:]+).*|\1|')
+    if ! getent hosts "$host" &>/dev/null; then
+      debug_log "DNS resolution failed for $host"
+      return 6
+    fi
   fi
 
   while [[ $attempt -le $retries ]]; do
@@ -1926,6 +1927,8 @@ ensure_apt_working() {
 # ------------------------------------------------------------------------------
 # Standardized deb822 repository setup (with optional Architectures)
 # Always runs apt update after repo creation to ensure package availability
+# $2 is the key's URL, or the path of a keyring already on the system (Debian's
+# archive keyring for backports), which is used where it is.
 # ------------------------------------------------------------------------------
 setup_deb822_repo() {
   local name="$1"
@@ -1946,38 +1949,47 @@ setup_deb822_repo() {
   cleanup_old_repo_files "$name"
   cleanup_orphaned_sources
 
-  mkdir -p /etc/apt/keyrings || {
-    msg_error "Failed to create /etc/apt/keyrings"
-    return 252
-  }
-
-  # Import GPG key (auto-detect binary vs ASCII-armored format)
-  local tmp_gpg
-  tmp_gpg=$(mktemp) || return 252
-  CURL_RETRIES=4 CURL_TIMEOUT=30 curl_with_retry "$gpg_url" "$tmp_gpg" || {
-    msg_error "Failed to download GPG key for ${name} from: ${gpg_url}"
-    msg_error "Hint: Check network connectivity. If behind a proxy or firewall, ensure HTTPS access to $(echo "$gpg_url" | grep -oE 'https?://[^/]+') is allowed."
-    rm -f "$tmp_gpg"
-    return 7
-  }
-
-  if grep -q "BEGIN PGP" "$tmp_gpg" 2>/dev/null; then
-    # ASCII-armored — dearmor to binary
-    gpg --dearmor --yes -o "/etc/apt/keyrings/${name}.gpg" <"$tmp_gpg" || {
-      msg_error "Failed to install GPG key for ${name}"
-      rm -f "$tmp_gpg"
-      return 251
-    }
+  local signed_by="/etc/apt/keyrings/${name}.gpg"
+  if [[ "$gpg_url" == /* ]]; then
+    if [[ ! -f "$gpg_url" ]]; then
+      msg_error "Keyring for ${name} not found: ${gpg_url}"
+      return 252
+    fi
+    signed_by="$gpg_url"
   else
-    # Already binary — copy directly
-    cp -f "$tmp_gpg" "/etc/apt/keyrings/${name}.gpg" || {
-      msg_error "Failed to install GPG key for ${name}"
-      rm -f "$tmp_gpg"
+    mkdir -p /etc/apt/keyrings || {
+      msg_error "Failed to create /etc/apt/keyrings"
       return 252
     }
+
+    # Import GPG key (auto-detect binary vs ASCII-armored format)
+    local tmp_gpg
+    tmp_gpg=$(mktemp) || return 252
+    CURL_RETRIES=4 CURL_TIMEOUT=30 curl_with_retry "$gpg_url" "$tmp_gpg" || {
+      msg_error "Failed to download GPG key for ${name} from: ${gpg_url}"
+      msg_error "Hint: Check network connectivity. If behind a proxy or firewall, ensure HTTPS access to $(echo "$gpg_url" | grep -oE 'https?://[^/]+') is allowed."
+      rm -f "$tmp_gpg"
+      return 7
+    }
+
+    if grep -q "BEGIN PGP" "$tmp_gpg" 2>/dev/null; then
+      # ASCII-armored — dearmor to binary
+      gpg --dearmor --yes -o "/etc/apt/keyrings/${name}.gpg" <"$tmp_gpg" || {
+        msg_error "Failed to install GPG key for ${name}"
+        rm -f "$tmp_gpg"
+        return 251
+      }
+    else
+      # Already binary — copy directly
+      cp -f "$tmp_gpg" "/etc/apt/keyrings/${name}.gpg" || {
+        msg_error "Failed to install GPG key for ${name}"
+        rm -f "$tmp_gpg"
+        return 252
+      }
+    fi
+    rm -f "$tmp_gpg"
+    chmod 644 "/etc/apt/keyrings/${name}.gpg"
   fi
-  rm -f "$tmp_gpg"
-  chmod 644 "/etc/apt/keyrings/${name}.gpg"
 
   # Write deb822
   {
@@ -1989,7 +2001,7 @@ setup_deb822_repo() {
       echo "Components: $component"
     fi
     [[ -n "$architectures" ]] && echo "Architectures: $architectures"
-    echo "Signed-By: /etc/apt/keyrings/${name}.gpg"
+    echo "Signed-By: ${signed_by}"
     [[ -n "$enabled" ]] && echo "Enabled: $enabled"
   } >/etc/apt/sources.list.d/${name}.sources
 
