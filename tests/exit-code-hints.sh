@@ -57,11 +57,13 @@ expect "pct exec 255 is not a DPKG error" "exit_code=255 | pct exited with statu
 expect "step and function join the header" "exit_code=7 | Exit status 7 | step: Setting up Grafana Repository | in setup_deb822_repo | at line 24: return 7" "$(CS_STEP='Setting up Grafana Repository' FAILED_FUNCTION=setup_deb822_repo FAILED_COMMAND='return 7' FAILED_LINE=24 build_error_string 7)"
 expect "a finished step is named as such" "exit_code=64 | Missing or invalid input (a required setting was not given) | step: after Updated Container OS" "$(CS_STEP_DONE='Updated Container OS' FAILED_COMMAND= build_error_string 64)"
 expect "apt 100 keeps the APT text" APT "$(FAILED_COMMAND='apt install -y grafana' FAILED_LINE=31 build_error_string 100 | cut -d'|' -f2 | cut -d: -f1 | tr -d ' ')"
-expect "without a command the table stands" "exit_code=255 | DPKG: Fatal internal error" "$(FAILED_COMMAND= build_error_string 255)"
+expect "without a command the table stands" "exit_code=255 | Fatal error (exit 255 from qm, pct, ssh or dpkg)" "$(FAILED_COMMAND= build_error_string 255)"
 
 # The category follows the tool where the code is shared.
 expect "systemctl is a service failure" service "$(categorize_error 5 'systemctl start portainer')"
 expect "pct exec is a Proxmox failure" proxmox "$(categorize_error 255 'pct exec 100 -- ip a')"
+expect "\$STD qm start in a VM script is one too" proxmox "$(categorize_error 255 '$STD qm start $VMID')"
+expect "and \${STD:-} pct start" proxmox "$(categorize_error 255 '${STD:-} pct start 105')"
 expect "a kill stays a resource failure whatever ran" resource "$(categorize_error 137 'pct exec 100 -- cargo build')"
 expect "apt keeps its category" dependency "$(categorize_error 100 'apt install -y grafana')"
 expect "an abort stays an abort" user_aborted "$(categorize_error 130 'systemctl start x')"
