@@ -1192,6 +1192,11 @@ EOF
 https://dl-cdn.alpinelinux.org/alpine/latest-stable/main
 https://dl-cdn.alpinelinux.org/alpine/latest-stable/community
 EOF'
+   # As for Debian below: with a dead resolver every mirror fails alike.
+   if ! pct exec "$CTID" -- /bin/sh -c 'getent hosts dl-cdn.alpinelinux.org >/dev/null 2>&1'; then
+     msg_warn "Alpine repository DNS resolution failed in container, injecting public DNS servers"
+     pct exec "$CTID" -- /bin/sh -c 'printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" >/etc/resolv.conf'
+   fi
    _cs_shield_hangup pct exec "$CTID" -- ash -c 'set -a; [ -f /etc/profile.d/90-http-proxy.sh ] && . /etc/profile.d/90-http-proxy.sh; set +a; apk add bash newt curl openssh nano mc ncurses jq' >>"$BUILD_LOG" 2>&1 || {
      msg_warn "apk install failed (dl-cdn.alpinelinux.org), trying alternate mirrors..."
      local alpine_exit=0
