@@ -192,6 +192,27 @@ _pve_ct_stopped_by() {
     grep -oE 'UPID:[^"]+' | awk -F: '$6 ~ /^vz(stop|shutdown|reboot|destroy)$/ { print $6 " by " $8; exit }'
 }
 
+# Why a container stopped by itself is in its own journal, which stops with it:
+# what the host kernel logged about it, and where its shutdown began.
+_pve_ct_stop_facts() {
+  local root="/var/lib/lxc/${CTID}/rootfs" log=""
+  journalctl -k --since "@${_CS_INSTALL_STARTED:-0}" -o cat --no-pager 2>/dev/null |
+    grep -E "lxc-${CTID}_<|/lxc/${CTID}/" | tail -n 5 | sed "s/^/${TAB}kernel: /" || true
+  pct mount "$CTID" >/dev/null 2>&1 || return 0
+  if [[ -d "$root/var/log/journal" ]]; then
+    log="$(journalctl -D "$root/var/log/journal" -n 300 -o short-monotonic --no-hostname --no-pager -q 2>/dev/null)" || log=""
+  else
+    log="$(tail -n 300 "$root/var/log/syslog" 2>/dev/null || tail -n 300 "$root/var/log/messages" 2>/dev/null)" || log=""
+  fi
+  pct unmount "$CTID" >/dev/null 2>&1 || true
+  [[ -n "$log" ]] || return 0
+  echo "${TAB}Container log where its shutdown began:"
+  awk '!s && /Received SIG|[Pp]owering (off|down)|Shutting down|Freezing|Caught <|emergency/ { s = NR }
+    { l[NR] = $0 }
+    END { f = s ? s - 3 : NR - 11; if (f < 1) f = 1; for (i = f; i <= NR && i < f + 12; i++) print l[i] }' <<<"$log" |
+    sed "s/^/${TAB}  /"
+}
+
 # ------------------------------------------------------------------------------
 # _pve_ct_gone_during_setup
 #
@@ -214,6 +235,7 @@ _pve_ct_gone_during_setup() {
   fi
   msg_error "Container ${CTID} stopped by itself during its setup"
   journalctl -u "pve-container@${CTID}" -n 10 --no-pager -o cat 2>/dev/null | sed "s/^/${TAB}/" || true
+  _pve_ct_stop_facts
   export ERROR_CATEGORY_OVERRIDE="proxmox"
   _CS_SETUP_GONE_RC=199
 }
@@ -248,6 +270,7 @@ _pve_wait_for_detached_install() {
         echo "[INFO] The install did not fail: ${stopped_by} ended it"
         return 143
       fi
+      _pve_ct_stop_facts
       return 199
     fi
     pid="$(pct exec "$CTID" -- cat "${base}.pid" 2>/dev/null | tr -d '[:space:]')"
@@ -1074,6 +1097,8 @@ EOF
   # ============================================================================
 
   msg_info "Starting container"
+  # From here a stop counts as during the setup; unset, _pve_ct_stopped_by looked only from "now".
+  _CS_INSTALL_STARTED="$(date +%s)"
   # Checked, and with its own code. Unchecked, a failure here surfaced as pct's
   # generic 255 -- which the exit table reads as DPKG's fatal error, so 197 runs
   # across 70 apps in a fortnight were filed as a package manager problem when
