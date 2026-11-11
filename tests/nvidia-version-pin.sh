@@ -19,9 +19,15 @@ check() {
 
 # Newest first, like madison.
 apt-cache() {
-  local v
-  for v in 620.70.06-1 595.112.07-1 595.71.05-1 590.48.01-1; do
-    printf ' libcuda1 | %s | https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64  Packages\n' "$v"
+  local v list
+  case "$2" in
+  libcuda1) list="620.70.06-1 595.112.07-1 595.71.05-1 590.48.01-1" ;;
+  libnvidia-compute) list="620.70.06-1ubuntu1 595.112.07-1ubuntu1" ;;
+  libnvidia-compute-595) list="595.99.02-0ubuntu0.24.04.1" ;;
+  *) return 0 ;;
+  esac
+  for v in $list; do
+    printf ' %s | %s | https://developer.download.nvidia.com/compute/cuda/repos  Packages\n' "$2" "$v"
   done
 }
 
@@ -29,6 +35,8 @@ check "the host's exact release wins" 595.112.07-1 "$(_cuda_pick_version 595.112
 check "a mid-series host is not handed a newer release" 595.71.05-1 "$(_cuda_pick_version 595.71.05)"
 check "a missing release falls back to the series" 595.112.07-1 "$(_cuda_pick_version 595.80.01)"
 check "another series is never taken" "" "$(_cuda_pick_version 580.126.09)"
+check "Ubuntu: NVIDIA's package has the host's release" 595.112.07-1ubuntu1 "$(_cuda_pick_version 595.112.07 libnvidia-compute)"
+check "Ubuntu: the archive's package only has its own" 595.99.02-0ubuntu0.24.04.1 "$(_cuda_pick_version 595.112.07 libnvidia-compute-595)"
 
 pins="$(_nvidia_apt_pins 595.112.07-1)"
 check "apt reads the version stanza first" "Pin: version 595.112.07-1" "$(grep -m1 '^Pin:' <<<"$pins")"
@@ -50,7 +58,7 @@ covered() {
 }
 uncovered=()
 set -f
-for pkg in libcuda1 libnvcuvid1 libnvidia-encode1 libnvidia-ml1 libnvidia-ptxjitcompiler1 libnvidia-gpucomp libnvidia-pkcs11-openssl3; do
+for pkg in libcuda1 libnvcuvid1 libnvidia-encode1 libnvidia-ml1 libnvidia-ptxjitcompiler1 libnvidia-gpucomp libnvidia-pkcs11-openssl3 libnvidia-compute nvidia-persistenced; do
   covered "$pkg" || uncovered+=("$pkg")
 done
 set +f

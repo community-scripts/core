@@ -36,6 +36,7 @@ _forge_workdir
 _gh_scan_older_releases
 _github_release_noapi
 _gl_scan_older_releases
+_gpu_type
 _install_uvx_wrapper
 _mongodb_in_place_precheck
 _mongodb_in_place_simulate
