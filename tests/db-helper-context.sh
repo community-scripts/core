@@ -48,12 +48,13 @@ run() {
     mariadb) pass="$MARIADB_DB_PASS" ;;
     mysql) pass="$MYSQL_DB_PASS" ;;
     esac
-    printf '%s %s' "$([[ "$pass" =~ ^[A-Za-z0-9]{24}$ ]] && echo alnum24 || echo "bad:$pass")" "$(ls "$home")"
+    printf '%s %s %s' "$([[ "$pass" =~ ^[A-Za-z0-9]{24}$ ]] && echo alnum24 || echo "bad:$pass")" "$(ls "$home")" "$(stat -c %a "$home"/*.creds)"
   ) || echo "aborted"
 }
 
+# The creds file holds the database password; it was left world-readable (644).
 for db in postgresql mariadb mysql; do
-  check "$db: runs without APPLICATION, alphanumeric password, creds named after APP" "alnum24 pgadmin.creds" "$(run "$db")"
+  check "$db: runs without APPLICATION, alphanumeric password, creds named after APP and private" "alnum24 pgadmin.creds 600" "$(umask 022; run "$db")"
 done
 
 echo "${passed} passed, ${failed} failed"
