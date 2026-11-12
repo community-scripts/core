@@ -3738,6 +3738,15 @@ create_lxc_container() {
   if ! _pct_create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" $PCT_OPTIONS ${_PW_ARGS[@]+"${_PW_ARGS[@]}"} >"$LOGFILE" 2>&1; then
     msg_debug "Container creation failed on ${TEMPLATE_STORAGE}. Checking error..."
 
+    # pct create asks timedatectl for the host's time zone; when that fails, every retry fails with it.
+    if grep -q "command 'timedatectl show" "$LOGFILE"; then
+      msg_error "pct create could not read this host's time zone: timedatectl does not answer."
+      msg_custom "🔧" "${YW}" "On the Proxmox host, run 'systemctl restart systemd-timedated' and check that 'timedatectl' works, then retry."
+      msg_custom "💡" "${YW}" "If timedatectl still fails, D-Bus on the host is stuck; a reboot clears it."
+      _flush_pct_log
+      exit 209
+    fi
+
     if grep -qiE 'Compilation failed|Bareword.*not allowed' "$LOGFILE"; then
       msg_error "Container creation failed due to broken Perl modules on the PVE host."
       msg_custom "⚠️" "${YW}" "This usually happens after a partial PVE package upgrade."
