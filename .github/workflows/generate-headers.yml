@@ -31,22 +31,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout core
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Checkout ProxmoxVE
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: community-scripts/ProxmoxVE
           path: .src/ProxmoxVE
 
       - name: Checkout DevScripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: community-scripts/DevScripts
           path: .src/DevScripts
 
       - name: Checkout Incus
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: community-scripts/Incus
           path: .src/Incus
@@ -63,7 +63,7 @@ jobs:
         run: rm -rf .src
 
       - name: Open a pull request
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v8
         with:
           branch: chore/generate-headers
           title: "Generate app headers"
