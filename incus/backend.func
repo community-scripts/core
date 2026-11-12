@@ -1037,6 +1037,10 @@ incus_customize_container() {
 http://dl-cdn.alpinelinux.org/alpine/${alpine_rel}/main
 http://dl-cdn.alpinelinux.org/alpine/${alpine_rel}/community
 EOF"
+    if ! incus_ct_exec /bin/sh -c 'getent hosts dl-cdn.alpinelinux.org >/dev/null 2>&1'; then
+      msg_warn "Alpine repository DNS resolution failed in container, injecting public DNS servers"
+      incus_ct_exec /bin/sh -c 'printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" >/etc/resolv.conf'
+    fi
     incus_ct_exec ash -c "apk add bash newt curl openssh nano mc ncurses jq >/dev/null" || msg_warn "Alpine base package install had issues"
   elif [[ "${var_os:-debian}" =~ ^(debian|ubuntu|devuan)$ ]]; then
     sleep 2
