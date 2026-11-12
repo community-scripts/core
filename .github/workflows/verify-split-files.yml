@@ -31,8 +31,8 @@ on:
       - "tests/docker-lxcfs.sh"
       - "tests/java-memory.sh"
       - "tests/sudo-env.sh"
-      - "tests/ct-stop-facts.sh"
       - "tests/deb822-local-keyring.sh"
+      - "tests/ct-stop-facts.sh"
       - "tests/gpu-pci-class.sh"
       - "tests/nvidia-version-pin.sh"
       - "tests/external-installer.sh"
@@ -93,8 +93,8 @@ on:
       - "tests/docker-lxcfs.sh"
       - "tests/java-memory.sh"
       - "tests/sudo-env.sh"
-      - "tests/ct-stop-facts.sh"
       - "tests/deb822-local-keyring.sh"
+      - "tests/ct-stop-facts.sh"
       - "tests/gpu-pci-class.sh"
       - "tests/nvidia-version-pin.sh"
       - "tests/external-installer.sh"
@@ -181,11 +181,11 @@ jobs:
       - name: sudo environment tests
         run: bash tests/sudo-env.sh
 
-      - name: Container stop facts tests
-        run: bash tests/ct-stop-facts.sh
-
       - name: deb822 local keyring tests
         run: bash tests/deb822-local-keyring.sh
+
+      - name: Container stop facts tests
+        run: bash tests/ct-stop-facts.sh
 
       - name: GPU detection by PCI class tests
         run: bash tests/gpu-pci-class.sh
