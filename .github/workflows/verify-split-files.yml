@@ -29,6 +29,7 @@ on:
       - "tests/mongodb-upgrade.sh"
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
+      - "tests/install-script-fetch.sh"
       - "tests/java-memory.sh"
       - "tests/sudo-env.sh"
       - "tests/deb822-local-keyring.sh"
@@ -90,6 +91,7 @@ on:
       - "tests/mongodb-upgrade.sh"
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
+      - "tests/install-script-fetch.sh"
       - "tests/java-memory.sh"
       - "tests/sudo-env.sh"
       - "tests/deb822-local-keyring.sh"
@@ -172,6 +174,9 @@ jobs:
 
       - name: Docker lxcfs visibility regression tests
         run: bash tests/docker-lxcfs.sh
+
+      - name: Install script fetch tests
+        run: bash tests/install-script-fetch.sh
 
       - name: Java memory drop-in tests
         run: bash tests/java-memory.sh
