@@ -569,6 +569,33 @@ _forge_workdir() {
   mktemp -d -p "${TMPDIR:-/var/tmp}" 2>/dev/null || mktemp -d -p /tmp
 }
 
+# Puts the entries of <source_dir> into <target>: moved where <target> has no
+# such entry yet, copied over it otherwise. Staging is on disk, so a plain
+# cp -r had the release there twice and filled small containers.
+_forge_place() {
+  local src="$1" target="$2" entry rc=0
+  shopt -s dotglob nullglob
+  for entry in "$src"/*; do
+    if [[ -e "$target/${entry##*/}" || -L "$target/${entry##*/}" ]]; then
+      cp -r "$entry" "$target/" && rm -rf "$entry" || rc=1
+    else
+      mv "$entry" "$target/" || rc=1
+    fi
+  done
+  shopt -u dotglob nullglob
+  return $rc
+}
+
+# After a failed _forge_place: says so and returns 1 when <target>'s filesystem
+# is full, returns 0 for any other reason.
+_forge_disk_full() {
+  local avail
+  avail="$(df -Pk "$1" 2>/dev/null | awk 'NR==2 {print $4}')"
+  [[ "$avail" =~ ^[0-9]+$ ]] && ((avail < 1024)) || return 0
+  msg_error "No space left on the disk while deploying to $1 - give the container a larger disk"
+  return 1
+}
+
 # ------------------------------------------------------------------------------
 # _deploy_source_tarball <tarball_path> <target> <workdir>
 #
@@ -585,9 +612,10 @@ _forge_workdir() {
 #     <target> that the wipe leaves alone (e.g. "geodata .env data/uploads").
 #   - Does NOT own <workdir>: the caller creates it and is responsible for its
 #     cleanup (typically via a RETURN trap on its tmpdir).
-#   - cp failures are non-fatal here, matching the previous inline behavior.
+#   - A failed copy is fatal only when the disk is full; otherwise it stays
+#     non-fatal, matching the previous inline behavior.
 #
-# Returns: 0 on success (or non-fatal cp failure), 251 on extraction failure.
+# Returns: 0 on success, 251 on extraction failure, 252 when the disk is full.
 # ------------------------------------------------------------------------------
 _deploy_source_tarball() {
   local tarball="$1" target="$2" workdir="$3"
@@ -610,9 +638,7 @@ _deploy_source_tarball() {
     _cs_clean_target_dir "$target"
   fi
 
-  shopt -s dotglob nullglob
-  cp -r "$unpack_dir"/* "$target/"
-  shopt -u dotglob nullglob
+  _forge_place "$unpack_dir" "$target" || _forge_disk_full "$target" || return 252
   return 0
 }
 
@@ -715,7 +741,8 @@ _deploy_unpacked_archive() {
     _cs_clean_target_dir "$target"
   fi
 
-  if ! cp -r "$source_dir"/* "$target/"; then
+  if ! _forge_place "$source_dir" "$target"; then
+    _forge_disk_full "$target" || true
     if [[ -n "$inner_dir" ]]; then
       msg_error "Failed to copy contents from $inner_dir to $target"
     else

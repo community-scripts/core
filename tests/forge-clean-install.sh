@@ -2,7 +2,7 @@
 set -euo pipefail
 
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-eval "$(awk '/^(_cs_clean_target_dir|_deploy_source_tarball|_deploy_unpacked_archive|_forge_workdir)\(\) \{/,/^}/' "$CORE_DIR/lib/forge.func")"
+eval "$(awk '/^(_cs_clean_target_dir|_deploy_source_tarball|_deploy_unpacked_archive|_forge_workdir|_forge_place|_forge_disk_full)\(\) \{/,/^}/' "$CORE_DIR/lib/forge.func")"
 
 TEST_DIR="$(mktemp -d)"
 trap 'rm -rf -- "$TEST_DIR"' EXIT
@@ -91,6 +91,39 @@ default_workdir="$(_forge_workdir)"
 check "workdir: defaults to /var/tmp, not /tmp" "/var/tmp" "${default_workdir%/*}"
 rm -rf -- "$default_workdir"
 check "no helper stages in the mktemp default" "0" "$(awk '/^(fetch_and_deploy_[a-z_]+|_forge_[a-z_]+)\(\) \{/,/^}/' "$CORE_DIR/lib/forge.func" | grep -c '_tmp="\{0,1\}$(mktemp -d)\|tmpdir="\{0,1\}$(mktemp -d)')"
+
+# _forge_place: nothing of the release stays behind in staging, and what the
+# target already has is merged, not replaced.
+rm -rf "$TEST_DIR/src" "$TEST_DIR/dst"
+mkdir -p "$TEST_DIR/src/lib" "$TEST_DIR/src/data" "$TEST_DIR/dst/data"
+echo new >"$TEST_DIR/src/app"
+echo new >"$TEST_DIR/src/lib/a"
+echo new >"$TEST_DIR/src/data/schema"
+echo hidden >"$TEST_DIR/src/.env.example"
+echo mine >"$TEST_DIR/dst/data/db"
+rc=0
+_forge_place "$TEST_DIR/src" "$TEST_DIR/dst" || rc=$?
+check "place: succeeds" 0 "$rc"
+check "place: staging is empty afterwards" "" "$(ls -A "$TEST_DIR/src")"
+check "place: new entries arrive, dotfiles included" "new new hidden" "$(cat "$TEST_DIR/dst/app" "$TEST_DIR/dst/lib/a" "$TEST_DIR/dst/.env.example" | xargs)"
+check "place: an existing directory is merged" "mine new" "$(cat "$TEST_DIR/dst/data/db" "$TEST_DIR/dst/data/schema" | xargs)"
+
+df() { printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/x 4000000 4000000 %s 100%% /\n' "${FAKE_AVAIL:-0}"; }
+rc=0
+FAKE_AVAIL=12 _forge_disk_full "$TEST_DIR/dst" || rc=$?
+check "a full disk is reported" 1 "$rc"
+rc=0
+FAKE_AVAIL=900000 _forge_disk_full "$TEST_DIR/dst" || rc=$?
+check "a failure with space left is not blamed on the disk" 0 "$rc"
+
+# The tarball mode used to return 0 whatever cp did.
+setup
+mkdir -p "$TEST_DIR/pkg/app-1.0" && echo v1 >"$TEST_DIR/pkg/app-1.0/app"
+tar -czf "$TEST_DIR/work/app.tar.gz" -C "$TEST_DIR/pkg" app-1.0
+_forge_place() { return 1; }
+rc=0
+FAKE_AVAIL=0 _deploy_source_tarball "$TEST_DIR/work/app.tar.gz" "$TEST_DIR/target" "$TEST_DIR/work" || rc=$?
+check "tarball: a full disk ends the deploy" 252 "$rc"
 
 echo "${passed} passed, ${failed} failed"
 ((failed == 0))
