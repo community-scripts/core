@@ -46,7 +46,13 @@ kill -HUP -- "-$(awk '{print $5}' /proc/$$/stat)"
 sleep 0.3
 echo "local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst 129.66MB"
 EOF
-chmod +x "$TEST_DIR/bin/pct" "$TEST_DIR/bin/pveam"
+cat >"$TEST_DIR/bin/vzdump" <<'EOF'
+#!/usr/bin/env bash
+kill -HUP -- "-$(awk '{print $5}' /proc/$$/stat)"
+sleep 0.3
+echo "INFO: notified via target mail-to-root"
+EOF
+chmod +x "$TEST_DIR/bin/pct" "$TEST_DIR/bin/pveam" "$TEST_DIR/bin/vzdump"
 
 {
   awk '/^_cs_shield_hangup[(][)] [{]/,/^}/' "$CORE_DIR/core/core.func"
@@ -72,6 +78,10 @@ expect "the stub's hangup kills an unshielded pct start (the old code)" aborted 
 out="$(run 'out="$(_cs_shield_hangup pct start 101 2>&1)"; echo "$out"')"
 expect "a shielded pct start finishes" started "$(started)"
 expect "and its output arrives in full" "Started pve-container@101.service" "$out"
+
+# update-apps runs vzdump this way: the backup finished, yet the subshell returned 129.
+expect "a shielded command inside \$(...) keeps its own exit status" "0 INFO: notified via target mail-to-root"   "$(run 'out="$(_cs_shield_hangup vzdump 101 2>&1)"; echo "$? $out"')"
+expect "called directly, it leaves the engine's own HUP trap alone" 1   "$(run '_cs_shield_hangup true; trap -p HUP | grep -c "trap -- '"':'"'"')"
 
 expect "_pct_restart sees the container running" 0 "$(run '_pct_restart 101 "the config change"; echo $?')"
 
