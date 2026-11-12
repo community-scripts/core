@@ -72,6 +72,7 @@ on:
       - "tests/db-helper-context.sh"
       - "tests/forge-tag-spelling.sh"
       - "tests/forge-deb-services.sh"
+      - "tests/self-signed-cert.sh"
       - "tests/cs-clear.sh"
       - "tests/forge-appversion-scope.sh"
       - "tests/forge-singlefile-compressed.sh"
@@ -143,6 +144,7 @@ on:
       - "tests/db-helper-context.sh"
       - "tests/forge-tag-spelling.sh"
       - "tests/forge-deb-services.sh"
+      - "tests/self-signed-cert.sh"
       - "tests/cs-clear.sh"
       - "tests/forge-appversion-scope.sh"
       - "tests/forge-singlefile-compressed.sh"
@@ -305,6 +307,8 @@ jobs:
         run: bash tests/forge-tag-spelling.sh
       - name: Services after a .deb install tests
         run: bash tests/forge-deb-services.sh
+      - name: Self-signed certificate tests
+        run: bash tests/self-signed-cert.sh
       - name: Screen clear without a terminal tests
         run: bash tests/cs-clear.sh
       - name: App version pin and .deb stamp tests
