@@ -2915,10 +2915,11 @@ setup_uv() {
 
   # Optional: Generate shell completions. A minimal image has no
   # bash_completion.d, and the failed redirect printed its error on the console.
+  # No $STD: silent sends stdout to the install log, which left both files empty.
   mkdir -p /etc/bash_completion.d
-  $STD uv generate-shell-completion bash >/etc/bash_completion.d/uv 2>/dev/null || true
+  uv generate-shell-completion bash >/etc/bash_completion.d/uv 2>/dev/null || true
   if [[ -d /usr/share/zsh/site-functions ]]; then
-    $STD uv generate-shell-completion zsh >/usr/share/zsh/site-functions/_uv 2>/dev/null || true
+    uv generate-shell-completion zsh >/usr/share/zsh/site-functions/_uv 2>/dev/null || true
   fi
 
   # Optional: Install specific Python version if requested
