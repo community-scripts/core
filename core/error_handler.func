@@ -195,7 +195,7 @@ _eh_explanation() {
     if [[ -n "$tools" ]] && ! _eh_command_is "$command" "$tools"; then
       explanation="${word:+${word} exited with status ${exit_code}}"
       explanation="${explanation:-Exit status ${exit_code}}"
-    elif [[ "$exit_code" =~ ^[123]$ && -n "$word" ]]; then
+    elif [[ "$exit_code" =~ ^([123]|255)$ && -n "$word" ]]; then
       explanation="${word} exited with status ${exit_code}"
     fi
   fi
