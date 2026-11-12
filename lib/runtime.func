@@ -2913,7 +2913,9 @@ setup_uv() {
     msg_ok "uvx wrapper installed"
   fi
 
-  # Optional: Generate shell completions
+  # Optional: Generate shell completions. A minimal image has no
+  # bash_completion.d, and the failed redirect printed its error on the console.
+  mkdir -p /etc/bash_completion.d
   $STD uv generate-shell-completion bash >/etc/bash_completion.d/uv 2>/dev/null || true
   if [[ -d /usr/share/zsh/site-functions ]]; then
     $STD uv generate-shell-completion zsh >/usr/share/zsh/site-functions/_uv 2>/dev/null || true
