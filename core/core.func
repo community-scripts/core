@@ -2335,8 +2335,7 @@ prompt_password() {
   # Generate random password if requested
   local generated=""
   if [[ "$default" == "generate" ]]; then
-    generated=$(openssl rand -base64 16 2>/dev/null | tr -dc 'a-zA-Z0-9' | head -c 16)
-    [[ -z "$generated" ]] && generated=$(head /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 16)
+    generated=$(random_password 16)
     default="$generated"
   fi
 

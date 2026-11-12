@@ -63,6 +63,7 @@ on:
       - "tests/github-release-noapi.sh"
       - "tests/vm-dialog-esc.sh"
       - "tests/forge-clean-install.sh"
+      - "tests/db-helper-context.sh"
       - "tests/cs-clear.sh"
       - "tests/forge-appversion-scope.sh"
       - "tests/motd-os-version.sh"
@@ -124,6 +125,7 @@ on:
       - "tests/github-release-noapi.sh"
       - "tests/vm-dialog-esc.sh"
       - "tests/forge-clean-install.sh"
+      - "tests/db-helper-context.sh"
       - "tests/cs-clear.sh"
       - "tests/forge-appversion-scope.sh"
       - "tests/motd-os-version.sh"
@@ -262,6 +264,8 @@ jobs:
         run: bash tests/github-release-noapi.sh
       - name: Clean install keeps the target until extraction succeeds
         run: bash tests/forge-clean-install.sh
+      - name: Database helpers outside an install tests
+        run: bash tests/db-helper-context.sh
       - name: Screen clear without a terminal tests
         run: bash tests/cs-clear.sh
       - name: App version pin and .deb stamp tests

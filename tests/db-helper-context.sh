@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+eval "$(awk '/^random_password\(\) \{/,/^}/' "$CORE_DIR/core/core.func")"
+eval "$(awk '/^setup_(postgresql|mariadb|mysql)_db\(\) \{/,/^}/' "$CORE_DIR/lib/db.func")"
+
+TEST_DIR="$(mktemp -d)"
+trap 'rm -rf -- "$TEST_DIR"' EXIT
+passed=0 failed=0
+
+check() {
+  if [[ "$3" == "$2" ]]; then
+    echo "PASS $1"
+    passed=$((passed + 1))
+  else
+    echo "FAIL $1: expected <$2>, got <$3>" >&2
+    failed=$((failed + 1))
+  fi
+}
+
+# shellcheck disable=SC2034  # read by the eval'd helpers
+STD=""
+msg_info() { :; }
+msg_ok() { :; }
+msg_error() { echo "error: $*" >&2; }
+sudo() { :; }
+mariadb() { :; }
+mysql() { :; }
+systemctl() { :; }
+
+# An addon calls these without the install context's APPLICATION; set -u then
+# ended the run with "APPLICATION: unbound variable".
+run() {
+  local home="$TEST_DIR/$1"
+  mkdir -p "$home"
+  (
+    set -u
+    HOME="$home"
+    unset APPLICATION
+    APP="pgAdmin"
+    PG_DB_NAME=appdb PG_DB_USER=appuser
+    MARIADB_DB_NAME=appdb MARIADB_DB_USER=appuser
+    MYSQL_DB_NAME=appdb MYSQL_DB_USER=appuser
+    "setup_$1_db" >/dev/null 2>&1 || exit 1
+    case "$1" in
+    postgresql) pass="$PG_DB_PASS" ;;
+    mariadb) pass="$MARIADB_DB_PASS" ;;
+    mysql) pass="$MYSQL_DB_PASS" ;;
+    esac
+    printf '%s %s' "$([[ "$pass" =~ ^[A-Za-z0-9]{24}$ ]] && echo alnum24 || echo "bad:$pass")" "$(ls "$home")"
+  ) || echo "aborted"
+}
+
+for db in postgresql mariadb mysql; do
+  check "$db: runs without APPLICATION, alphanumeric password, creds named after APP" "alnum24 pgadmin.creds" "$(run "$db")"
+done
+
+echo "${passed} passed, ${failed} failed"
+[[ "$failed" -eq 0 ]]

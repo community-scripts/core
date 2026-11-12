@@ -421,7 +421,7 @@ setup_mariadb_db() {
   fi
 
   if [[ -z "${MARIADB_DB_PASS:-}" ]]; then
-    MARIADB_DB_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)
+    MARIADB_DB_PASS=$(random_password)
   fi
 
   msg_info "Setting up MariaDB Database"
@@ -448,7 +448,8 @@ setup_mariadb_db() {
 
   $STD mariadb -u root -e "FLUSH PRIVILEGES;"
 
-  local app_name="${APPLICATION,,}"
+  local app_name="${APPLICATION:-${APP:-database}}"
+  app_name="${app_name,,}"
   app_name="${app_name// /}"
   local CREDS_FILE="${MARIADB_DB_CREDS_FILE:-${HOME}/${app_name}.creds}"
   {
@@ -493,7 +494,7 @@ setup_mysql_db() {
   fi
 
   if [[ -z "${MYSQL_DB_PASS:-}" ]]; then
-    MYSQL_DB_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)
+    MYSQL_DB_PASS=$(random_password)
   fi
 
   msg_info "Setting up MySQL Database"
@@ -503,7 +504,8 @@ setup_mysql_db() {
   $STD mysql -u root -e "GRANT ALL ON \`${MYSQL_DB_NAME//\`/\`\`}\`.* TO '${MYSQL_DB_USER//\'/\'\'}'@'%';"
   $STD mysql -u root -e "FLUSH PRIVILEGES;"
 
-  local app_name="${APPLICATION,,}"
+  local app_name="${APPLICATION:-${APP:-database}}"
+  app_name="${app_name,,}"
   app_name="${app_name// /}"
   local CREDS_FILE="${MYSQL_DB_CREDS_FILE:-${HOME}/${app_name}.creds}"
   {
@@ -1510,7 +1512,7 @@ setup_postgresql_db() {
 
   # Generate password if not provided
   if [[ -z "${PG_DB_PASS:-}" ]]; then
-    PG_DB_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)
+    PG_DB_PASS=$(random_password)
   fi
 
   msg_info "Setting up PostgreSQL Database"
@@ -1570,7 +1572,8 @@ setup_postgresql_db() {
   fi
 
   # Save credentials
-  local app_name="${APPLICATION,,}"
+  local app_name="${APPLICATION:-${APP:-database}}"
+  app_name="${app_name,,}"
   app_name="${app_name// /}"
   local CREDS_FILE="${PG_DB_CREDS_FILE:-${HOME}/${app_name}.creds}"
   {
