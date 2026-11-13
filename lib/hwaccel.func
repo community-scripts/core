@@ -19,6 +19,27 @@ _TOOLS_HWACCEL_LOADED=1
 # single warning line. The batch is still tried first -- one apt run, and the
 # normal case -- and only a failure falls back to one at a time, which is also
 # the only way to name the package that was actually missing.
+# Vendor, and Intel's discrete cards, by PCI ID: names depend on the local pci.ids.
+_gpu_type() {
+  local id="$1" name="$2"
+  case "${id%%:*}" in
+  10de) echo "NVIDIA" ;;
+  1002) echo "AMD" ;;
+  8086)
+    # DG1 4905-4909, Alchemist 56xx, Battlemage e2xx
+    if [[ "${id#*:}" =~ ^(490[5-9]|56|e2) ]] || grep -qiE 'Arc|DG[12]' <<<"$name"; then
+      echo "INTEL_ARC"
+    elif grep -qiE 'UHD|Iris|HD Graphics [5-6][0-9]{2}([^0-9]|$)' <<<"$name"; then
+      echo "INTEL_GEN9+"
+    elif grep -qiE 'HD Graphics [2-5][0-9]{3}' <<<"$name"; then
+      echo "INTEL_LEGACY"
+    else
+      echo "INTEL"
+    fi
+    ;;
+  esac
+}
+
 _cs_apt_install_optional() {
   (($#)) || return 0
   $STD apt -y install "$@" 2>/dev/null && return 0
@@ -99,35 +120,16 @@ setup_hwaccel() {
     [[ -z "$line" ]] && continue
     local pci_addr gpu_name gpu_type=""
 
+    local gpu_id
     pci_addr=$(echo "$line" | awk '{print $1}')
-    gpu_name=$(echo "$line" | sed 's/^[^ ]* [^:]*: //')
+    gpu_id=$(grep -oE '\[[0-9a-f]{4}:[0-9a-f]{4}\]' <<<"$line" | tail -1 | tr -d '[]' || true)
+    gpu_name=$(sed -E 's/^[^ ]* [^:]*: //; s/ \[[0-9a-f]{4}:[0-9a-f]{4}\]//' <<<"$line")
+    gpu_type="$(_gpu_type "$gpu_id" "$gpu_name")"
 
-    # Determine GPU type
-    # Note: Use -w (word boundary) for ATI to avoid matching "CorporATIon"
-    if echo "$gpu_name" | grep -qi 'Intel'; then
-      gpu_type="INTEL"
-      # Subtype detection for Intel
-      # Order matters: Check Arc first, then Gen9+ (UHD/Iris/HD 5xx-6xx), then Legacy (HD 2xxx-5xxx)
-      # HD Graphics 530/630 = Gen 9 (Skylake/Kaby Lake) - 3 digits
-      # HD Graphics 4600/5500 = Gen 7-8 (Haswell/Broadwell) - 4 digits starting with 2-5
-      if echo "$gpu_name" | grep -qiE 'Arc|DG[12]'; then
-        gpu_type="INTEL_ARC"
-      elif echo "$gpu_name" | grep -qiE 'UHD|Iris|HD Graphics [5-6][0-9]{2}[^0-9]|HD Graphics [5-6][0-9]{2}$'; then
-        # HD Graphics 5xx/6xx (3 digits) = Gen 9+ (Skylake onwards)
-        gpu_type="INTEL_GEN9+"
-      elif echo "$gpu_name" | grep -qiE 'HD Graphics [2-5][0-9]{3}'; then
-        # HD Graphics 2xxx-5xxx (4 digits) = Gen 6-8 Legacy
-        gpu_type="INTEL_LEGACY"
-      fi
-    elif echo "$gpu_name" | grep -qiwE 'AMD|ATI|Radeon|Advanced Micro Devices'; then
-      gpu_type="AMD"
-    elif echo "$gpu_name" | grep -qi 'NVIDIA'; then
-      # lspci shows the host's bus; the card is only ours with its device nodes.
-      if compgen -G '/dev/nvidia[0-9]*' >/dev/null; then
-        gpu_type="NVIDIA"
-      else
-        msg_custom "ℹ️" "${YW}" "NVIDIA GPU on the host, but no /dev/nvidia* device in this container - skipping it (add the devices to the container config to use it)"
-      fi
+    # lspci shows the host's bus; the card is only ours with its device nodes.
+    if [[ "$gpu_type" == "NVIDIA" ]] && ! compgen -G '/dev/nvidia[0-9]*' >/dev/null; then
+      gpu_type=""
+      msg_custom "ℹ️" "${YW}" "NVIDIA GPU on the host, but no /dev/nvidia* device in this container - skipping it (add the devices to the container config to use it)"
     fi
 
     if [[ -n "$gpu_type" ]]; then
@@ -137,7 +139,7 @@ setup_hwaccel() {
       ((gpu_count++)) || true
     fi
   # The class field only: the whole line matched "Device 43d0" and "SanDisk Ultra 3D".
-  done < <(lspci 2>/dev/null | grep -E '^[^ ]+ (VGA compatible|XGA compatible|3D|Display) controller[ :]')
+  done < <(lspci -nn 2>/dev/null | grep -E '^[^ ]+ (VGA compatible|XGA compatible|3D|Display) controller[ :]')
 
   # Check for AMD APU via CPU vendor if no discrete GPU found
   local cpu_vendor
@@ -678,8 +680,8 @@ ENVEOF
 # The host's exact release first; the series fallback may end up newer than
 # the kernel module, which the caller warns about.
 _cuda_pick_version() {
-  local host="$1" madison exact
-  madison=$(apt-cache madison libcuda1 2>/dev/null | awk '{print $3}') || return 0
+  local host="$1" pkg="${2:-libcuda1}" madison exact
+  madison=$(apt-cache madison "$pkg" 2>/dev/null | awk '{print $3}') || return 0
   exact=$(printf '%s\n' "$madison" | grep -E "^${host//./\\.}(-|$)" | head -1 || true)
   if [[ -n "$exact" ]]; then
     printf '%s\n' "$exact"
@@ -692,7 +694,7 @@ _cuda_pick_version() {
 # The priority has to stay above the origin pin's.
 _nvidia_version_pin() {
   cat <<NVIDIA_VERSION_PIN
-Package: libcuda* libnvcuvid* libnvidia-*
+Package: libcuda* libnvcuvid* libnvidia-* nvidia-*
 Pin: version $1
 Pin-Priority: 1002
 NVIDIA_VERSION_PIN
@@ -885,44 +887,44 @@ _setup_nvidia_gpu() {
 
     $STD apt-get -y update 2>/dev/null || msg_warn "apt update failed - continuing anyway"
 
-    # Extract major version for flexible matching
     local nvidia_major_version="${nvidia_host_version%%.*}"
 
-    # Check what versions are available
-    local available_version=""
-    available_version=$(apt-cache madison libcuda1 2>/dev/null | awk '{print $3}' | grep -E "^${nvidia_major_version}\." | head -1 || true)
+    # Ubuntu has no libcuda1 (libnvidia-compute); NVIDIA drops the series suffix from 590 on.
+    local nv_suffix="" available_version="" cand cand_version
+    for cand in "-${nvidia_major_version}" ""; do
+      cand_version="$(_cuda_pick_version "$nvidia_host_version" "libnvidia-compute${cand}")"
+      [[ -n "$cand_version" ]] || continue
+      if [[ -z "$available_version" || "$cand_version" == "${nvidia_host_version}-"* ]]; then
+        nv_suffix="$cand"
+        available_version="$cand_version"
+      fi
+      [[ "$available_version" == "${nvidia_host_version}-"* ]] && break
+    done
 
     if [[ -n "$available_version" ]]; then
+      _nvidia_version_pin "$available_version" >/etc/apt/preferences.d/nvidia-cuda-pin
       msg_info "Installing NVIDIA libraries (version ${available_version})"
-      local nvidia_pkgs="libcuda1=${available_version} libnvcuvid1=${available_version} libnvidia-encode1=${available_version} libnvidia-ml1=${available_version}"
-      if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends $nvidia_pkgs 2>/dev/null; then
-        # Same as above: only the major was compared.
+      local nvidia_pkgs="libnvidia-compute${nv_suffix}=${available_version} libnvidia-decode${nv_suffix}=${available_version} libnvidia-encode${nv_suffix}=${available_version}"
+      local -a apt_install=(apt-get -y --allow-downgrades -o Dpkg::Options::="--force-confold" install --no-install-recommends)
+      if $STD "${apt_install[@]}" $nvidia_pkgs 2>/dev/null; then
         if [[ "$available_version" == "${nvidia_host_version}"* ]]; then
           msg_ok "Installed NVIDIA libraries ${available_version} (host ${nvidia_host_version})"
         else
           msg_warn "NVIDIA libraries ${available_version} do not match the host driver ${nvidia_host_version}"
           msg_warn "CUDA workloads usually fail on a mismatch. Install the matching driver on the host, or pick a container OS whose repos carry it."
         fi
+        $STD "${apt_install[@]}" "nvidia-utils${nv_suffix}=${available_version}" 2>/dev/null || true
       else
-        # Fallback to Ubuntu repo packages with versioned nvidia-utils
-        msg_warn "CUDA repo install failed - trying Ubuntu native packages (nvidia-utils-${nvidia_major_version})"
-        if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
-          libnvidia-decode-${nvidia_major_version} libnvidia-encode-${nvidia_major_version} nvidia-utils-${nvidia_major_version} 2>/dev/null; then
-          msg_ok "Installed Ubuntu NVIDIA packages (${nvidia_major_version})"
-        else
-          msg_warn "NVIDIA driver installation failed - please install manually: apt install nvidia-utils-${nvidia_major_version}"
-        fi
+        msg_error "NVIDIA libraries ${available_version} would not install"
+        local apt_reason="" reason_line
+        apt_reason="$("${apt_install[@]}" -s $nvidia_pkgs 2>&1 | grep -E 'Depends:|^E: ' | sed 's/^ *//' | head -3 || true)"
+        while IFS= read -r reason_line; do
+          if [[ -n "$reason_line" ]]; then msg_warn "apt: ${reason_line}"; fi
+        done <<<"$apt_reason"
       fi
     else
-      msg_warn "No NVIDIA packages for version ${nvidia_major_version}.x in CUDA repo"
-      # Fallback to Ubuntu repo packages with versioned nvidia-utils
-      msg_info "Trying Ubuntu native packages (nvidia-utils-${nvidia_major_version})"
-      if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
-        libnvidia-decode-${nvidia_major_version} libnvidia-encode-${nvidia_major_version} nvidia-utils-${nvidia_major_version} 2>/dev/null; then
-        msg_ok "Installed Ubuntu NVIDIA packages (${nvidia_major_version})"
-      else
-        msg_warn "NVIDIA driver installation failed - please install manually: apt install nvidia-utils-${nvidia_major_version}"
-      fi
+      msg_warn "No NVIDIA ${nvidia_major_version}.x userspace libraries exist for ${os_id} ${os_version}"
+      msg_warn "Host driver is ${nvidia_host_version}. Either run a driver series the container OS carries, or pick a container OS that carries this one."
     fi
   fi
 

@@ -42,5 +42,18 @@ nn=(
 check "lspci -nn and -D: only display controllers" "0b:00.0 0000:0e:00.0" \
   "$(printf '%s\n' "${nn[@]}" | grep -E "$PATTERN" | awk '{print $1}' | xargs)"
 
+eval "$(awk '/^_gpu_type[(][)] [{]/,/^}/' "$CORE_DIR/lib/hwaccel.func")"
+check "Battlemage by ID, named" INTEL_ARC "$(_gpu_type 8086:e20b 'Intel Corporation Battlemage G21 [Intel Graphics]')"
+check "Battlemage by ID, unnamed" INTEL_ARC "$(_gpu_type 8086:e212 'Intel Corporation Device e212')"
+check "Alchemist by ID" INTEL_ARC "$(_gpu_type 8086:56a0 'Intel Corporation Device 56a0')"
+check "integrated Arc by name" INTEL_ARC "$(_gpu_type 8086:7d55 'Intel Corporation Meteor Lake-P [Intel Arc Graphics]')"
+check "UHD is Gen9+" INTEL_GEN9+ "$(_gpu_type 8086:3e92 'Intel Corporation CoffeeLake-S GT2 [UHD Graphics 630]')"
+check "HD 530 is Gen9+" INTEL_GEN9+ "$(_gpu_type 8086:1912 'Intel Corporation HD Graphics 530 (rev 06)')"
+check "HD 4000 is legacy" INTEL_LEGACY "$(_gpu_type 8086:0162 'Intel Corporation IvyBridge GT2 [HD Graphics 4000]')"
+check "an unknown Intel card stays generic" INTEL "$(_gpu_type 8086:a7a0 'Intel Corporation Device a7a0')"
+check "NVIDIA by vendor, unnamed" NVIDIA "$(_gpu_type 10de:2484 'NVIDIA Corporation Device 2484')"
+check "AMD by vendor" AMD "$(_gpu_type 1002:73bf 'Advanced Micro Devices, Inc. [AMD/ATI] Navi 21')"
+check "another vendor is no GPU we set up" "" "$(_gpu_type 1a03:2000 'ASPEED Technology, Inc. ASPEED Graphics Family')"
+
 printf '%s passed, %s failed\n' "$passed" "$failed"
 ((failed == 0))

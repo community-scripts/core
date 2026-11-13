@@ -41,6 +41,7 @@ _github_token_from_vars
 _github_token_refused_by_org
 _github_token_rejected
 _gl_scan_older_releases
+_gpu_type
 _install_uvx_wrapper
 _mongodb_in_place_precheck
 _mongodb_in_place_simulate
