@@ -2166,8 +2166,6 @@ create_self_signed_cert() {
   local CERT_KEY="${CERT_DIR}/${APP_NAME_LC}.key"
   local CERT_CRT="${CERT_DIR}/${APP_NAME_LC}.crt"
 
-  # A certificate that still has 30 days left is kept. Called again (e.g. from an
-  # update), an expiring one is replaced: it used to stay until clients refused it.
   if [[ -f "$CERT_CRT" && -f "$CERT_KEY" ]]; then
     if ! command -v openssl >/dev/null 2>&1 || openssl x509 -checkend 2592000 -noout -in "$CERT_CRT" >/dev/null 2>&1; then
       return 0

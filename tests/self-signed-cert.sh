@@ -9,7 +9,6 @@ command -v openssl >/dev/null 2>&1 || {
 
 TEST_DIR="$(mktemp -d)"
 trap 'rm -rf -- "$TEST_DIR"' EXIT
-# The helper writes to /etc/ssl/<app>; load it with that pointed at the test dir.
 eval "$(awk '/^create_self_signed_cert\(\) \{/,/^}/' "$CORE_DIR/lib/system.func" | sed "s#/etc/ssl#${TEST_DIR}#g")"
 passed=0 failed=0
 
@@ -38,7 +37,6 @@ before="$(serial)"
 create_self_signed_cert demo
 check "a valid certificate is kept" "$before" "$(serial)"
 
-# Replace it with one that runs out in 10 days.
 openssl req -new -newkey rsa:2048 -days 10 -nodes -x509 -subj "/CN=old" \
   -keyout "$TEST_DIR/demo/demo.key" -out "$crt" >/dev/null 2>&1
 create_self_signed_cert demo
