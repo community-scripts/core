@@ -353,9 +353,19 @@ check_for_gh_release() {
 }
 
 # Empty a target directory before a clean install, leaving mount points and
-# CLEAN_INSTALL_KEEP paths alone. Same function as in lib/forge.func, which says
-# why it is written this way, except for how it spots a mount: busybox mountpoint
-# compares device numbers, so it misses a bind mount from the same filesystem.
+# CLEAN_INSTALL_KEEP paths alone, as in lib/forge.func.
+_cs_mounts_under() {
+  local dir="${1:?directory}" info="${3:-/proc/self/mountinfo}" mnt _
+  local -n _cs_mounts="${2:?array name}"
+  _cs_mounts=()
+  [[ -r "$info" ]] || return 1
+  while read -r _ _ _ _ mnt _; do
+    printf -v mnt '%b' "$mnt"
+    [[ "$mnt" == "$dir"/* ]] && _cs_mounts+=("$mnt")
+  done <"$info"
+  return 0
+}
+
 _cs_clean_target_dir() {
   local dir="${1:?directory}" list entry stash=""
   [[ -d "$dir" ]] || return 0
@@ -373,14 +383,28 @@ _cs_clean_target_dir() {
     done
   fi
 
-  if ! command -v mountpoint >/dev/null 2>&1; then
+  local -a mounts=() prune=()
+  if ! _cs_mounts_under "$dir" mounts; then
+    msg_error "Cannot read /proc/self/mountinfo, so ${dir} is not emptied"
+    return 1
+  fi
+  if ((${#mounts[@]} == 0)); then
     find "${dir:?}" -mindepth 1 -maxdepth 1 -print0 | xargs -0 rm -rf --
   else
+    # -path takes a pattern, so a literal \ * ? [ in a mount path is escaped.
+    local bs='\'
+    for entry in "${mounts[@]}"; do
+      entry="${entry//"$bs"/"$bs$bs"}"
+      entry="${entry//"*"/"$bs*"}"
+      entry="${entry//"?"/"$bs?"}"
+      entry="${entry//"["/"${bs}["}"
+      prune+=(-path "$entry" -prune -o)
+    done
     list="$(mktemp)" || return 1
-    local -a skip_mounts=(\( -type d \( -exec mountpoint -q {} \; -o -exec grep -qF " {} " /proc/self/mountinfo \; \) -prune \))
-    find "${dir:?}" -mindepth 1 "${skip_mounts[@]}" -o ! -type d -print0 >"$list"
+    # Files first, then directories deepest first; rmdir fails on purpose on a parent that holds a mount.
+    find "${dir:?}" -mindepth 1 "${prune[@]}" ! -type d -print0 >"$list"
     xargs -0 rm -f -- <"$list"
-    find "${dir:?}" -mindepth 1 "${skip_mounts[@]}" -o -type d -print0 >"$list"
+    find "${dir:?}" -mindepth 1 "${prune[@]}" -type d -print0 >"$list"
     sort -rz "$list" | xargs -0 rmdir -- 2>/dev/null || true
     rm -f "$list"
   fi

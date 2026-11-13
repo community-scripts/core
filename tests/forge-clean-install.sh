@@ -2,7 +2,7 @@
 set -euo pipefail
 
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-eval "$(awk '/^(_cs_clean_target_dir|_deploy_source_tarball|_deploy_unpacked_archive|_forge_workdir|_forge_place|_forge_disk_full)\(\) \{/,/^}/' "$CORE_DIR/lib/forge.func")"
+eval "$(awk '/^(_cs_mounts_under|_cs_clean_target_dir|_deploy_source_tarball|_deploy_unpacked_archive|_forge_workdir|_forge_place|_forge_disk_full)\(\) \{/,/^}/' "$CORE_DIR/lib/forge.func")"
 
 TEST_DIR="$(mktemp -d)"
 trap 'rm -rf -- "$TEST_DIR"' EXIT
@@ -115,6 +115,42 @@ check "a full disk is reported" 1 "$rc"
 rc=0
 FAKE_AVAIL=900000 _forge_disk_full "$TEST_DIR/dst" || rc=$?
 check "a failure with space left is not blamed on the disk" 0 "$rc"
+
+cat >"$TEST_DIR/mountinfo" <<'EOF'
+22 1 0:20 / / rw - ext4 /dev/root rw
+30 22 0:25 / /opt/app rw - zfs tank/app rw
+31 30 0:26 / /opt/app/media\040library rw - nfs srv:/media rw
+32 30 0:27 /cfg.yml /opt/app/config.yml rw - ext4 /dev/sdb rw
+33 22 0:28 / /opt/app2 rw - tmpfs tmpfs rw
+EOF
+mounts_of() {
+  local -a found=()
+  _cs_mounts_under "$1" found "$TEST_DIR/mountinfo"
+  printf '%s|' "${found[@]}"
+}
+check "mountinfo: mounts below the target, decoded" "/opt/app/media library|/opt/app/config.yml|" "$(mounts_of /opt/app)"
+rc=0
+_cs_mounts_under /opt/app found "$TEST_DIR/no-mountinfo" || rc=$?
+check "mountinfo: unreadable is an error" 1 "$rc"
+
+eval "real$(declare -f _cs_mounts_under)"
+_cs_mounts_under() {
+  find "$TEST_DIR" -name 'mnt*' | sed 's/ /\\040/g; s|^|36 25 0:32 / |; s|$| rw - tmpfs tmpfs rw|' >"$TEST_DIR/mountinfo"
+  real_cs_mounts_under "$1" "$2" "$TEST_DIR/mountinfo"
+}
+mkdir -p "$TEST_DIR/bin-count"
+printf '#!/usr/bin/env bash\necho x >>"%s"\nexit 1\n' "$TEST_DIR/mountpoint.calls" >"$TEST_DIR/bin-count/mountpoint"
+chmod +x "$TEST_DIR/bin-count/mountpoint"
+rm -rf "$TEST_DIR/target"
+for i in $(seq 40); do mkdir -p "$TEST_DIR/target/node_modules/p$i/lib" && echo x >"$TEST_DIR/target/node_modules/p$i/lib/index.js"; done
+mkdir -p "$TEST_DIR/target/data/mnt media" "$TEST_DIR/target/mnt[x]" "$TEST_DIR/target/a*b"
+echo mounted >"$TEST_DIR/target/data/mnt media/file"
+echo mounted >"$TEST_DIR/target/mnt[x]/file"
+echo mounted >"$TEST_DIR/target/mnt.conf"
+echo gone >"$TEST_DIR/target/a*b/file"
+PATH="$TEST_DIR/bin-count:$PATH" _cs_clean_target_dir "$TEST_DIR/target"
+check "mounts: a mounted directory and a mounted file survive, the rest goes" "./data/mnt media/file ./mnt.conf ./mnt[x]/file " "$(listing)"
+check "mounts: no process per directory" 0 "$(cat "$TEST_DIR/mountpoint.calls" 2>/dev/null | wc -l | tr -d ' ')"
 
 # The tarball mode used to return 0 whatever cp did.
 setup
