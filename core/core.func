@@ -2490,7 +2490,7 @@ cleanup_lxc() {
     rm -rf /root/.npm/_cacache /root/.npm/_logs 2>/dev/null || true
   fi
   if command -v yarn &>/dev/null; then
-    # yarn 1 run as root caches under /usr/local/share, not in $HOME (1.9 GB after NocoBase)
+    # yarn 1 run as root caches under /usr/local/share, not in $HOME
     rm -rf /root/.cache/yarn /root/.yarn/cache /root/.yarn/berry/cache /usr/local/share/.cache/yarn 2>/dev/null || true
   fi
   if command -v pnpm &>/dev/null; then
