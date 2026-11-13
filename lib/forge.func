@@ -98,6 +98,18 @@ _github_token_rejected() {
   return 0
 }
 
+# GitHub answered 403 to a request that carried a token, and the body ($1)
+# says the repo's organization refuses tokens from this address (IP allow
+# list) or without SSO (SAML). The same request without a token works, so
+# that one goes again without it; the token stays for every other repo.
+# This is not a rate limit, which is what a 403 was read as before.
+_github_token_refused_by_org() {
+  [[ -n "${GITHUB_TOKEN:-}" && -f "${1:-}" ]] || return 1
+  grep -qiE 'IP allow list|SAML enforcement' "$1" 2>/dev/null || return 1
+  msg_warn "The repository's GitHub organization refuses tokens from here (IP allow list or SSO); asking without the token."
+  return 0
+}
+
 # ------------------------------------------------------------------------------
 # Prompt user to enter a GitHub Personal Access Token (PAT) interactively
 # Returns 0 if a valid token was provided, 1 otherwise
@@ -234,6 +246,10 @@ github_api_call() {
       return 22
       ;;
     403 | 429)
+      if ((${#header_args[@]})) && [[ "$output_file" != /dev/* ]] && _github_token_refused_by_org "$output_file"; then
+        header_args=()
+        continue
+      fi
       # A release can still be read from github.com without the API.
       if [[ "$url" =~ ^https://api\.github\.com/repos/([^/]+/[^/]+)/releases/(latest|tags/(.+))$ ]] &&
         _github_release_noapi "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]:-latest}" "$output_file"; then
@@ -1447,10 +1463,13 @@ _forge_http_get() {
   local attempt=1 delay=2 api_message=""
   while :; do
     code="$(_forge_curl "$out" "${headers[@]}" "$url")"
-    if [[ "$forge" == "github" && "$code" == "401" ]] && _github_token_rejected; then
+    if [[ "$forge" == "github" && -n "$auth" ]] &&
+      { { [[ "$code" == "401" ]] && _github_token_rejected; } ||
+        { [[ "$code" == "403" ]] && _github_token_refused_by_org "$out"; }; }; then
       headers=()
       [[ -n "$accept" ]] && headers+=(-H "Accept: ${accept}")
       headers+=(-H "X-GitHub-Api-Version: 2022-11-28")
+      auth=""
       continue
     fi
     if [[ "$code" == "200" ]] && command -v jq >/dev/null 2>&1; then
@@ -1555,6 +1574,12 @@ _forge_designated_release() {
 
   tmp="$(mktemp /tmp/tools-forge-desig-XXXXXX)" || return 1
   code="$(_forge_curl "$tmp" "${headers[@]}" "${base}/${repo_path}${path}")"
+  if [[ "$forge" == "github" && "$code" == "403" && -n "$auth" ]] && _github_token_refused_by_org "$tmp"; then
+    headers=()
+    [[ -n "$accept" ]] && headers+=(-H "Accept: ${accept}")
+    headers+=(-H "X-GitHub-Api-Version: 2022-11-28")
+    code="$(_forge_curl "$tmp" "${headers[@]}" "${base}/${repo_path}${path}")"
+  fi
 
   # An auto-publishing repo leaves untagged placeholders behind; those carry no
   # version anyone can act on, so sorting gets its turn.
@@ -1682,6 +1707,14 @@ _forge_release_json() {
       fi
       rm -f "$raw"
       return 22
+    fi
+
+    if [[ "$forge" == "github" && "$code" == "403" && -n "$auth" ]] && _github_token_refused_by_org "$raw"; then
+      headers=()
+      [[ -n "$accept" ]] && headers+=(-H "Accept: ${accept}")
+      headers+=(-H "X-GitHub-Api-Version: 2022-11-28")
+      auth=""
+      continue
     fi
 
     if [[ "$code" == "$(_forge_descriptor "$forge" ratelimit)" ]]; then
