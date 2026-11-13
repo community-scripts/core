@@ -1787,9 +1787,7 @@ _forge_release_json() {
       return 22
     fi
 
-    # A pinned tag written without the repo's v (var_appversion=0.35.11 for
-    # v0.35.11), or with one it does not use: ask once for the other spelling.
-    # A tag that is missing either way does not appear by retrying.
+    # Ask once for the other spelling of the pinned tag, with or without the v.
     if [[ "$single" == "true" && "$code" == "404" ]]; then
       [[ -n "$other_spelling" ]] && break
       other_spelling="v${version}"

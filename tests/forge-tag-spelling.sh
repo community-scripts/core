@@ -20,7 +20,6 @@ getent() { return 0; }
 sleep() { :; }
 _github_release_noapi() { return 1; }
 ensure_dependencies() { :; }
-# Only the tags listed in TAGS exist; everything else is a 404.
 curl() {
   local out="" url="" i tag
   local -a args=("$@")
