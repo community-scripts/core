@@ -1387,13 +1387,15 @@ _forge_descriptor() {
 # release, so -ls45 or -1 revisions still order by their number.
 _FORGE_JQ_VKEY_DEF='def _forge_vkey:
   sub("^[^0-9]*"; "")
+  | (ascii_downcase | capture("[0-9](?<s>[a-z])$") // {s: ""}).s as $rev
   | (capture("^(?<b>[0-9]+(?:[.][0-9]+)*)(?<r>.*)$") // {b: "", r: .}) as $m
   | [$m.b | scan("[0-9]+") | tonumber] as $core
   | ($m.r | ascii_downcase) as $rest
   | ($rest | capture("^[-._+]?(?<l>dev|alpha|beta|preview|pre|rc)(?=[-._0-9]|$)") // {l: ""}).l as $lbl
   | $core + [range($core | length; 6) | 0]
   + [{"dev": 1, "alpha": 2, "beta": 3, "preview": 4, "pre": 4, "rc": 5}[$lbl] // 9]
-  + [$rest | scan("[0-9]+") | tonumber];'
+  + [$rest | scan("[0-9]+") | tonumber]
+  + [$rev | select(. != "") | (explode | .[0]) - 96];'
 _FORGE_JQ_VKEY="(${_FORGE_JQ_VKEY_DEF} (.tag_name // \"\") | _forge_vkey)"
 
 # Highest of the versions on stdin, on the same key as _FORGE_JQ_VKEY.
