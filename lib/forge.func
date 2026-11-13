@@ -848,10 +848,14 @@ _deploy_unpacked_archive() {
 #   - For repos that only publish tags, not GitHub Releases
 # ------------------------------------------------------------------------------
 fetch_and_deploy_gh_tag() {
+  local script_app="${NSAPP:-${app:-}}"
   local app="$1"
   local repo="$2"
   local version="${3:-latest}"
   local target="${4:-/opt/$app}"
+  if [[ -n "${var_appversion:-}" ]] && _forge_is_script_app "$app" "$script_app"; then
+    version="$var_appversion"
+  fi
   local app_lc=""
   app_lc="$(echo "${app,,}" | tr -d ' ')"
   local version_file="$HOME/.${app_lc}"
@@ -1008,10 +1012,14 @@ get_latest_gl_tag() {
 #     (use fetch_and_deploy_gl_release for proper Releases with assets)
 # ------------------------------------------------------------------------------
 fetch_and_deploy_gl_tag() {
+  local script_app="${NSAPP:-${app:-}}"
   local app="$1"
   local repo="$2"
   local tag_pattern="${3:-latest}"
   local target="${4:-/opt/$app}"
+  if [[ -n "${var_appversion:-}" ]] && _forge_is_script_app "$app" "$script_app"; then
+    tag_pattern="$var_appversion"
+  fi
 
   local app_lc=""
   app_lc="$(echo "${app,,}" | tr -d ' ')"
