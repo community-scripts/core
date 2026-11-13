@@ -67,5 +67,7 @@ result=$(
 check "no apt-get: cleanup_lxc cleans through pkg_clean" "pkg_clean" "$result"
 check "install.func does not shadow core.func's cleanup_lxc" "" "$(grep -n '^cleanup_lxc()' "$CORE_DIR/lxc/install.func" || true)"
 
+check "cleanup_lxc clears yarn 1's root cache" "1" "$(declare -f cleanup_lxc | grep -c '/usr/local/share/.cache/yarn')"
+
 printf '%s passed, %s failed\n' "$passed" "$failed"
 ((failed == 0))
