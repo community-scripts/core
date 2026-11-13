@@ -121,6 +121,7 @@ detect_repo_source
 dev_mode_context
 dev_mode_menu
 dev_mode_timing_summary
+devscripts_telemetry
 diagnostics_check
 diagnostics_menu
 echo_default

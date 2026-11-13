@@ -359,6 +359,9 @@ get_app_defaults_path() {
 }
 
 diagnostics_check() {
+  # DevScripts always report; its own notice replaces the opt-in question.
+  declare -f devscripts_telemetry >/dev/null 2>&1 && devscripts_telemetry && return 0
+
   local dir diag
   dir="$(community_scripts_dir)"
   diag="${dir}/diagnostics"
