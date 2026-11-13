@@ -92,7 +92,6 @@ rm -rf "$TEST_DIR/opt/subwave"
 deploy github subwave perminder-klair/subwave tarball latest "$TEST_DIR/opt/subwave" >/dev/null
 check "a tarball whose directory is gone is deployed again" "1" "$(grep -c '^download ' "$LOG")"
 
-# Tag-only apps (Redmine) ignored the pin and always took the newest tag.
 get_latest_gh_tag() { echo "9.9.9"; }
 get_latest_gl_tag() { echo "9.9.9"; }
 tag_deploy() {
