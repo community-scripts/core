@@ -1836,15 +1836,24 @@ vm_prompt_start_vm() {
 # an image (20261111-2659 has no nocloud-amd64) or a mirror has not synced it.
 # Echoes the newest of the last five dated builds that has the file, else the URL.
 _vm_debian_build_url() {
-  local url="$1" base file dir
+  local url="$1" base file stem ext dir cand
   [[ "$url" =~ ^(https://cloud\.debian\.org/images/cloud/[a-z]+(/daily)?)/latest/([^/]+)$ ]] || { echo "$url"; return 0; }
   base="${BASH_REMATCH[1]}" file="${BASH_REMATCH[3]}"
+  stem="${file%.*}" ext="${file##*.}"
   curl -fsIL --max-time 15 -o /dev/null "$url" 2>/dev/null && { echo "$url"; return 0; }
+  # daily/latest/ names its files <image>-daily.<ext>; a caller may have left the suffix off.
+  local -a names=("$stem")
+  [[ "$base" == */daily && "$stem" != *-daily ]] && names=("$stem-daily" "$stem")
+  for cand in "${names[@]}"; do
+    curl -fsIL --max-time 15 -o /dev/null "$base/latest/$cand.$ext" 2>/dev/null && { echo "$base/latest/$cand.$ext"; return 0; }
+  done
   for dir in $(curl -fsSL --max-time 15 "$base/" 2>/dev/null | grep -oE 'href="[0-9]{8}-[0-9]+/"' | grep -oE '[0-9]{8}-[0-9]+' | sort -ru | head -n 5); do
-    if curl -fsIL --max-time 15 -o /dev/null "$base/$dir/${file%.*}-$dir.${file##*.}" 2>/dev/null; then
-      echo "$base/$dir/${file%.*}-$dir.${file##*.}"
-      return 0
-    fi
+    for cand in "${names[@]}"; do
+      if curl -fsIL --max-time 15 -o /dev/null "$base/$dir/$cand-$dir.$ext" 2>/dev/null; then
+        echo "$base/$dir/$cand-$dir.$ext"
+        return 0
+      fi
+    done
   done
   echo "$url"
 }

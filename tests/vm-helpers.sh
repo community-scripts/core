@@ -176,6 +176,8 @@ assert_eq "$(_vm_debian_build_url "$DEB/latest/debian-13-nocloud-amd64.qcow2")" 
   "$DEB/20261103-2651/debian-13-nocloud-amd64-20261103-2651.qcow2" "the newest build that has it"
 assert_eq "$(_vm_debian_build_url "$DEB/daily/latest/debian-13-generic-amd64-daily.qcow2")" \
   "$DEB/daily/20261112-2660/debian-13-generic-amd64-daily-20261112-2660.qcow2" "daily builds"
+HEAD_OK["$DEB/daily/latest/debian-13-generic-amd64-daily.qcow2"]=1
+assert_eq "$(_vm_debian_build_url "$DEB/daily/latest/debian-13-generic-amd64.qcow2")"   "$DEB/daily/latest/debian-13-generic-amd64-daily.qcow2" "daily name without its suffix (waydroid-vm)"
 assert_eq "$(_vm_debian_build_url "$DEB/latest/debian-13-nocloud-riscv64.qcow2")" "$DEB/latest/debian-13-nocloud-riscv64.qcow2" "no build has it"
 assert_eq "$(_vm_debian_build_url https://dl.test/openwrt.img.gz)" https://dl.test/openwrt.img.gz "other hosts"
 ok "a Debian latest/ without the image falls back to the newest build that has it"
