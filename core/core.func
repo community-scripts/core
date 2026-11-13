@@ -1013,6 +1013,13 @@ _cs_reattach_output() {
 # subshell sets the signal to ignore, which exec carries into the program, so
 # it finishes even though the terminal is gone.
 _cs_shield_hangup() {
+  # Inside $(...) the engine's trap is already reset, so that subshell died of the
+  # hangup and returned 129 for a command that finished (update-apps: "Backup failed").
+  local _sig=""
+  if [[ "$BASHPID" != "$$" && -r "/proc/$BASHPID/status" ]]; then
+    while read -r _sig; do [[ "$_sig" == SigCgt:* ]] && break; done <"/proc/$BASHPID/status"
+    ((16#${_sig##*[[:space:]]} & 1)) || trap '' HUP
+  fi
   (
     trap '' HUP
     # apt restores the terminal it was given and exits 100 when it is gone.

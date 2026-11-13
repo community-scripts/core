@@ -34,6 +34,7 @@ on:
       - "tests/sudo-env.sh"
       - "tests/deb822-local-keyring.sh"
       - "tests/gpu-pci-class.sh"
+      - "tests/hangup-host-commands.sh"
       - "tests/nvidia-version-pin.sh"
       - "tests/external-installer.sh"
       - "tests/forge-version-key.sh"
@@ -97,6 +98,7 @@ on:
       - "tests/sudo-env.sh"
       - "tests/deb822-local-keyring.sh"
       - "tests/gpu-pci-class.sh"
+      - "tests/hangup-host-commands.sh"
       - "tests/nvidia-version-pin.sh"
       - "tests/external-installer.sh"
       - "tests/forge-version-key.sh"
@@ -191,6 +193,9 @@ jobs:
 
       - name: GPU detection by PCI class tests
         run: bash tests/gpu-pci-class.sh
+
+      - name: Hangup during host commands tests
+        run: bash tests/hangup-host-commands.sh
 
       - name: NVIDIA userspace version pin tests
         run: bash tests/nvidia-version-pin.sh

@@ -209,8 +209,8 @@ _pct_start_failed() {
 # also return 0 and leave the container stopped, so ask for the real state.
 _pct_restart() {
   local ctid="$1" what="$2" err
-  err="$(pct start "$ctid" 2>&1)" || true
-  [[ "$(pct status "$ctid" 2>/dev/null)" == "status: running" ]] && return 0
+  err="$(_cs_shield_hangup pct start "$ctid" 2>&1)" || true
+  [[ "$(_cs_shield_hangup pct status "$ctid" 2>/dev/null)" == "status: running" ]] && return 0
   msg_error "Container ${ctid} did not start after ${what}"
   _pct_start_failed "$ctid" "$err"
   return 1
@@ -298,6 +298,11 @@ _pve_wait_for_detached_install() {
     sleep "$poll"
     waited=$((waited + poll))
   done
+}
+
+# A closed console killed this pipeline, and a downloaded template read as missing.
+_template_in_storage() {
+  pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -qF "$1"
 }
 
 # Where a template lands in $TEMPLATE_STORAGE, or the default dir layout when
@@ -1112,7 +1117,8 @@ EOF
   # the container simply would not start.
   # pct can also fail and leave it running ("CT 104 already running").
   local _start_out
-  if ! _start_out="$(pct start "$CTID" 2>&1)" && [[ "$(pct status "$CTID" 2>/dev/null)" != "status: running" ]]; then
+  # A closed console killed pct start halfway, and a container that came up was reported as one that would not.
+  if ! _start_out="$(_cs_shield_hangup pct start "$CTID" 2>&1)" && [[ "$(_cs_shield_hangup pct status "$CTID" 2>/dev/null)" != "status: running" ]]; then
     msg_error "Container ${CTID} was created but would not start"
     _pct_start_failed "$CTID" "$_start_out"
     exit 227
@@ -3624,7 +3630,7 @@ create_lxc_container() {
         printf '%s\n' "$_dl_out" >>"${BUILD_LOG:-/dev/null}"
         # pveam can report a failed download and still exit 0, so only the
         # template in storage counts as success.
-        if pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -qF "$TEMPLATE"; then
+        if _cs_shield_hangup _template_in_storage "$TEMPLATE"; then
           msg_ok "Template download successful."
           break
         fi
@@ -3646,7 +3652,7 @@ create_lxc_container() {
       done
     fi
 
-    if ! pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -q "$TEMPLATE"; then
+    if ! _cs_shield_hangup _template_in_storage "$TEMPLATE"; then
       msg_error "Template $TEMPLATE not available in storage $TEMPLATE_STORAGE after download."
       exit 223
     fi
