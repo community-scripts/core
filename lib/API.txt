@@ -37,6 +37,8 @@ _forge_strip_v
 _forge_workdir
 _gh_scan_older_releases
 _github_release_noapi
+_github_token_from_vars
+_github_token_rejected
 _gl_scan_older_releases
 _install_uvx_wrapper
 _mongodb_in_place_precheck

@@ -66,6 +66,7 @@ on:
       - "tests/vm-failure-reasons.sh"
       - "tests/silent-verbose.sh"
       - "tests/github-release-noapi.sh"
+      - "tests/github-token-from-vars.sh"
       - "tests/vm-dialog-esc.sh"
       - "tests/forge-clean-install.sh"
       - "tests/db-helper-context.sh"
@@ -133,6 +134,7 @@ on:
       - "tests/vm-failure-reasons.sh"
       - "tests/silent-verbose.sh"
       - "tests/github-release-noapi.sh"
+      - "tests/github-token-from-vars.sh"
       - "tests/vm-dialog-esc.sh"
       - "tests/forge-clean-install.sh"
       - "tests/db-helper-context.sh"
@@ -287,6 +289,8 @@ jobs:
         run: bash tests/motd-os-version.sh
       - name: GitHub release without the API tests
         run: bash tests/github-release-noapi.sh
+      - name: var_github_token is used from the first call
+        run: bash tests/github-token-from-vars.sh
       - name: Clean install keeps the target until extraction succeeds
         run: bash tests/forge-clean-install.sh
       - name: Database helpers outside an install tests
