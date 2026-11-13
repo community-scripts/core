@@ -28,6 +28,9 @@ _BUILD_UI_MENU_LOADED=1
 # - Sets global DIAGNOSTICS variable for API telemetry opt-in/out
 # ------------------------------------------------------------------------------
 diagnostics_check() {
+  # DevScripts always report; its own notice replaces the opt-in question.
+  declare -f devscripts_telemetry >/dev/null 2>&1 && devscripts_telemetry && return 0
+
   local _cs_dir _diag_file
   _cs_dir="$(declare -f community_scripts_dir >/dev/null 2>&1 && community_scripts_dir || echo /usr/local/community-scripts)"
   _diag_file="${_cs_dir}/diagnostics"
@@ -94,6 +97,12 @@ EOF
 }
 
 diagnostics_menu() {
+  if [[ "${REPO_SOURCE:-}" == "DevScripts" ]]; then
+    whiptail --backtitle "Proxmox VE Helper Scripts" --title "DIAGNOSTIC SETTINGS"       --msgbox "Telemetry is always on for DevScripts, which are testing builds.
+
+This setting applies to ProxmoxVE scripts only." 10 58
+    return
+  fi
   local _diag_file
   _diag_file="$(declare -f community_scripts_dir >/dev/null 2>&1 && community_scripts_dir || echo /usr/local/community-scripts)/diagnostics"
   if [ "${DIAGNOSTICS:-no}" = "yes" ]; then
