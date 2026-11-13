@@ -2167,7 +2167,9 @@ create_self_signed_cert() {
   local CERT_CRT="${CERT_DIR}/${APP_NAME_LC}.crt"
 
   if [[ -f "$CERT_CRT" && -f "$CERT_KEY" ]]; then
-    return 0
+    if ! command -v openssl >/dev/null 2>&1 || openssl x509 -checkend 2592000 -noout -in "$CERT_CRT" >/dev/null 2>&1; then
+      return 0
+    fi
   fi
 
   # Use ensure_dependencies for cleaner handling
@@ -2180,7 +2182,8 @@ create_self_signed_cert() {
   [[ -n "$EXTRA_SAN" ]] && san="${san},${EXTRA_SAN}"
 
   mkdir -p "$CERT_DIR"
-  $STD openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 \
+  # 825 days is the most macOS and iOS accept, even for a certificate the user trusts.
+  $STD openssl req -new -newkey rsa:2048 -days 825 -nodes -x509 \
     -subj "/CN=${HOSTNAME}" \
     -addext "subjectAltName=${san}" \
     -keyout "$CERT_KEY" \
