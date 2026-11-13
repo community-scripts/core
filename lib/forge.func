@@ -406,6 +406,8 @@ extract_version_from_json() {
 # Returns:
 #   Latest tag name (stdout), or returns 1 on failure
 # ------------------------------------------------------------------------------
+# A tag whose version is directly followed by a pre-release label (11.5.0-beta1, v2.0.0-rc.1).
+_FORGE_PRERELEASE_TAG='^[^0-9]*[0-9]+([.][0-9]+)*[-._+]?(dev|alpha|beta|preview|pre|rc)([-._0-9]|$)'
 get_latest_gh_tag() {
   local repo="$1"
   local prefix="${2:-}"
@@ -419,8 +421,9 @@ get_latest_gh_tag() {
     # Use git/matching-refs API for server-side prefix filtering. This avoids
     # paging through unrelated tags (e.g. mongodb/mongo-tools where 100.x tags
     # only appear after page 4 of /tags). Returns ALL tags matching the prefix
-    # in a single call, sorted lexicographically ascending; we pick the
-    # highest version using `sort -V`.
+    # in a single call, sorted lexicographically ascending. Pre-releases are
+    # skipped and the rest ordered by the version key: sort -V put 11.4.0
+    # before 11.4.0-rc1 and offered 11.5.0-beta1 as the latest Drupal.
     if ! github_api_call "https://api.github.com/repos/${repo}/git/matching-refs/tags/${prefix}" "$temp_file"; then
       rm -f "$temp_file"
       return 22
@@ -431,16 +434,16 @@ get_latest_gh_tag() {
     if [[ "$count" -gt 0 ]]; then
       tag=$(jq -r '.[].ref' "$temp_file" |
         sed 's|^refs/tags/||' |
-        sort -V |
-        tail -n1)
+        awk -v re="$_FORGE_PRERELEASE_TAG" 'tolower($0) !~ re' |
+        _forge_highest_version)
     fi
   else
-    # No prefix: just take the first (newest) tag from /tags
-    if ! github_api_call "https://api.github.com/repos/${repo}/tags?per_page=1" "$temp_file"; then
+    # No prefix: the first (newest) tag from /tags that is not a pre-release
+    if ! github_api_call "https://api.github.com/repos/${repo}/tags?per_page=30" "$temp_file"; then
       rm -f "$temp_file"
       return 22
     fi
-    tag=$(jq -r '.[0].name // empty' "$temp_file")
+    tag=$(jq -r '.[].name' "$temp_file" | awk -v re="$_FORGE_PRERELEASE_TAG" 'tolower($0) !~ re && !n++')
   fi
 
   rm -f "$temp_file"
