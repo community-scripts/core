@@ -273,6 +273,38 @@ _pve_ct_gone_during_setup() {
 }
 
 # ------------------------------------------------------------------------------
+# _pve_fetch_install_script
+#
+# Before anything is created: a missing or unreachable install script turned up
+# only once the container stood ready, with a fork hint whatever the cause.
+# Leaves the script in _install_script, or says why not and returns 115.
+# ------------------------------------------------------------------------------
+_pve_fetch_install_script() {
+  local rel="install/${var_install}.sh" base="${COMMUNITY_SCRIPTS_ROOT:-${COMMUNITY_SCRIPTS_URL}}" out err rc=0 why
+  out="$(mktemp)" err="$(mktemp)"
+  _cs_shield_hangup _cs_fetch_text "$rel" >"$out" 2>"$err" || rc=$?
+  _install_script="$(cat "$out")"
+  why="$(grep -v '^[[:space:]]*$' "$err" | tail -n 1)" || why=""
+  rm -f "$out" "$err"
+  ((rc == 0)) && [[ -n "$_install_script" ]] && return 0
+  _install_script=""
+  if [[ "$why" == *404* ]]; then
+    msg_error "${rel} is not in ${base}"
+    msg_custom "💡" "${YW}" "If ${APP} was retired or became an addon, its ct/ script only updates existing containers:"
+    msg_custom "   " "${YW}" "https://community-scripts.org/scripts/${NSAPP}"
+    if [[ -z "${COMMUNITY_SCRIPTS_ROOT:-}" ]]; then
+      msg_custom "💡" "${YW}" "Running a fork? A ct/ script fetched with curl cannot tell the engine"
+      msg_custom "   " "${YW}" "where it came from, so set the scripts base explicitly:"
+      msg_custom "   " "${YW}" "COMMUNITY_SCRIPTS_URL=https://raw.githubusercontent.com/<you>/<repo>/<branch>"
+    fi
+  else
+    msg_error "Could not fetch ${rel} from ${base}"
+    [[ -n "$why" ]] && msg_custom "ℹ️" "${YW}" "$why"
+  fi
+  return 115
+}
+
+# ------------------------------------------------------------------------------
 # _pve_wait_for_detached_install
 #
 # The console closed mid-install: SIGHUP took lxc-attach, but the script inside
@@ -826,6 +858,8 @@ $PCT_OPTIONS_STRING"
     check_storage_health "$CONTAINER_STORAGE" "$DISK_SIZE"
   fi
 
+  local _install_script=""
+  _pve_fetch_install_script || exit $?
   create_lxc_container || exit $?
   # Transition to 'configuring' — container created, now setting up OS/userland
   post_progress_to_api "configuring"
@@ -1580,25 +1614,6 @@ PROFILE
 
     export CONTAINER_INSTALLING=true
 
-    local _install_script
-    # Fetched explicitly rather than letting the ERR trap report it.
-    #
-    # A missing install script is almost always one thing: the ct/ script came
-    # from a fork but COMMUNITY_SCRIPTS_URL was not set, so the engine looked
-    # here -- upstream -- and found nothing. The trap reported that as
-    # "exit code 22 (Command failed with exit status 22)", which says neither
-    # what was missing nor where it was looked for.
-    if ! _install_script="$(_cs_fetch_text "install/${var_install}.sh")" ||
-      [[ -z "$_install_script" ]]; then
-      msg_error "Could not fetch install/${var_install}.sh"
-      msg_custom "📁" "${YW}" "Looked in: ${COMMUNITY_SCRIPTS_ROOT:-${COMMUNITY_SCRIPTS_URL}}"
-      if [[ -z "${COMMUNITY_SCRIPTS_ROOT:-}" ]]; then
-        msg_custom "💡" "${YW}" "Running a fork? A ct/ script fetched with curl cannot tell the engine"
-        msg_custom "   " "${YW}" "where it came from, so set the scripts base explicitly:"
-        msg_custom "   " "${YW}" "COMMUNITY_SCRIPTS_URL=https://raw.githubusercontent.com/<you>/<repo>/<branch>"
-      fi
-      exit 115
-    fi
     # The install owns the terminal now; a block left open on the host would resume its spinner over it.
     stop_spinner
     _MSG_BLOCKS=()
