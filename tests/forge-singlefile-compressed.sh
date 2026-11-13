@@ -32,7 +32,6 @@ msg_error() { echo "error: $*" >>"$LOG"; }
 ensure_dependencies() { echo "deps $*" >>"$LOG"; }
 _forge_release_json() { printf '{"tag_name":"v1.0.0"}' >"$5"; }
 _forge_asset_urls() { echo "https://example.invalid/$ASSET"; }
-# Serves a fake program, packed the way the asset name says.
 curl_download() {
   local out="$1"
   printf '#!/bin/sh\necho program\n' >"$TEST_DIR/plain"

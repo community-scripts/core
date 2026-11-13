@@ -2510,9 +2510,7 @@ fetch_and_deploy_release() {
       mkdir -p "$target"
       local target_file="$app" unpack="" unpack_pkg=""
       [[ "${USE_ORIGINAL_FILENAME:-false}" == "true" ]] && target_file="$filename"
-      # A single binary shipped compressed (goatcounter .gz, restic .bz2) lands
-      # unpacked, so the target is the program and not the archive. Tarballs
-      # stay as they are: that is what USE_ORIGINAL_FILENAME callers want.
+      # A compressed single binary lands unpacked; tarballs stay as they are.
       case "$filename" in
       *.tar.* | *.tgz | *.txz) ;;
       *.gz) unpack=gzip unpack_pkg=gzip ;;
