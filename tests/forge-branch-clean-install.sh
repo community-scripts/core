@@ -2,7 +2,7 @@
 set -euo pipefail
 
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-eval "$(awk '/^(_cs_clean_target_dir|fetch_and_deploy_gh_branch)\(\) \{/,/^}/' "$CORE_DIR/lib/forge.func")"
+eval "$(awk '/^(_cs_mounts_under|_cs_clean_target_dir|fetch_and_deploy_gh_branch)\(\) \{/,/^}/' "$CORE_DIR/lib/forge.func")"
 
 TEST_DIR="$(mktemp -d)"
 trap 'rm -rf -- "$TEST_DIR"' EXIT
@@ -34,13 +34,13 @@ export GIT_CONFIG_VALUE_0="https://github.com/"
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 
-# Any directory called mnt counts as a mount point, so no root is needed.
-cat >"$TEST_DIR/bin/mountpoint" <<'EOF'
-#!/usr/bin/env bash
-[[ "${2##*/}" == "mnt" ]]
-EOF
-chmod +x "$TEST_DIR/bin/mountpoint"
-export PATH="$TEST_DIR/bin:$PATH"
+# Every path called mnt* counts as a mount, so no root is needed: the real
+# parser reads a mountinfo written from them.
+eval "real$(declare -f _cs_mounts_under)"
+_cs_mounts_under() {
+  find "$TEST_DIR" -name 'mnt*' | sed 's/ /\\040/g; s|^|36 25 0:32 / |; s|$| rw - tmpfs tmpfs rw|' >"$TEST_DIR/mountinfo"
+  real_cs_mounts_under "$1" "$2" "$TEST_DIR/mountinfo"
+}
 
 git init -q -b main "$TEST_DIR/remote/owner/app"
 commit() {

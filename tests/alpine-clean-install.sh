@@ -36,13 +36,13 @@ download_with_progress() { cp "$TEST_DIR/$archive" "$2"; }
 export HOME="$TEST_DIR/home"
 mkdir -p "$HOME" "$TEST_DIR/bin"
 
-# Any directory called mnt counts as a mount point, so no root is needed.
-cat >"$TEST_DIR/bin/mountpoint" <<'EOF'
-#!/usr/bin/env bash
-[[ "${2##*/}" == "mnt" ]]
-EOF
-chmod +x "$TEST_DIR/bin/mountpoint"
-export PATH="$TEST_DIR/bin:$PATH"
+# Every path called mnt* counts as a mount, so no root is needed: the real
+# parser reads a mountinfo written from them.
+eval "real$(declare -f _cs_mounts_under)"
+_cs_mounts_under() {
+  find "$TEST_DIR" -name 'mnt*' | sed 's/ /\\040/g; s|^|36 25 0:32 / |; s|$| rw - tmpfs tmpfs rw|' >"$TEST_DIR/mountinfo"
+  real_cs_mounts_under "$1" "$2" "$TEST_DIR/mountinfo"
+}
 
 mkdir -p "$TEST_DIR/src/app-1.0" "$TEST_DIR/flat" "$TEST_DIR/hollow/app-1.0"
 echo new >"$TEST_DIR/src/app-1.0/app"
@@ -92,19 +92,13 @@ for mode in tarball prebuild; do
   check "$mode: nested mount survives" "0 ./app ./data/mnt/file " "$(CLEAN_INSTALL=1 deploy "$mode" good.tar.gz)"
 done
 
-# busybox mountpoint misses a bind mount from the same filesystem. mountinfo has it.
-mkdir -p "$TEST_DIR/bin-bind"
-printf '#!/usr/bin/env bash\nexit 1\n' >"$TEST_DIR/bin-bind/mountpoint"
-cat >"$TEST_DIR/bin-bind/grep" <<'EOF'
-#!/usr/bin/env bash
-[[ "$2" == *"/data/bind " && "$3" == "/proc/self/mountinfo" ]]
-EOF
-chmod +x "$TEST_DIR/bin-bind/mountpoint" "$TEST_DIR/bin-bind/grep"
+# busybox mountpoint compares device numbers and missed a bind mount from the
+# same filesystem; mountinfo lists it.
 setup
-mkdir -p "$target/data/bind"
-echo mounted >"$target/data/bind/file"
-PATH="$TEST_DIR/bin-bind:$PATH" _cs_clean_target_dir "$target"
-check "bind mount from the same filesystem survives" "./data/bind/file " "$(listing)"
+mkdir -p "$target/data/mnt bind"
+echo mounted >"$target/data/mnt bind/file"
+_cs_clean_target_dir "$target"
+check "bind mount survives" "./data/mnt bind/file " "$(listing)"
 
 setup
 mv "$target" "$TEST_DIR/opt/real"
