@@ -4,7 +4,8 @@ set -uo pipefail
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 eval "$(sed -n '/^_FORGE_JQ_VKEY_DEF=/,/^_FORGE_JQ_VKEY=/p' "$CORE_DIR/lib/forge.func")"
 eval "$(awk '/^_forge_(descriptor|curl|designated_release|stable_filter|keep_raw|release_json|explain_failure|require_jq)[(][)] [{]/,/^}/' "$CORE_DIR/lib/forge.func")"
-eval "$(awk '/^get_latest_gh_tag[(][)] [{]/,/^}/' "$CORE_DIR/lib/forge.func")"
+eval "$(awk '/^(get_latest_gh_tag|_forge_highest_version)[(][)] [{]/,/^}/' "$CORE_DIR/lib/forge.func")"
+eval "$(grep '^_FORGE_PRERELEASE_TAG=' "$CORE_DIR/lib/forge.func")"
 
 TEST_DIR="$(mktemp -d)"
 trap 'rm -rf -- "$TEST_DIR" "${TOOLS_GH_REL_JSON:-}"' EXIT
@@ -133,6 +134,26 @@ expect "the tag is all that reaches stdout" 100.10.1 "$(cat "$OUT")"
 )
 expect "a tag lookup without jq stops" 100 "$?"
 expect "a tag lookup without jq asks nothing" 0 "$(grep -c api "$CALLS")"
+
+# drupal/drupal: sort -V ranked 11.4.0 below 11.4.0-rc1, and a major prefix offered 11.5.0-beta1.
+tags_of() { printf '['; local t sep=""; for t in "$@"; do printf '%s{"ref":"refs/tags/%s","name":"%s"}' "$sep" "$t" "$t"; sep=","; done; printf ']'; }
+latest_tag() {
+  (
+    ensure_dependencies() { :; }
+    github_api_call() { printf '%s' "$TAGS" >"$2"; }
+    get_latest_gh_tag drupal/drupal "$@" 2>/dev/null
+  )
+}
+TAGS="$(tags_of 11.4.0-beta1 11.4.0-rc1 11.4.0-rc2 11.4.0 11.4.11 11.4.12 11.5.0-beta1)"
+expect "a prefixed tag lookup skips pre-releases" 11.4.12 "$(latest_tag 11.)"
+TAGS="$(tags_of 11.4.0-beta1 11.4.0-rc1 11.4.0)"
+expect "a final release outranks its release candidates" 11.4.0 "$(latest_tag 11.)"
+TAGS="$(tags_of 12.0.0-alpha1 12.0.0-beta2)"
+expect "only pre-releases: reported as no tag, not a crash" "" "$(set -eo pipefail; latest_tag 12.)"
+TAGS="$(tags_of v2.0.0-rc.1 v1.9.3 v1.9.2)"
+expect "without a prefix the newest stable tag wins" v1.9.3 "$(latest_tag)"
+TAGS="$(tags_of release-2026-07-14c)"
+expect "a revision letter is not a pre-release" release-2026-07-14c "$(latest_tag release-)"
 
 printf '%s passed, %s failed\n' "$passed" "$failed"
 ((failed == 0))
