@@ -2432,12 +2432,17 @@ EOF
       }
       msg_ok "Updated ruby-build definitions"
     fi
-    $STD "$RBENV_BIN" install "$RUBY_VERSION" || {
-      msg_error "Failed to install Ruby $RUBY_VERSION"
+    # The build tree goes to disk: /tmp is tmpfs on Debian 13, where it counted
+    # against the container's memory. The docs took minutes and no server reads them.
+    local build_tmp
+    build_tmp="$(mktemp -d -p /var/tmp ruby-build.XXXXXX 2>/dev/null)" || build_tmp=""
+    $STD env TMPDIR="${build_tmp:-/tmp}" RUBY_CONFIGURE_OPTS="--disable-install-doc ${RUBY_CONFIGURE_OPTS:-}" "$RBENV_BIN" install "$RUBY_VERSION" || {
+      msg_error "Failed to install Ruby $RUBY_VERSION - the build log is in ${build_tmp:-/tmp}"
       cd "$PREV_DIR" 2>/dev/null || cd /
-    rm -rf "$TMP_DIR"
+      rm -rf "$TMP_DIR"
       return 150
     }
+    [[ -n "$build_tmp" ]] && rm -rf "$build_tmp"
   fi
 
   "$RBENV_BIN" global "$RUBY_VERSION" || {
