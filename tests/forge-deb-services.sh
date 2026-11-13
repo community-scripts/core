@@ -4,7 +4,6 @@ set -uo pipefail
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 eval "$(awk '/^(fetch_and_deploy_release|_forge_deb_units|_forge_workdir|_forge_is_script_app|_forge_descriptor|_forge_strip_v|_forge_previous_version)[(][)] [{]/,/^}/' "$CORE_DIR/lib/forge.func")"
 
-# _forge_deb_units only lists units on a systemd host.
 if [[ ! -d /run/systemd/system ]]; then
   echo "SKIP: no /run/systemd/system on this machine"
   exit 0
@@ -40,7 +39,6 @@ _forge_asset_urls() { echo "https://example.invalid/demo_2.0.0_amd64.deb"; }
 curl_download() { : >"$1"; }
 apt() { echo "apt $*" >>"$LOG"; }
 dpkg-deb() { echo demo; }
-# INSTALLED=yes: the package is there before this run (an upgrade).
 dpkg() {
   case "$1" in
   --print-architecture) echo amd64 ;;
@@ -49,7 +47,6 @@ dpkg() {
     /lib/systemd/system/demo-worker.service /lib/systemd/system/demo-job@.service ;;
   esac
 }
-# ACTIVE / ENABLED: the units running or enabled before the install.
 systemctl() {
   case "$1" in
   is-active) [[ " $ACTIVE " == *" $3 "* ]] ;;
