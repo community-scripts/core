@@ -572,14 +572,9 @@ setup_meilisearch() {
       CURRENT_VERSION=$(/usr/bin/meilisearch --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) || CURRENT_VERSION="0.0.0"
       NEW_VERSION="${CHECK_UPDATE_RELEASE#v}"
 
-      # Extract major.minor for comparison (Meilisearch changes its on-disk DB format between minor versions)
-      local CURRENT_MAJOR_MINOR NEW_MAJOR_MINOR
-      CURRENT_MAJOR_MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f1,2)
-      NEW_MAJOR_MINOR=$(echo "$NEW_VERSION" | cut -d. -f1,2)
-
-      # Determine if migration is needed (different major.minor = incompatible DB format)
+      # Meilisearch refuses to start on a DB from any other version, patch releases included
       local NEEDS_MIGRATION=false
-      if [[ "$CURRENT_MAJOR_MINOR" != "$NEW_MAJOR_MINOR" ]]; then
+      if [[ "$CURRENT_VERSION" != "$NEW_VERSION" ]]; then
         NEEDS_MIGRATION=true
         msg_custom "ℹ️" "${YW}" "MeiliSearch version change detected (${CURRENT_VERSION} → ${NEW_VERSION}), preparing data migration"
       fi
