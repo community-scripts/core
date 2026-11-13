@@ -32,6 +32,7 @@ on:
       - "tests/java-memory.sh"
       - "tests/pve-no-ip-facts.sh"
       - "tests/sudo-env.sh"
+      - "tests/template-broken.sh"
       - "tests/deb822-local-keyring.sh"
       - "tests/ct-stop-facts.sh"
       - "tests/gpu-pci-class.sh"
@@ -97,6 +98,7 @@ on:
       - "tests/java-memory.sh"
       - "tests/pve-no-ip-facts.sh"
       - "tests/sudo-env.sh"
+      - "tests/template-broken.sh"
       - "tests/deb822-local-keyring.sh"
       - "tests/ct-stop-facts.sh"
       - "tests/gpu-pci-class.sh"
@@ -189,6 +191,9 @@ jobs:
 
       - name: sudo environment tests
         run: bash tests/sudo-env.sh
+
+      - name: Broken template tests
+        run: bash tests/template-broken.sh
 
       - name: deb822 local keyring tests
         run: bash tests/deb822-local-keyring.sh
