@@ -1741,6 +1741,9 @@ setup_nodejs() {
         continue
       fi
 
+      # npm list never prints the +sha512 hash of a packageManager pin; Corepack still checks it.
+      MODULE_REQ_VERSION="${MODULE_REQ_VERSION%%+*}"
+
       # The corepack shim is dropped by _cs_drop_pm_shim immediately before each
       # npm install below, never here. Dropping it up front deleted a working
       # binary and then let the version check decide there was nothing to
