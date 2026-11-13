@@ -2,7 +2,7 @@
 set -uo pipefail
 
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-eval "$(awk '/^(fetch_and_deploy_release|_forge_workdir|_forge_is_script_app|_forge_descriptor|_forge_strip_v|_forge_previous_version)[(][)] [{]/,/^}/' "$CORE_DIR/lib/forge.func")"
+eval "$(awk '/^(fetch_and_deploy_release|fetch_and_deploy_gh_tag|fetch_and_deploy_gl_tag|_forge_workdir|_forge_is_script_app|_forge_descriptor|_forge_strip_v|_forge_previous_version)[(][)] [{]/,/^}/' "$CORE_DIR/lib/forge.func")"
 
 TEST_DIR="$(mktemp -d)"
 trap 'rm -rf -- "$TEST_DIR"' EXIT
@@ -91,6 +91,25 @@ check "and it says so" "1" "$(grep -c 'already installed' "$LOG")"
 rm -rf "$TEST_DIR/opt/subwave"
 deploy github subwave perminder-klair/subwave tarball latest "$TEST_DIR/opt/subwave" >/dev/null
 check "a tarball whose directory is gone is deployed again" "1" "$(grep -c '^download ' "$LOG")"
+
+# Tag-only apps (Redmine) ignored the pin and always took the newest tag.
+get_latest_gh_tag() { echo "9.9.9"; }
+get_latest_gl_tag() { echo "9.9.9"; }
+tag_deploy() {
+  : >"$LOG"
+  rm -f "$HOME/.$2"
+  "$1" "$2" "owner/$2" "${3:-latest}" "$TEST_DIR/opt/$2" >/dev/null 2>&1
+  grep -o '/[^/]*\.tar\.gz$' "$LOG" | head -n1
+}
+export var_appversion=7.0.3
+# shellcheck disable=SC2034  # read by the tag helpers
+NSAPP=redmine
+check "GitHub tag: the script's own app gets the pin" "/7.0.3.tar.gz" "$(tag_deploy fetch_and_deploy_gh_tag redmine)"
+check "GitHub tag: another app stays on latest" "/9.9.9.tar.gz" "$(tag_deploy fetch_and_deploy_gh_tag guacd)"
+check "GitLab tag: the script's own app gets the pin" "/redmine-7.0.3.tar.gz" "$(tag_deploy fetch_and_deploy_gl_tag redmine)"
+check "GitLab tag: another app keeps its pattern" "/guacd-9.9.9.tar.gz" "$(tag_deploy fetch_and_deploy_gl_tag guacd 'v*')"
+unset var_appversion NSAPP
+check "GitHub tag: without a pin it takes the newest" "/9.9.9.tar.gz" "$(tag_deploy fetch_and_deploy_gh_tag redmine)"
 
 echo "${passed} passed, ${failed} failed"
 [[ "$failed" -eq 0 ]]
