@@ -2093,7 +2093,8 @@ fetch_and_deploy_codeberg_release() {
 #       - source: Alias for tarball (same behavior)
 #       - binary: .deb package install (arch-dependent)
 #       - prebuild: Prebuilt .tar.gz archive (e.g. Go binaries)
-#       - singlefile: Standalone binary (no archive, direct chmod +x install)
+#       - singlefile: Standalone binary (no archive, direct chmod +x install;
+#                     a .gz/.bz2/.xz/.zst single binary is unpacked first)
 #   - Handles download, extraction/installation and version tracking in ~/.<app>
 #
 # Parameters:
@@ -2507,12 +2508,33 @@ fetch_and_deploy_release() {
       _deploy_unpacked_archive "$tmpdir/$filename" "$target" "$unpack_tmp" || return
     else
       mkdir -p "$target"
-      local target_file="$app"
+      local target_file="$app" unpack="" unpack_pkg=""
       [[ "${USE_ORIGINAL_FILENAME:-false}" == "true" ]] && target_file="$filename"
-      curl_download "$target/$target_file" "$asset_url" || {
-        msg_error "Download failed: $asset_url"
-        return 250
-      }
+      # A compressed single binary lands unpacked; tarballs stay as they are.
+      case "$filename" in
+      *.tar.* | *.tgz | *.txz) ;;
+      *.gz) unpack=gzip unpack_pkg=gzip ;;
+      *.bz2) unpack=bzip2 unpack_pkg=bzip2 ;;
+      *.xz) unpack=xz unpack_pkg=xz-utils ;;
+      *.zst) unpack=zstd unpack_pkg=zstd ;;
+      esac
+      if [[ -n "$unpack" ]]; then
+        [[ "$target_file" == "$filename" ]] && target_file="${filename%.*}"
+        ensure_dependencies "$unpack_pkg" || return 100
+        curl_download "$tmpdir/$filename" "$asset_url" || {
+          msg_error "Download failed: $asset_url"
+          return 250
+        }
+        "$unpack" -dc "$tmpdir/$filename" >"$target/$target_file" || {
+          msg_error "Could not unpack $filename"
+          return 251
+        }
+      else
+        curl_download "$target/$target_file" "$asset_url" || {
+          msg_error "Download failed: $asset_url"
+          return 250
+        }
+      fi
       if [[ "$target_file" != *.jar && -f "$target/$target_file" ]]; then
         chmod +x "$target/$target_file"
       fi

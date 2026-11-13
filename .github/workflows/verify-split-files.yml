@@ -72,6 +72,7 @@ on:
       - "tests/db-helper-context.sh"
       - "tests/cs-clear.sh"
       - "tests/forge-appversion-scope.sh"
+      - "tests/forge-singlefile-compressed.sh"
       - "tests/motd-os-version.sh"
       - "tests/gpg-key-reason.sh"
       - "tests/forge-branch-clean-install.sh"
@@ -140,6 +141,7 @@ on:
       - "tests/db-helper-context.sh"
       - "tests/cs-clear.sh"
       - "tests/forge-appversion-scope.sh"
+      - "tests/forge-singlefile-compressed.sh"
       - "tests/motd-os-version.sh"
       - "tests/gpg-key-reason.sh"
       - "tests/forge-branch-clean-install.sh"
@@ -299,6 +301,8 @@ jobs:
         run: bash tests/cs-clear.sh
       - name: App version pin and .deb stamp tests
         run: bash tests/forge-appversion-scope.sh
+      - name: Compressed single binary tests
+        run: bash tests/forge-singlefile-compressed.sh
       - name: GPG key failure reason tests
         run: bash tests/gpg-key-reason.sh
       - name: Clean install from a git branch tests
