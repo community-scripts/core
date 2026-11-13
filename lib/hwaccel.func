@@ -19,8 +19,7 @@ _TOOLS_HWACCEL_LOADED=1
 # single warning line. The batch is still tried first -- one apt run, and the
 # normal case -- and only a failure falls back to one at a time, which is also
 # the only way to name the package that was actually missing.
-# Vendor and Intel's discrete cards by PCI ID ("8086:e20b"): the name depends
-# on the pci.ids at hand, and a new card has none yet.
+# Vendor, and Intel's discrete cards, by PCI ID: names depend on the local pci.ids.
 _gpu_type() {
   local id="$1" name="$2"
   case "${id%%:*}" in
@@ -890,9 +889,7 @@ _setup_nvidia_gpu() {
 
     local nvidia_major_version="${nvidia_host_version%%.*}"
 
-    # Ubuntu has no libcuda1: libnvidia-compute carries it. NVIDIA names it with
-    # the series up to 580 and without from 590 on, and Ubuntu's own archive
-    # keeps the series name. The one that has the host's release wins.
+    # Ubuntu has no libcuda1 (libnvidia-compute); NVIDIA drops the series suffix from 590 on.
     local nv_suffix="" available_version="" cand cand_version
     for cand in "-${nvidia_major_version}" ""; do
       cand_version="$(_cuda_pick_version "$nvidia_host_version" "libnvidia-compute${cand}")"
