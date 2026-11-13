@@ -29,10 +29,15 @@ on:
       - "tests/mongodb-upgrade.sh"
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
+      - "tests/install-script-fetch.sh"
       - "tests/java-memory.sh"
+      - "tests/pve-no-ip-facts.sh"
       - "tests/sudo-env.sh"
+      - "tests/template-broken.sh"
       - "tests/deb822-local-keyring.sh"
+      - "tests/ct-stop-facts.sh"
       - "tests/gpu-pci-class.sh"
+      - "tests/hangup-host-commands.sh"
       - "tests/nvidia-version-pin.sh"
       - "tests/external-installer.sh"
       - "tests/forge-version-key.sh"
@@ -61,6 +66,7 @@ on:
       - "tests/vm-failure-reasons.sh"
       - "tests/silent-verbose.sh"
       - "tests/github-release-noapi.sh"
+      - "tests/github-token-from-vars.sh"
       - "tests/vm-dialog-esc.sh"
       - "tests/forge-clean-install.sh"
       - "tests/db-helper-context.sh"
@@ -91,10 +97,15 @@ on:
       - "tests/mongodb-upgrade.sh"
       - "tests/uv-required-version.sh"
       - "tests/docker-lxcfs.sh"
+      - "tests/install-script-fetch.sh"
       - "tests/java-memory.sh"
+      - "tests/pve-no-ip-facts.sh"
       - "tests/sudo-env.sh"
+      - "tests/template-broken.sh"
       - "tests/deb822-local-keyring.sh"
+      - "tests/ct-stop-facts.sh"
       - "tests/gpu-pci-class.sh"
+      - "tests/hangup-host-commands.sh"
       - "tests/nvidia-version-pin.sh"
       - "tests/external-installer.sh"
       - "tests/forge-version-key.sh"
@@ -123,6 +134,7 @@ on:
       - "tests/vm-failure-reasons.sh"
       - "tests/silent-verbose.sh"
       - "tests/github-release-noapi.sh"
+      - "tests/github-token-from-vars.sh"
       - "tests/vm-dialog-esc.sh"
       - "tests/forge-clean-install.sh"
       - "tests/db-helper-context.sh"
@@ -143,7 +155,7 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Every part parses
         run: |
@@ -175,17 +187,32 @@ jobs:
       - name: Docker lxcfs visibility regression tests
         run: bash tests/docker-lxcfs.sh
 
+      - name: Install script fetch tests
+        run: bash tests/install-script-fetch.sh
+
       - name: Java memory drop-in tests
         run: bash tests/java-memory.sh
+
+      - name: No-IP diagnosis tests
+        run: bash tests/pve-no-ip-facts.sh
 
       - name: sudo environment tests
         run: bash tests/sudo-env.sh
 
+      - name: Broken template tests
+        run: bash tests/template-broken.sh
+
       - name: deb822 local keyring tests
         run: bash tests/deb822-local-keyring.sh
 
+      - name: Container stop facts tests
+        run: bash tests/ct-stop-facts.sh
+
       - name: GPU detection by PCI class tests
         run: bash tests/gpu-pci-class.sh
+
+      - name: Hangup during host commands tests
+        run: bash tests/hangup-host-commands.sh
 
       - name: NVIDIA userspace version pin tests
         run: bash tests/nvidia-version-pin.sh
@@ -262,6 +289,8 @@ jobs:
         run: bash tests/motd-os-version.sh
       - name: GitHub release without the API tests
         run: bash tests/github-release-noapi.sh
+      - name: var_github_token is used from the first call
+        run: bash tests/github-token-from-vars.sh
       - name: Clean install keeps the target until extraction succeeds
         run: bash tests/forge-clean-install.sh
       - name: Database helpers outside an install tests

@@ -12,6 +12,77 @@
 [[ -n "${_API_TELEMETRY_LOADED:-}" ]] && return 0
 _API_TELEMETRY_LOADED=1
 
+# DIAGNOSTICS as the caller's environment had it, before variables() or a read
+# of the diagnostics file replaces it. Only devscripts_telemetry() reads it.
+_TM_DIAGNOSTICS_ENV="${DIAGNOSTICS-}"
+
+# ------------------------------------------------------------------------------
+# devscripts_telemetry
+#
+# DevScripts are testing builds, and their telemetry is what decides whether a
+# script moves on to ProxmoxVE or its issue goes stale. So a DevScripts run
+# always reports, whatever the diagnostics file says. The file is left alone:
+# ProxmoxVE runs keep the user's own choice.
+#
+# The one way out is DIAGNOSTICS=no in the environment the run was started
+# with. The CI test runs set it, so their builds stay out of the numbers.
+#
+# The notice is shown once per host. Interactively it is a dialog that can be
+# declined, which ends the run; accepting it is remembered. Unattended (no TTY,
+# PHS_SILENT, a non-interactive mode) nothing can be asked, so the notice is
+# printed on every run until someone has accepted the dialog. It never blocks.
+#
+# Returns 1 when this is not a DevScripts run, so the caller keeps its own
+# DIAGNOSTICS handling. Otherwise sets and exports DIAGNOSTICS and returns 0.
+# ------------------------------------------------------------------------------
+devscripts_telemetry() {
+  [[ "${REPO_SOURCE:-}" == "DevScripts" ]] || return 1
+
+  if [[ "${_TM_DIAGNOSTICS_ENV,,}" == "no" ]]; then
+    DIAGNOSTICS="no"
+    export DIAGNOSTICS
+    return 0
+  fi
+
+  local dir marker
+  dir="$(declare -f community_scripts_dir >/dev/null 2>&1 && community_scripts_dir || echo /usr/local/community-scripts)"
+  marker="${dir}/devscripts-telemetry-accepted"
+
+  if [[ ! -f "$marker" ]]; then
+    local text="DevScripts are testing builds and always send anonymous install
+telemetry. This helps the team decide which scripts are ready for release.
+
+What is sent: script name, success/failure with error message, install
+time, hardware (CPU, RAM, disk, GPU), OS, and Proxmox version.
+
+Your DIAGNOSTICS setting for regular scripts is unchanged.
+Data: https://telemetry.community-scripts.org/
+
+Selecting Exit closes this script."
+    local interactive=0
+    if [[ -t 0 && "${TERM:-dumb}" != "dumb" ]] && command -v whiptail &>/dev/null; then
+      interactive=1
+      declare -f is_unattended >/dev/null 2>&1 && is_unattended && interactive=0
+    fi
+
+    if ((interactive)); then
+      if ! whiptail --backtitle "Proxmox VE Helper Scripts" --title "DEVSCRIPTS TELEMETRY" \
+        --yes-button "Accept" --no-button "Exit" --yesno "${text}" 18 72; then
+        echo -e "\nTelemetry is required for DevScripts. Nothing was changed; exiting."
+        exit 0
+      fi
+      mkdir -p "$dir" 2>/dev/null || true
+      date -u +"accepted %Y-%m-%dT%H:%M:%SZ" >"$marker" 2>/dev/null || true
+    else
+      echo -e "\n[DevScripts] ${text//$'\n\n'/ }\n" >&2
+    fi
+  fi
+
+  DIAGNOSTICS="yes"
+  export DIAGNOSTICS
+  return 0
+}
+
 # curl present, opted in, session id set
 _tm_enabled() {
   command -v curl &>/dev/null || return 1
@@ -193,6 +264,7 @@ post_to_api_vm() {
   if [[ -f /usr/local/community-scripts/diagnostics ]]; then
     DIAGNOSTICS=$(grep -i "^DIAGNOSTICS=" /usr/local/community-scripts/diagnostics 2>/dev/null | awk -F'=' '{print $2}') || true
   fi
+  devscripts_telemetry || true
 
   TELEMETRY_TYPE="vm"
   CT_TYPE=2
@@ -413,6 +485,7 @@ init_tool_telemetry() {
   if [[ -f /usr/local/community-scripts/diagnostics ]]; then
     DIAGNOSTICS=$(grep -i "^DIAGNOSTICS=" /usr/local/community-scripts/diagnostics 2>/dev/null | awk -F'=' '{print $2}') || true
   fi
+  devscripts_telemetry || true
 
   start_install_timer
 

@@ -75,6 +75,42 @@ validate_github_token() {
 }
 
 # ------------------------------------------------------------------------------
+# var_github_token is used from the first call on. It used to be read only
+# after GitHub had refused a call, so every lookup before that went out
+# without a token, at 60 calls an hour per address. Behind one shared
+# address (a LAN, a CI host running several builds) that is soon spent.
+# ------------------------------------------------------------------------------
+_github_token_from_vars() {
+  if [[ -z "${GITHUB_TOKEN:-}" && -n "${var_github_token:-}" ]]; then
+    export GITHUB_TOKEN="${var_github_token}"
+    export CS_GITHUB_TOKEN_FROM_VARS=1
+  fi
+}
+_github_token_from_vars
+
+# GitHub rejected the token (401). One taken from var_github_token on its own
+# (an expired token in default.vars) must not break what works without one:
+# drop it and go on unauthenticated. Returns 1 when there was none to drop.
+_github_token_rejected() {
+  [[ "${CS_GITHUB_TOKEN_FROM_VARS:-0}" == "1" && -n "${GITHUB_TOKEN:-}" ]] || return 1
+  msg_warn "GitHub rejected var_github_token (invalid or expired); continuing without it."
+  unset GITHUB_TOKEN CS_GITHUB_TOKEN_FROM_VARS
+  return 0
+}
+
+# GitHub answered 403 to a request that carried a token, and the body ($1)
+# says the repo's organization refuses tokens from this address (IP allow
+# list) or without SSO (SAML). The same request without a token works, so
+# that one goes again without it; the token stays for every other repo.
+# This is not a rate limit, which is what a 403 was read as before.
+_github_token_refused_by_org() {
+  [[ -n "${GITHUB_TOKEN:-}" && -f "${1:-}" ]] || return 1
+  grep -qiE 'IP allow list|SAML enforcement' "$1" 2>/dev/null || return 1
+  msg_warn "The repository's GitHub organization refuses tokens from here (IP allow list or SSO); asking without the token."
+  return 0
+}
+
+# ------------------------------------------------------------------------------
 # Prompt user to enter a GitHub Personal Access Token (PAT) interactively
 # Returns 0 if a valid token was provided, 1 otherwise
 # ------------------------------------------------------------------------------
@@ -174,6 +210,7 @@ github_api_call() {
   local max_retries=3
   local retry_delay=2
 
+  _github_token_from_vars
   local header_args=()
   [[ -n "${GITHUB_TOKEN:-}" ]] && header_args=(-H "Authorization: Bearer $GITHUB_TOKEN")
 
@@ -191,6 +228,10 @@ github_api_call() {
       return 0
       ;;
     401)
+      if _github_token_rejected; then
+        header_args=()
+        continue
+      fi
       msg_error "GitHub API authentication failed (HTTP 401)."
       if [[ -n "${GITHUB_TOKEN:-}" ]]; then
         msg_error "Your GITHUB_TOKEN appears to be invalid or expired."
@@ -198,12 +239,17 @@ github_api_call() {
         msg_error "The repository may require authentication."
       fi
       if prompt_for_github_token; then
-        header_args=(-H "Authorization: Bearer $GITHUB_TOKEN")
+        header_args=()
+        [[ -n "${GITHUB_TOKEN:-}" ]] && header_args=(-H "Authorization: Bearer $GITHUB_TOKEN")
         continue
       fi
       return 22
       ;;
     403 | 429)
+      if ((${#header_args[@]})) && [[ "$output_file" != /dev/* ]] && _github_token_refused_by_org "$output_file"; then
+        header_args=()
+        continue
+      fi
       # A release can still be read from github.com without the API.
       if [[ "$url" =~ ^https://api\.github\.com/repos/([^/]+/[^/]+)/releases/(latest|tags/(.+))$ ]] &&
         _github_release_noapi "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]:-latest}" "$output_file"; then
@@ -569,6 +615,33 @@ _forge_workdir() {
   mktemp -d -p "${TMPDIR:-/var/tmp}" 2>/dev/null || mktemp -d -p /tmp
 }
 
+# Puts the entries of <source_dir> into <target>: moved where <target> has no
+# such entry yet, copied over it otherwise. Staging is on disk, so a plain
+# cp -r had the release there twice and filled small containers.
+_forge_place() {
+  local src="$1" target="$2" entry rc=0
+  shopt -s dotglob nullglob
+  for entry in "$src"/*; do
+    if [[ -e "$target/${entry##*/}" || -L "$target/${entry##*/}" ]]; then
+      cp -r "$entry" "$target/" && rm -rf "$entry" || rc=1
+    else
+      mv "$entry" "$target/" || rc=1
+    fi
+  done
+  shopt -u dotglob nullglob
+  return $rc
+}
+
+# After a failed _forge_place: says so and returns 1 when <target>'s filesystem
+# is full, returns 0 for any other reason.
+_forge_disk_full() {
+  local avail
+  avail="$(df -Pk "$1" 2>/dev/null | awk 'NR==2 {print $4}')"
+  [[ "$avail" =~ ^[0-9]+$ ]] && ((avail < 1024)) || return 0
+  msg_error "No space left on the disk while deploying to $1 - give the container a larger disk"
+  return 1
+}
+
 # ------------------------------------------------------------------------------
 # _deploy_source_tarball <tarball_path> <target> <workdir>
 #
@@ -585,9 +658,10 @@ _forge_workdir() {
 #     <target> that the wipe leaves alone (e.g. "geodata .env data/uploads").
 #   - Does NOT own <workdir>: the caller creates it and is responsible for its
 #     cleanup (typically via a RETURN trap on its tmpdir).
-#   - cp failures are non-fatal here, matching the previous inline behavior.
+#   - A failed copy is fatal only when the disk is full; otherwise it stays
+#     non-fatal, matching the previous inline behavior.
 #
-# Returns: 0 on success (or non-fatal cp failure), 251 on extraction failure.
+# Returns: 0 on success, 251 on extraction failure, 252 when the disk is full.
 # ------------------------------------------------------------------------------
 _deploy_source_tarball() {
   local tarball="$1" target="$2" workdir="$3"
@@ -610,9 +684,7 @@ _deploy_source_tarball() {
     _cs_clean_target_dir "$target"
   fi
 
-  shopt -s dotglob nullglob
-  cp -r "$unpack_dir"/* "$target/"
-  shopt -u dotglob nullglob
+  _forge_place "$unpack_dir" "$target" || _forge_disk_full "$target" || return 252
   return 0
 }
 
@@ -715,7 +787,8 @@ _deploy_unpacked_archive() {
     _cs_clean_target_dir "$target"
   fi
 
-  if ! cp -r "$source_dir"/* "$target/"; then
+  if ! _forge_place "$source_dir" "$target"; then
+    _forge_disk_full "$target" || true
     if [[ -n "$inner_dir" ]]; then
       msg_error "Failed to copy contents from $inner_dir to $target"
     else
@@ -1379,6 +1452,7 @@ _forge_http_get() {
   local forge="${1:?forge}" url="${2:?url}" out="${3:?outfile}"
   local -a headers=()
   local accept auth code
+  [[ "$forge" == "github" ]] && _github_token_from_vars
   accept="$(_forge_descriptor "$forge" accept)"
   [[ -n "$accept" ]] && headers+=(-H "Accept: ${accept}")
   [[ "$forge" == "github" ]] && headers+=(-H "X-GitHub-Api-Version: 2022-11-28")
@@ -1389,6 +1463,15 @@ _forge_http_get() {
   local attempt=1 delay=2 api_message=""
   while :; do
     code="$(_forge_curl "$out" "${headers[@]}" "$url")"
+    if [[ "$forge" == "github" && -n "$auth" ]] &&
+      { { [[ "$code" == "401" ]] && _github_token_rejected; } ||
+        { [[ "$code" == "403" ]] && _github_token_refused_by_org "$out"; }; }; then
+      headers=()
+      [[ -n "$accept" ]] && headers+=(-H "Accept: ${accept}")
+      headers+=(-H "X-GitHub-Api-Version: 2022-11-28")
+      auth=""
+      continue
+    fi
     if [[ "$code" == "200" ]] && command -v jq >/dev/null 2>&1; then
       if ! jq -e . >/dev/null 2>&1 <"$out"; then
         code="000"
@@ -1491,6 +1574,12 @@ _forge_designated_release() {
 
   tmp="$(mktemp /tmp/tools-forge-desig-XXXXXX)" || return 1
   code="$(_forge_curl "$tmp" "${headers[@]}" "${base}/${repo_path}${path}")"
+  if [[ "$forge" == "github" && "$code" == "403" && -n "$auth" ]] && _github_token_refused_by_org "$tmp"; then
+    headers=()
+    [[ -n "$accept" ]] && headers+=(-H "Accept: ${accept}")
+    headers+=(-H "X-GitHub-Api-Version: 2022-11-28")
+    code="$(_forge_curl "$tmp" "${headers[@]}" "${base}/${repo_path}${path}")"
+  fi
 
   # An auto-publishing repo leaves untagged placeholders behind; those carry no
   # version anyone can act on, so sorting gets its turn.
@@ -1574,6 +1663,7 @@ _forge_release_json() {
   local -a timeouts=(60 120 240)
   local raw attempt=1 delay=2 code ok=false curl_rc
   raw="$(mktemp /tmp/tools-forge-rel-XXXXXX)" || return 73
+  [[ "$forge" == "github" ]] && _github_token_from_vars
 
   local -a headers=()
   local accept auth
@@ -1599,6 +1689,12 @@ _forge_release_json() {
     fi
 
     if [[ "$forge" == "github" && "$code" == "401" ]]; then
+      if _github_token_rejected; then
+        headers=()
+        [[ -n "$accept" ]] && headers+=(-H "Accept: ${accept}")
+        headers+=(-H "X-GitHub-Api-Version: 2022-11-28")
+        continue
+      fi
       msg_error "GitHub API authentication failed (HTTP 401)."
       if declare -f prompt_for_github_token >/dev/null 2>&1 && prompt_for_github_token; then
         headers=()
@@ -1611,6 +1707,14 @@ _forge_release_json() {
       fi
       rm -f "$raw"
       return 22
+    fi
+
+    if [[ "$forge" == "github" && "$code" == "403" && -n "$auth" ]] && _github_token_refused_by_org "$raw"; then
+      headers=()
+      [[ -n "$accept" ]] && headers+=(-H "Accept: ${accept}")
+      headers+=(-H "X-GitHub-Api-Version: 2022-11-28")
+      auth=""
+      continue
     fi
 
     if [[ "$code" == "$(_forge_descriptor "$forge" ratelimit)" ]]; then

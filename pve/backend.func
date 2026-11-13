@@ -145,6 +145,38 @@ _pct_create() {
 }
 
 # ------------------------------------------------------------------------------
+# _pve_no_ip_facts <ctid> <bridge>
+#
+# What the host can see about a container that got no address. It goes to the
+# log, where "No IP assigned" used to be all a quarter of the network failures
+# said.
+# ------------------------------------------------------------------------------
+_pve_no_ip_facts() {
+  local ctid="$1" brg="$2" net0 ip4 tag link port uplinks=0
+  net0="$(pct config "$ctid" 2>/dev/null | sed -n 's/^net0: //p')"
+  ip4="$(grep -oE '(^|,)ip=[^,]+' <<<"$net0" | cut -d= -f2 || true)"
+  tag="$(grep -oE '(^|,)tag=[^,]+' <<<"$net0" | cut -d= -f2 || true)"
+  link="$(pct exec "$ctid" -- ip -br link show dev eth0 2>/dev/null | awk '{print $2}' || true)"
+  msg_warn "Container network: ip=${ip4:-none}${tag:+, VLAN ${tag}}, eth0 ${link:-missing}"
+
+  if [[ ! -d "/sys/class/net/${brg}" ]]; then
+    msg_warn "Bridge ${brg} does not exist on this host"
+  elif [[ -d "/sys/class/net/${brg}/brif" ]]; then
+    for port in "/sys/class/net/${brg}/brif"/*; do
+      [[ -e "$port" ]] || continue
+      case "${port##*/}" in
+      veth* | tap* | fwpr* | fwln*) ;;
+      *) uplinks=$((uplinks + 1)) ;;
+      esac
+    done
+    ((uplinks)) || msg_warn "Bridge ${brg} has no uplink port, so nothing outside this host can answer on it"
+  fi
+  if [[ "$ip4" == "dhcp" ]]; then
+    msg_warn "No DHCP server answered on ${brg}${tag:+ (VLAN ${tag})}"
+  fi
+}
+
+# ------------------------------------------------------------------------------
 # _pct_start_failed <ctid> [pct start output]
 #
 # pct says only that the startup failed; lxc writes why to the container's
@@ -177,8 +209,8 @@ _pct_start_failed() {
 # also return 0 and leave the container stopped, so ask for the real state.
 _pct_restart() {
   local ctid="$1" what="$2" err
-  err="$(pct start "$ctid" 2>&1)" || true
-  [[ "$(pct status "$ctid" 2>/dev/null)" == "status: running" ]] && return 0
+  err="$(_cs_shield_hangup pct start "$ctid" 2>&1)" || true
+  [[ "$(_cs_shield_hangup pct status "$ctid" 2>/dev/null)" == "status: running" ]] && return 0
   msg_error "Container ${ctid} did not start after ${what}"
   _pct_start_failed "$ctid" "$err"
   return 1
@@ -190,6 +222,27 @@ _pct_restart() {
 _pve_ct_stopped_by() {
   pvenode task list --vmid "$CTID" --since "${_CS_INSTALL_STARTED:-$(date +%s)}" --output-format json 2>/dev/null |
     grep -oE 'UPID:[^"]+' | awk -F: '$6 ~ /^vz(stop|shutdown|reboot|destroy)$/ { print $6 " by " $8; exit }'
+}
+
+# Why a container stopped by itself is in its own journal, which stops with it:
+# what the host kernel logged about it, and where its shutdown began.
+_pve_ct_stop_facts() {
+  local root="/var/lib/lxc/${CTID}/rootfs" log=""
+  journalctl -k --since "@${_CS_INSTALL_STARTED:-0}" -o cat --no-pager 2>/dev/null |
+    grep -E "lxc-${CTID}_<|/lxc/${CTID}/" | tail -n 5 | sed "s/^/${TAB}kernel: /" || true
+  pct mount "$CTID" >/dev/null 2>&1 || return 0
+  if [[ -d "$root/var/log/journal" ]]; then
+    log="$(journalctl -D "$root/var/log/journal" -n 300 -o short-monotonic --no-hostname --no-pager -q 2>/dev/null)" || log=""
+  else
+    log="$(tail -n 300 "$root/var/log/syslog" 2>/dev/null || tail -n 300 "$root/var/log/messages" 2>/dev/null)" || log=""
+  fi
+  pct unmount "$CTID" >/dev/null 2>&1 || true
+  [[ -n "$log" ]] || return 0
+  echo "${TAB}Container log where its shutdown began:"
+  awk '!s && /Received SIG|[Pp]owering (off|down)|Shutting down|Freezing|Caught <|emergency/ { s = NR }
+    { l[NR] = $0 }
+    END { f = s ? s - 3 : NR - 11; if (f < 1) f = 1; for (i = f; i <= NR && i < f + 12; i++) print l[i] }' <<<"$log" |
+    sed "s/^/${TAB}  /"
 }
 
 # ------------------------------------------------------------------------------
@@ -214,8 +267,41 @@ _pve_ct_gone_during_setup() {
   fi
   msg_error "Container ${CTID} stopped by itself during its setup"
   journalctl -u "pve-container@${CTID}" -n 10 --no-pager -o cat 2>/dev/null | sed "s/^/${TAB}/" || true
+  _pve_ct_stop_facts
   export ERROR_CATEGORY_OVERRIDE="proxmox"
   _CS_SETUP_GONE_RC=199
+}
+
+# ------------------------------------------------------------------------------
+# _pve_fetch_install_script
+#
+# Before anything is created: a missing or unreachable install script turned up
+# only once the container stood ready, with a fork hint whatever the cause.
+# Leaves the script in _install_script, or says why not and returns 115.
+# ------------------------------------------------------------------------------
+_pve_fetch_install_script() {
+  local rel="install/${var_install}.sh" base="${COMMUNITY_SCRIPTS_ROOT:-${COMMUNITY_SCRIPTS_URL}}" out err rc=0 why
+  out="$(mktemp)" err="$(mktemp)"
+  _cs_shield_hangup _cs_fetch_text "$rel" >"$out" 2>"$err" || rc=$?
+  _install_script="$(cat "$out")"
+  why="$(grep -v '^[[:space:]]*$' "$err" | tail -n 1)" || why=""
+  rm -f "$out" "$err"
+  ((rc == 0)) && [[ -n "$_install_script" ]] && return 0
+  _install_script=""
+  if [[ "$why" == *404* ]]; then
+    msg_error "${rel} is not in ${base}"
+    msg_custom "💡" "${YW}" "If ${APP} was retired or became an addon, its ct/ script only updates existing containers:"
+    msg_custom "   " "${YW}" "https://community-scripts.org/scripts/${NSAPP}"
+    if [[ -z "${COMMUNITY_SCRIPTS_ROOT:-}" ]]; then
+      msg_custom "💡" "${YW}" "Running a fork? A ct/ script fetched with curl cannot tell the engine"
+      msg_custom "   " "${YW}" "where it came from, so set the scripts base explicitly:"
+      msg_custom "   " "${YW}" "COMMUNITY_SCRIPTS_URL=https://raw.githubusercontent.com/<you>/<repo>/<branch>"
+    fi
+  else
+    msg_error "Could not fetch ${rel} from ${base}"
+    [[ -n "$why" ]] && msg_custom "ℹ️" "${YW}" "$why"
+  fi
+  return 115
 }
 
 # ------------------------------------------------------------------------------
@@ -248,6 +334,7 @@ _pve_wait_for_detached_install() {
         echo "[INFO] The install did not fail: ${stopped_by} ended it"
         return 143
       fi
+      _pve_ct_stop_facts
       return 199
     fi
     pid="$(pct exec "$CTID" -- cat "${base}.pid" 2>/dev/null | tr -d '[:space:]')"
@@ -268,12 +355,24 @@ _pve_wait_for_detached_install() {
   done
 }
 
+# A closed console killed this pipeline, and a downloaded template read as missing.
+_template_in_storage() {
+  pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -qF "$1"
+}
+
 # Where a template lands in $TEMPLATE_STORAGE, or the default dir layout when
 # pvesm cannot say.
 _template_path() {
   local p
   p="$(pvesm path "${TEMPLATE_STORAGE}:vztmpl/$1" 2>/dev/null)" || p=""
   echo "${p:-/var/lib/vz/template/cache/$1}"
+}
+
+# Missing, cut short or not unpackable: pct create fails on it every time.
+_template_broken() {
+  [[ -s "$1" ]] || return 0
+  (($(stat -c%s "$1" 2>/dev/null || echo 0) < 1000000)) && return 0
+  ! tar -tf "$1" &>/dev/null
 }
 
 # pveam needs template/cache, which a storage with create-subdirs 0 lacks
@@ -759,6 +858,8 @@ $PCT_OPTIONS_STRING"
     check_storage_health "$CONTAINER_STORAGE" "$DISK_SIZE"
   fi
 
+  local _install_script=""
+  _pve_fetch_install_script || exit $?
   create_lxc_container || exit $?
   # Transition to 'configuring' — container created, now setting up OS/userland
   post_progress_to_api "configuring"
@@ -1074,13 +1175,16 @@ EOF
   # ============================================================================
 
   msg_info "Starting container"
+  # From here a stop counts as during the setup; unset, _pve_ct_stopped_by looked only from "now".
+  _CS_INSTALL_STARTED="$(date +%s)"
   # Checked, and with its own code. Unchecked, a failure here surfaced as pct's
   # generic 255 -- which the exit table reads as DPKG's fatal error, so 197 runs
   # across 70 apps in a fortnight were filed as a package manager problem when
   # the container simply would not start.
   # pct can also fail and leave it running ("CT 104 already running").
   local _start_out
-  if ! _start_out="$(pct start "$CTID" 2>&1)" && [[ "$(pct status "$CTID" 2>/dev/null)" != "status: running" ]]; then
+  # A closed console killed pct start halfway, and a container that came up was reported as one that would not.
+  if ! _start_out="$(_cs_shield_hangup pct start "$CTID" 2>&1)" && [[ "$(_cs_shield_hangup pct status "$CTID" 2>/dev/null)" != "status: running" ]]; then
     msg_error "Container ${CTID} was created but would not start"
     _pct_start_failed "$CTID" "$_start_out"
     exit 227
@@ -1128,6 +1232,7 @@ EOF
 
     if [ -z "$ip_in_lxc" ]; then
       msg_error "No IP assigned to CT $CTID after 60 attempts"
+      _pve_no_ip_facts "$CTID" "$BRG"
       msg_custom "🔧" "${YW}" "Troubleshooting:"
       echo "  • Verify bridge ${BRG} exists and has connectivity"
       echo "  • Check if DHCP server is reachable (if using DHCP)"
@@ -1192,6 +1297,11 @@ EOF
 https://dl-cdn.alpinelinux.org/alpine/latest-stable/main
 https://dl-cdn.alpinelinux.org/alpine/latest-stable/community
 EOF'
+   # As for Debian below: with a dead resolver every mirror fails alike.
+   if ! pct exec "$CTID" -- /bin/sh -c 'getent hosts dl-cdn.alpinelinux.org >/dev/null 2>&1'; then
+     msg_warn "Alpine repository DNS resolution failed in container, injecting public DNS servers"
+     pct exec "$CTID" -- /bin/sh -c 'printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" >/etc/resolv.conf'
+   fi
    _cs_shield_hangup pct exec "$CTID" -- ash -c 'set -a; [ -f /etc/profile.d/90-http-proxy.sh ] && . /etc/profile.d/90-http-proxy.sh; set +a; apk add bash newt curl openssh nano mc ncurses jq' >>"$BUILD_LOG" 2>&1 || {
      msg_warn "apk install failed (dl-cdn.alpinelinux.org), trying alternate mirrors..."
      local alpine_exit=0
@@ -1504,25 +1614,6 @@ PROFILE
 
     export CONTAINER_INSTALLING=true
 
-    local _install_script
-    # Fetched explicitly rather than letting the ERR trap report it.
-    #
-    # A missing install script is almost always one thing: the ct/ script came
-    # from a fork but COMMUNITY_SCRIPTS_URL was not set, so the engine looked
-    # here -- upstream -- and found nothing. The trap reported that as
-    # "exit code 22 (Command failed with exit status 22)", which says neither
-    # what was missing nor where it was looked for.
-    if ! _install_script="$(_cs_fetch_text "install/${var_install}.sh")" ||
-      [[ -z "$_install_script" ]]; then
-      msg_error "Could not fetch install/${var_install}.sh"
-      msg_custom "📁" "${YW}" "Looked in: ${COMMUNITY_SCRIPTS_ROOT:-${COMMUNITY_SCRIPTS_URL}}"
-      if [[ -z "${COMMUNITY_SCRIPTS_ROOT:-}" ]]; then
-        msg_custom "💡" "${YW}" "Running a fork? A ct/ script fetched with curl cannot tell the engine"
-        msg_custom "   " "${YW}" "where it came from, so set the scripts base explicitly:"
-        msg_custom "   " "${YW}" "COMMUNITY_SCRIPTS_URL=https://raw.githubusercontent.com/<you>/<repo>/<branch>"
-      fi
-      exit 115
-    fi
     # The install owns the terminal now; a block left open on the host would resume its spinner over it.
     stop_spinner
     _MSG_BLOCKS=()
@@ -3365,7 +3456,7 @@ create_lxc_container() {
     # Download if missing, too small, or corrupt
     if [[ ! -f "$TEMPLATE_PATH" ]]; then
       download_catalog_template "$TEMPLATE_PATH"
-    elif [[ "$(stat -c%s "$TEMPLATE_PATH")" -lt 1000000 ]] || ! tar -tf "$TEMPLATE_PATH" &>/dev/null; then
+    elif _template_broken "$TEMPLATE_PATH"; then
       msg_warn "Local template invalid - re-downloading."
       rm -f "$TEMPLATE_PATH"
       download_catalog_template "$TEMPLATE_PATH"
@@ -3538,20 +3629,10 @@ create_lxc_container() {
     elif [[ ! -r "$TEMPLATE_PATH" ]]; then
       msg_error "Template file exists but is not readable – check permissions."
       exit 221
-    elif [[ "$(stat -c%s "$TEMPLATE_PATH")" -lt 1000000 ]]; then
-      if [[ -n "$ONLINE_TEMPLATE" ]]; then
-        msg_warn "Template file too small (<1MB) – re-downloading."
-        NEED_DOWNLOAD=1
-      else
-        msg_warn "Template looks too small, but no online version exists. Keeping local file."
-      fi
-    elif ! tar -tf "$TEMPLATE_PATH" &>/dev/null; then
-      if [[ -n "$ONLINE_TEMPLATE" ]]; then
-        msg_warn "Template appears corrupted – re-downloading."
-        NEED_DOWNLOAD=1
-      else
-        msg_warn "Template appears corrupted, but no online version exists. Keeping local file."
-      fi
+    elif _template_broken "$TEMPLATE_PATH"; then
+      # Even without ONLINE_TEMPLATE (a local find skips the catalog): kept, it failed pct create every time.
+      msg_warn "Template $TEMPLATE is incomplete or corrupt – downloading it again."
+      NEED_DOWNLOAD=1
     else
       $STD msg_ok "Template $TEMPLATE is present and valid."
     fi
@@ -3586,7 +3667,7 @@ create_lxc_container() {
         printf '%s\n' "$_dl_out" >>"${BUILD_LOG:-/dev/null}"
         # pveam can report a failed download and still exit 0, so only the
         # template in storage counts as success.
-        if pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -qF "$TEMPLATE"; then
+        if _cs_shield_hangup _template_in_storage "$TEMPLATE"; then
           msg_ok "Template download successful."
           break
         fi
@@ -3608,7 +3689,7 @@ create_lxc_container() {
       done
     fi
 
-    if ! pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -q "$TEMPLATE"; then
+    if ! _cs_shield_hangup _template_in_storage "$TEMPLATE"; then
       msg_error "Template $TEMPLATE not available in storage $TEMPLATE_STORAGE after download."
       exit 223
     fi
@@ -3683,20 +3764,11 @@ create_lxc_container() {
   }
 
   # Validate template before pct create (while holding lock)
-  if [[ ! -s "$TEMPLATE_PATH" || "$(stat -c%s "$TEMPLATE_PATH" 2>/dev/null || echo 0)" -lt 1000000 ]]; then
-    msg_info "Template file missing or too small – downloading"
+  if _template_broken "$TEMPLATE_PATH"; then
+    msg_info "Template missing or corrupt – downloading"
     rm -f "$TEMPLATE_PATH"
     download_template
     msg_ok "Template downloaded"
-  elif ! tar -tf "$TEMPLATE_PATH" &>/dev/null; then
-    if [[ -n "$CUSTOM_TEMPLATE_PATH" || -n "$ONLINE_TEMPLATE" ]]; then
-      msg_info "Template appears corrupted – re-downloading"
-      rm -f "$TEMPLATE_PATH"
-      download_template
-      msg_ok "Template re-downloaded"
-    else
-      msg_warn "Template appears corrupted, but no online version exists. Skipping re-download."
-    fi
   fi
 
   # Both run as ostype centos, whose PVE plugin reads a /etc/redhat-release neither ships.
@@ -3738,6 +3810,15 @@ create_lxc_container() {
   if ! _pct_create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" $PCT_OPTIONS ${_PW_ARGS[@]+"${_PW_ARGS[@]}"} >"$LOGFILE" 2>&1; then
     msg_debug "Container creation failed on ${TEMPLATE_STORAGE}. Checking error..."
 
+    # pct create asks timedatectl for the host's time zone; when that fails, every retry fails with it.
+    if grep -q "command 'timedatectl show" "$LOGFILE"; then
+      msg_error "pct create could not read this host's time zone: timedatectl does not answer."
+      msg_custom "🔧" "${YW}" "On the Proxmox host, run 'systemctl restart systemd-timedated' and check that 'timedatectl' works, then retry."
+      msg_custom "💡" "${YW}" "If timedatectl still fails, D-Bus on the host is stuck; a reboot clears it."
+      _flush_pct_log
+      exit 209
+    fi
+
     if grep -qiE 'Compilation failed|Bareword.*not allowed' "$LOGFILE"; then
       msg_error "Container creation failed due to broken Perl modules on the PVE host."
       msg_custom "⚠️" "${YW}" "This usually happens after a partial PVE package upgrade."
@@ -3774,7 +3855,7 @@ create_lxc_container() {
         exit 209
       fi
     else
-      if grep -qiE 'unable to open|corrupt|invalid' "$LOGFILE"; then
+      if grep -qiE "unable to open|corrupt|invalid|unexpected EOF|doesn't match checksum|premature end" "$LOGFILE"; then
         msg_info "Template may be corrupted – re-downloading"
         rm -f "$TEMPLATE_PATH"
         download_template
@@ -4035,7 +4116,8 @@ EOF
   fi
 
   if [[ -f /etc/systemd/system/ping-instances.service ]]; then
-    systemctl start ping-instances.service
+    systemctl start ping-instances.service 2>/dev/null ||
+      msg_warn "The monitoring service ping-instances would not start again (see: systemctl status ping-instances); the container itself is fine"
   fi
 
   # Optional host-side post-install hook

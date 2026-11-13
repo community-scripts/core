@@ -25,6 +25,7 @@ detect_cpu
 detect_gpu
 detect_ram
 detect_repo_source
+devscripts_telemetry
 explain_exit_code
 get_error_log
 get_install_duration

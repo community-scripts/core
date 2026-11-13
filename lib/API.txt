@@ -18,12 +18,14 @@ _forge_asset_urls
 _forge_curl
 _forge_descriptor
 _forge_designated_release
+_forge_disk_full
 _forge_explain_failure
 _forge_highest_version
 _forge_http_get
 _forge_is_current
 _forge_is_script_app
 _forge_keep_raw
+_forge_place
 _forge_previous_version
 _forge_release_json
 _forge_require_jq
@@ -35,6 +37,9 @@ _forge_strip_v
 _forge_workdir
 _gh_scan_older_releases
 _github_release_noapi
+_github_token_from_vars
+_github_token_refused_by_org
+_github_token_rejected
 _gl_scan_older_releases
 _install_uvx_wrapper
 _mongodb_in_place_precheck

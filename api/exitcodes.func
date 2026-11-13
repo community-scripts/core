@@ -215,8 +215,8 @@ explain_exit_code() {
   253) echo "App: Data migration required — update aborted" ;;
   254) echo "App: User declined prompt or input timed out" ;;
 
-  # --- DPKG ---
-  255) echo "DPKG: Fatal internal error" ;;
+  # --- 255 ---
+  255) echo "Fatal error (exit 255 from qm, pct, ssh or dpkg)" ;;
 
   # --- Default ---
   *) echo "Unknown error" ;;
@@ -240,6 +240,8 @@ categorize_error() {
   if [[ -z "$command" ]] && declare -f _tm_find_errinfo >/dev/null 2>&1 && errinfo=$(_tm_find_errinfo); then
     command=$(sed -n 's/^COMMAND=//p' "$errinfo" | head -n1)
   fi
+  command="${command#\$STD }"
+  command="${command#\$\{STD:-\} }"
   tool="${command%% *}"
   tool="${tool##*/}"
   case "$tool" in
