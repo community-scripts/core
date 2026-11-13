@@ -100,8 +100,6 @@ expect "the designated release still resolves" 0 "$?"
 expect "the designated release is used" v3.0.0 "$(jq -r .tag_name "$OUT")"
 expect "only one request was needed" 1 "$(grep -c curl "$CALLS")"
 
-# martin: a prefix used to skip the designated release and sort the last 100,
-# where martin-v* drops out within weeks behind betas and other crates.
 prefixed() {
   : >"$CALLS"
   : >"$OUT"
