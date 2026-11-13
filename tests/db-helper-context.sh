@@ -57,5 +57,18 @@ for db in postgresql mariadb mysql; do
   check "$db: runs without APPLICATION, alphanumeric password, creds named after APP and private" "alnum24 pgadmin.creds 600" "$(umask 022; run "$db")"
 done
 
+# Scripts suppress the file with PG_DB_CREDS_FILE=/dev/null; chmod 600 on it would
+# lock every non-root process out of /dev/null.
+devnull_chmods() {
+  (
+    chmod() { echo "chmod $*" >>"$TEST_DIR/chmod.log"; }
+    HOME="$TEST_DIR"
+    APP="demo"
+    PG_DB_NAME=appdb PG_DB_USER=appuser PG_DB_CREDS_FILE=/dev/null setup_postgresql_db >/dev/null 2>&1
+  )
+  grep -c '/dev/null' "$TEST_DIR/chmod.log" 2>/dev/null || echo 0
+}
+check "PG_DB_CREDS_FILE=/dev/null is never chmodded" "0" "$(devnull_chmods)"
+
 echo "${passed} passed, ${failed} failed"
 [[ "$failed" -eq 0 ]]
