@@ -1699,7 +1699,7 @@ _forge_release_json() {
   fi
 
   local -a timeouts=(60 120 240)
-  local raw attempt=1 delay=2 code ok=false curl_rc
+  local raw attempt=1 delay=2 code ok=false curl_rc other_spelling=""
   raw="$(mktemp /tmp/tools-forge-rel-XXXXXX)" || return 73
   [[ "$forge" == "github" ]] && _github_token_from_vars
 
@@ -1785,6 +1785,15 @@ _forge_release_json() {
       msg_error "${forge} rate limit exceeded. Raise it with: $(_forge_descriptor "$forge" hint)"
       rm -f "$raw"
       return 22
+    fi
+
+    # Ask once for the other spelling of the pinned tag, with or without the v.
+    if [[ "$single" == "true" && "$code" == "404" ]]; then
+      [[ -n "$other_spelling" ]] && break
+      other_spelling="v${version}"
+      [[ "$version" == v* ]] && other_spelling="${version#v}"
+      api_url="${base}/${repo_path}${one}/${other_spelling//\//%2F}"
+      continue
     fi
 
     attempt=$((attempt + 1))

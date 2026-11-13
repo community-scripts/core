@@ -70,6 +70,7 @@ on:
       - "tests/vm-dialog-esc.sh"
       - "tests/forge-clean-install.sh"
       - "tests/db-helper-context.sh"
+      - "tests/forge-tag-spelling.sh"
       - "tests/cs-clear.sh"
       - "tests/forge-appversion-scope.sh"
       - "tests/forge-singlefile-compressed.sh"
@@ -139,6 +140,7 @@ on:
       - "tests/vm-dialog-esc.sh"
       - "tests/forge-clean-install.sh"
       - "tests/db-helper-context.sh"
+      - "tests/forge-tag-spelling.sh"
       - "tests/cs-clear.sh"
       - "tests/forge-appversion-scope.sh"
       - "tests/forge-singlefile-compressed.sh"
@@ -297,6 +299,8 @@ jobs:
         run: bash tests/forge-clean-install.sh
       - name: Database helpers outside an install tests
         run: bash tests/db-helper-context.sh
+      - name: Pinned tag with or without its v tests
+        run: bash tests/forge-tag-spelling.sh
       - name: Screen clear without a terminal tests
         run: bash tests/cs-clear.sh
       - name: App version pin and .deb stamp tests
