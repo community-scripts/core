@@ -116,7 +116,6 @@ rc=0
 FAKE_AVAIL=900000 _forge_disk_full "$TEST_DIR/dst" || rc=$?
 check "a failure with space left is not blamed on the disk" 0 "$rc"
 
-# mountinfo: only what is mounted strictly below the target, escapes decoded.
 cat >"$TEST_DIR/mountinfo" <<'EOF'
 22 1 0:20 / / rw - ext4 /dev/root rw
 30 22 0:25 / /opt/app rw - zfs tank/app rw
@@ -134,14 +133,11 @@ rc=0
 _cs_mounts_under /opt/app found "$TEST_DIR/no-mountinfo" || rc=$?
 check "mountinfo: unreadable is an error" 1 "$rc"
 
-# Every path called mnt* counts as a mount, so no root is needed: the real
-# parser reads a mountinfo written from them.
 eval "real$(declare -f _cs_mounts_under)"
 _cs_mounts_under() {
   find "$TEST_DIR" -name 'mnt*' | sed 's/ /\\040/g; s|^|36 25 0:32 / |; s|$| rw - tmpfs tmpfs rw|' >"$TEST_DIR/mountinfo"
   real_cs_mounts_under "$1" "$2" "$TEST_DIR/mountinfo"
 }
-# node_modules has tens of thousands of directories; mountpoint ran once for each.
 mkdir -p "$TEST_DIR/bin-count"
 printf '#!/usr/bin/env bash\necho x >>"%s"\nexit 1\n' "$TEST_DIR/mountpoint.calls" >"$TEST_DIR/bin-count/mountpoint"
 chmod +x "$TEST_DIR/bin-count/mountpoint"

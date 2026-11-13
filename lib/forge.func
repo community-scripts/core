@@ -504,9 +504,7 @@ _download_source_tarball() {
   return 250
 }
 
-# Fills the array named <array> with the mount points strictly below <dir>, read
-# from mountinfo (resolved paths,  -style escapes decoded). Returns 1 when
-# mountinfo cannot be read.
+# Fills the array named <array> with the mount points strictly below <dir>; returns 1 when mountinfo is unreadable.
 _cs_mounts_under() {
   local dir="${1:?directory}" info="${3:-/proc/self/mountinfo}" mnt _
   local -n _cs_mounts="${2:?array name}"
@@ -544,8 +542,6 @@ _cs_clean_target_dir() {
     done
   fi
 
-  # The mounts are read once: asking mountpoint about every directory took
-  # minutes on a node_modules tree.
   local -a mounts=() prune=()
   if ! _cs_mounts_under "$dir" mounts; then
     msg_error "Cannot read /proc/self/mountinfo, so ${dir} is not emptied"

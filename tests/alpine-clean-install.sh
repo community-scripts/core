@@ -36,8 +36,6 @@ download_with_progress() { cp "$TEST_DIR/$archive" "$2"; }
 export HOME="$TEST_DIR/home"
 mkdir -p "$HOME" "$TEST_DIR/bin"
 
-# Every path called mnt* counts as a mount, so no root is needed: the real
-# parser reads a mountinfo written from them.
 eval "real$(declare -f _cs_mounts_under)"
 _cs_mounts_under() {
   find "$TEST_DIR" -name 'mnt*' | sed 's/ /\\040/g; s|^|36 25 0:32 / |; s|$| rw - tmpfs tmpfs rw|' >"$TEST_DIR/mountinfo"
@@ -92,8 +90,6 @@ for mode in tarball prebuild; do
   check "$mode: nested mount survives" "0 ./app ./data/mnt/file " "$(CLEAN_INSTALL=1 deploy "$mode" good.tar.gz)"
 done
 
-# busybox mountpoint compares device numbers and missed a bind mount from the
-# same filesystem; mountinfo lists it.
 setup
 mkdir -p "$target/data/mnt bind"
 echo mounted >"$target/data/mnt bind/file"

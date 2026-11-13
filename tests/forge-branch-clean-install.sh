@@ -34,8 +34,6 @@ export GIT_CONFIG_VALUE_0="https://github.com/"
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 
-# Every path called mnt* counts as a mount, so no root is needed: the real
-# parser reads a mountinfo written from them.
 eval "real$(declare -f _cs_mounts_under)"
 _cs_mounts_under() {
   find "$TEST_DIR" -name 'mnt*' | sed 's/ /\\040/g; s|^|36 25 0:32 / |; s|$| rw - tmpfs tmpfs rw|' >"$TEST_DIR/mountinfo"

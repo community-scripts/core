@@ -353,8 +353,7 @@ check_for_gh_release() {
 }
 
 # Empty a target directory before a clean install, leaving mount points and
-# CLEAN_INSTALL_KEEP paths alone. Same functions as in lib/forge.func, which
-# says why they are written this way.
+# CLEAN_INSTALL_KEEP paths alone, as in lib/forge.func.
 _cs_mounts_under() {
   local dir="${1:?directory}" info="${3:-/proc/self/mountinfo}" mnt _
   local -n _cs_mounts="${2:?array name}"
@@ -372,8 +371,6 @@ _cs_clean_target_dir() {
   [[ -d "$dir" ]] || return 0
   dir="$(realpath "$dir")" # mountinfo lists resolved paths
 
-  # Moved aside rather than pruned from find: a kept path can be nested, and
-  # removing its parent would take it along. mv also keeps a symlink a symlink.
   local -a keep=()
   [[ -n "${CLEAN_INSTALL_KEEP:-}" ]] && read -ra keep <<<"$CLEAN_INSTALL_KEEP"
   if ((${#keep[@]})); then
@@ -386,8 +383,6 @@ _cs_clean_target_dir() {
     done
   fi
 
-  # The mounts are read once: asking mountpoint about every directory took
-  # minutes on a node_modules tree.
   local -a mounts=() prune=()
   if ! _cs_mounts_under "$dir" mounts; then
     msg_error "Cannot read /proc/self/mountinfo, so ${dir} is not emptied"
@@ -406,9 +401,7 @@ _cs_clean_target_dir() {
       prune+=(-path "$entry" -prune -o)
     done
     list="$(mktemp)" || return 1
-    # Not rm -r on the list: it would hold the parents of a nested mount, and
-    # rm -r on one would empty the mount. Files first, then directories deepest
-    # first. rmdir fails on purpose on a parent that still holds a mount.
+    # Files first, then directories deepest first; rmdir fails on purpose on a parent that holds a mount.
     find "${dir:?}" -mindepth 1 "${prune[@]}" ! -type d -print0 >"$list"
     xargs -0 rm -f -- <"$list"
     find "${dir:?}" -mindepth 1 "${prune[@]}" -type d -print0 >"$list"
