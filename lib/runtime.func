@@ -1741,6 +1741,11 @@ setup_nodejs() {
         continue
       fi
 
+      # packageManager pins carry a hash (pnpm@12.14.0+sha512.<hex>) that npm
+      # list never prints, so the module was reinstalled on every run. Corepack
+      # above still gets the hash and checks it.
+      MODULE_REQ_VERSION="${MODULE_REQ_VERSION%%+*}"
+
       # The corepack shim is dropped by _cs_drop_pm_shim immediately before each
       # npm install below, never here. Dropping it up front deleted a working
       # binary and then let the version check decide there was nothing to
