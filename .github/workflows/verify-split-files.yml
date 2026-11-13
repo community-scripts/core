@@ -33,6 +33,7 @@ on:
       - "tests/pve-no-ip-facts.sh"
       - "tests/sudo-env.sh"
       - "tests/deb822-local-keyring.sh"
+      - "tests/ct-stop-facts.sh"
       - "tests/gpu-pci-class.sh"
       - "tests/hangup-host-commands.sh"
       - "tests/nvidia-version-pin.sh"
@@ -97,6 +98,7 @@ on:
       - "tests/pve-no-ip-facts.sh"
       - "tests/sudo-env.sh"
       - "tests/deb822-local-keyring.sh"
+      - "tests/ct-stop-facts.sh"
       - "tests/gpu-pci-class.sh"
       - "tests/hangup-host-commands.sh"
       - "tests/nvidia-version-pin.sh"
@@ -190,6 +192,9 @@ jobs:
 
       - name: deb822 local keyring tests
         run: bash tests/deb822-local-keyring.sh
+
+      - name: Container stop facts tests
+        run: bash tests/ct-stop-facts.sh
 
       - name: GPU detection by PCI class tests
         run: bash tests/gpu-pci-class.sh
