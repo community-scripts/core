@@ -458,7 +458,7 @@ setup_mariadb_db() {
     echo "User: $MARIADB_DB_USER"
     echo "Password: $MARIADB_DB_PASS"
   } >>"$CREDS_FILE"
-  chmod 600 "$CREDS_FILE"
+  [[ -f "$CREDS_FILE" ]] && chmod 600 "$CREDS_FILE"
 
   msg_ok "Set up MariaDB Database"
 
@@ -515,7 +515,7 @@ setup_mysql_db() {
     echo "User: $MYSQL_DB_USER"
     echo "Password: $MYSQL_DB_PASS"
   } >>"$CREDS_FILE"
-  chmod 600 "$CREDS_FILE"
+  [[ -f "$CREDS_FILE" ]] && chmod 600 "$CREDS_FILE"
 
   msg_ok "Set up MySQL Database"
 
@@ -1584,7 +1584,7 @@ setup_postgresql_db() {
     echo "User: $PG_DB_USER"
     echo "Password: $PG_DB_PASS"
   } >>"$CREDS_FILE"
-  chmod 600 "$CREDS_FILE"
+  [[ -f "$CREDS_FILE" ]] && chmod 600 "$CREDS_FILE"
 
   msg_ok "Set up PostgreSQL Database"
 
