@@ -2547,21 +2547,26 @@ fetch_and_deploy_gh_release() {
 # Fetch and deploy from URL
 # Downloads an archive from a URL and extracts/installs it. The type comes from
 # file(1), not from the URL, which often carries no usable extension: any
-# compressed tarball (gz, xz, bz2, zst, ...), zip, 7z or .deb.
+# compressed tarball (gz, xz, bz2, zst, ...), zip, 7z, .deb, or a bare ELF
+# executable.
 #
-# Usage: fetch_and_deploy_from_url "url" "directory"
-#   url       - URL to the archive
-#   directory - Destination path where the archive will be extracted
-#               (not used for .deb packages)
+# Usage: fetch_and_deploy_from_url "url" "directory" ["binary_name"]
+#   url         - URL to the archive
+#   directory   - Destination path where the archive will be extracted
+#                 (not used for .deb packages)
+#   binary_name - For a bare executable: the file name in <directory>
+#                 (default: the URL's file name)
 #
 # Examples:
 #   fetch_and_deploy_from_url "https://example.com/app.tar.xz" "/opt/myapp"
 #   fetch_and_deploy_from_url "https://example.com/app.zip" "/opt/myapp"
 #   fetch_and_deploy_from_url "https://example.com/package.deb" ""
+#   fetch_and_deploy_from_url "https://example.com/app-linux-amd64" "/opt/myapp" "app"
 # ------------------------------------------------------------------------------
 fetch_and_deploy_from_url() {
   local url="$1"
   local directory="${2:-}"
+  local binary_name="${3:-}"
 
   if [[ -z "$url" ]]; then
     msg_error "URL parameter is required"
@@ -2605,6 +2610,8 @@ fetch_and_deploy_from_url() {
     archive_type="deb"
   elif [[ "$file_desc" =~ POSIX.*tar.*archive|tar\ archive ]]; then
     archive_type="tar"
+  elif [[ "$file_desc" =~ ^ELF.*(executable|shared\ object) ]]; then
+    archive_type="binary"
   else
     msg_error "Unsupported or unknown archive type: $file_desc"
     return 65
@@ -2631,6 +2638,21 @@ fetch_and_deploy_from_url() {
   if [[ -z "$directory" ]]; then
     msg_error "Directory parameter is required for archive extraction"
     return 65
+  fi
+
+  # Replaced by rename, so a running binary keeps its inode and the swap is atomic.
+  if [[ "$archive_type" == "binary" ]]; then
+    local dest="${directory%/}/${binary_name:-$filename}"
+    mkdir -p "$directory" &&
+      install -m 755 "$tmpdir/$filename" "${dest}.new" &&
+      mv -f "${dest}.new" "$dest" || {
+      rm -f "${dest}.new"
+      _forge_disk_full "$directory" || return 252
+      msg_error "Failed to install ${dest}"
+      return 252
+    }
+    msg_ok "Installed ${dest}"
+    return 0
   fi
 
   msg_info "Extracting archive to $directory"
