@@ -2267,6 +2267,13 @@ _forge_is_script_app() {
   [[ "$fetched" == *"$script"* || "$script" == *"$fetched"* ]]
 }
 
+# Service units a package ships, templates (foo@) left out; none without systemd.
+_forge_deb_units() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  [[ -d /run/systemd/system ]] || return 0
+  dpkg -L "$1" 2>/dev/null | grep -E '/systemd/system/[^/@]+\.service$' | sed 's#.*/##' | sort -u
+}
+
 # ------------------------------------------------------------------------------
 # fetch_and_deploy_release()
 #
@@ -2460,6 +2467,19 @@ fetch_and_deploy_release() {
     local dpkg_opts=""
     [[ "${DPKG_FORCE_CONFOLD:-}" == "1" ]] && dpkg_opts="-o Dpkg::Options::=--force-confold"
     [[ "${DPKG_FORCE_CONFNEW:-}" == "1" ]] && dpkg_opts="-o Dpkg::Options::=--force-confnew"
+    # SYSTEMD_OFFLINE skips the package's own service start: restart what ran, start what a fresh install enabled.
+    local deb_pkg deb_fresh="" unit
+    local -a deb_was_active=()
+    deb_pkg="$(dpkg-deb -f "$tmpdir/$filename" Package 2>/dev/null)"
+    if [[ -n "$deb_pkg" ]]; then
+      if dpkg -s "$deb_pkg" >/dev/null 2>&1; then
+        for unit in $(_forge_deb_units "$deb_pkg"); do
+          systemctl is-active --quiet "$unit" 2>/dev/null && deb_was_active+=("$unit")
+        done
+      else
+        deb_fresh=1
+      fi
+    fi
     DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 $STD apt install -y $dpkg_opts "$tmpdir/$filename" || {
       SYSTEMD_OFFLINE=1 dpkg -i "$tmpdir/$filename" >"$tmpdir/dpkg.log" 2>&1 || {
         _diagnose_deb_failure "$tmpdir/$filename" "$tmpdir/dpkg.log"
@@ -2467,6 +2487,15 @@ fetch_and_deploy_release() {
         return 100
       }
     }
+    if [[ -n "$deb_pkg" ]]; then
+      for unit in $(_forge_deb_units "$deb_pkg"); do
+        if [[ " ${deb_was_active[*]} " == *" $unit "* ]]; then
+          systemctl restart "$unit" 2>/dev/null || msg_warn "${unit} did not restart after the ${deb_pkg} update"
+        elif [[ -n "$deb_fresh" ]] && systemctl is-enabled --quiet "$unit" 2>/dev/null; then
+          systemctl start "$unit" 2>/dev/null || msg_warn "${unit} did not start after installing ${deb_pkg}"
+        fi
+      done
+    fi
     ;;
 
   prebuild | singlefile)
