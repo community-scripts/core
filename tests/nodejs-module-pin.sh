@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# NODE_MODULE="$(jq -r .packageManager package.json)" passes pnpm@12.14.0+sha512.<hex>.
-# npm list prints 12.14.0, so the pin never matched and pnpm was reinstalled on
-# every update.
 set -uo pipefail
 
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -28,7 +25,6 @@ command() {
   builtin command "$@"
 }
 
-# Node 22 installed, Node 22 wanted, pnpm 12.14.0 already global.
 is_tool_installed() { echo 22; }
 cleanup_legacy_install() { :; }
 ensure_apt_working() { :; }

@@ -1741,9 +1741,7 @@ setup_nodejs() {
         continue
       fi
 
-      # packageManager pins carry a hash (pnpm@12.14.0+sha512.<hex>) that npm
-      # list never prints, so the module was reinstalled on every run. Corepack
-      # above still gets the hash and checks it.
+      # npm list never prints the +sha512 hash of a packageManager pin; Corepack still checks it.
       MODULE_REQ_VERSION="${MODULE_REQ_VERSION%%+*}"
 
       # The corepack shim is dropped by _cs_drop_pm_shim immediately before each
