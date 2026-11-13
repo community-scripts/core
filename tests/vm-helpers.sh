@@ -158,6 +158,38 @@ done
 if vm_image_checksum "https://sourceforge.net/projects/x/files/a.iso/download" >/dev/null; then fail "unknown hosts have no checksum"; fi
 ok "vendor checksum files are derived from the download URL"
 
+# ── Debian latest/ without the image ────────────────────────────────────────
+# 20261111-2659 shipped no nocloud-amd64, and latest/ pointed at it: docker-vm
+# and debian-vm failed with 404 until the next build (VE #18702).
+DEB=https://cloud.debian.org/images/cloud/trixie
+fixture "$DEB/" <<'EOF'
+<a href="20261026-2643/">20261026-2643/</a> <a href="20261103-2651/">20261103-2651/</a>
+<a href="20261111-2659/">20261111-2659/</a> <a href="daily/">daily/</a> <a href="latest/">latest/</a>
+EOF
+fixture "$DEB/daily/" <<<'<a href="20261111-2659/">x</a> <a href="20261112-2660/">x</a>'
+HEAD_OK["$DEB/latest/debian-13-generic-amd64.qcow2"]=1
+HEAD_OK["$DEB/20261103-2651/debian-13-nocloud-amd64-20261103-2651.qcow2"]=1
+HEAD_OK["$DEB/20261026-2643/debian-13-nocloud-amd64-20261026-2643.qcow2"]=1
+HEAD_OK["$DEB/daily/20261112-2660/debian-13-generic-amd64-daily-20261112-2660.qcow2"]=1
+assert_eq "$(_vm_debian_build_url "$DEB/latest/debian-13-generic-amd64.qcow2")" "$DEB/latest/debian-13-generic-amd64.qcow2" "latest/ that has the image"
+assert_eq "$(_vm_debian_build_url "$DEB/latest/debian-13-nocloud-amd64.qcow2")" \
+  "$DEB/20261103-2651/debian-13-nocloud-amd64-20261103-2651.qcow2" "the newest build that has it"
+assert_eq "$(_vm_debian_build_url "$DEB/daily/latest/debian-13-generic-amd64-daily.qcow2")" \
+  "$DEB/daily/20261112-2660/debian-13-generic-amd64-daily-20261112-2660.qcow2" "daily builds"
+assert_eq "$(_vm_debian_build_url "$DEB/latest/debian-13-nocloud-riscv64.qcow2")" "$DEB/latest/debian-13-nocloud-riscv64.qcow2" "no build has it"
+assert_eq "$(_vm_debian_build_url https://dl.test/openwrt.img.gz)" https://dl.test/openwrt.img.gz "other hosts"
+ok "a Debian latest/ without the image falls back to the newest build that has it"
+
+reset_logs
+fixture "$DEB/20261103-2651/debian-13-nocloud-amd64-20261103-2651.qcow2" <"$IMAGE"
+fixture "$DEB/20261103-2651/SHA512SUMS" <<<"${IMAGE_SHA512}  debian-13-nocloud-amd64-20261103-2651.qcow2"
+vm_fetch_image "$DEB/latest/debian-13-nocloud-amd64.qcow2" "$TEST_DIR/cache/debian-13-nocloud-amd64.qcow2" ||
+  fail "a missing latest/ image must come from the build that has it"
+cmp -s "$IMAGE" "$TEST_DIR/cache/debian-13-nocloud-amd64.qcow2" || fail "the image kept its cache name"
+assert_contains "$LOG" "$DEB/20261103-2651/SHA512SUMS"
+assert_contains "$WARNINGS" "using build 20261103-2651"
+ok "vm_fetch_image downloads and verifies it from that build"
+
 # ── vm_fetch_image checksum options ─────────────────────────────────────────
 fixture "https://dl.test/openwrt.img.gz" <"$IMAGE"
 reset_logs

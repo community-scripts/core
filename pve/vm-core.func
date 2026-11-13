@@ -1832,6 +1832,23 @@ vm_prompt_start_vm() {
   echo -e "${GATEWAY}${BOLD}${DGN}Start VM when completed: ${BGN}${START_VM}${CL}"
 }
 
+# cloud.debian.org points latest/ at its newest build even when that build lacks
+# an image (20261111-2659 has no nocloud-amd64) or a mirror has not synced it.
+# Echoes the newest of the last five dated builds that has the file, else the URL.
+_vm_debian_build_url() {
+  local url="$1" base file dir
+  [[ "$url" =~ ^(https://cloud\.debian\.org/images/cloud/[a-z]+(/daily)?)/latest/([^/]+)$ ]] || { echo "$url"; return 0; }
+  base="${BASH_REMATCH[1]}" file="${BASH_REMATCH[3]}"
+  curl -fsIL --max-time 15 -o /dev/null "$url" 2>/dev/null && { echo "$url"; return 0; }
+  for dir in $(curl -fsSL --max-time 15 "$base/" 2>/dev/null | grep -oE 'href="[0-9]{8}-[0-9]+/"' | grep -oE '[0-9]{8}-[0-9]+' | sort -ru | head -n 5); do
+    if curl -fsIL --max-time 15 -o /dev/null "$base/$dir/${file%.*}-$dir.${file##*.}" 2>/dev/null; then
+      echo "$base/$dir/${file%.*}-$dir.${file##*.}"
+      return 0
+    fi
+  done
+  echo "$url"
+}
+
 # Downloads an image and proves it is the image. A bad mirror serves HTML with
 # status 200, so size decides rather than curl's exit code. Vendors also respin
 # images without updating the published checksum at the same byte count, so
@@ -1938,6 +1955,13 @@ vm_fetch_image() {
     *) msg_error "vm_fetch_image: unknown option $1"; return 2 ;;
     esac
   done
+
+  local resolved
+  resolved="$(_vm_debian_build_url "$url")"
+  if [[ "$resolved" != "$url" ]]; then
+    msg_warn "cloud.debian.org has no $(basename "$url") in latest/ right now; using build $(basename "$(dirname "$resolved")")"
+    url="$resolved"
+  fi
 
   if [[ -n "$sha256" ]]; then
     sha_tool=sha256sum sha_want="${sha256,,}"
