@@ -100,6 +100,19 @@ expect "the designated release still resolves" 0 "$?"
 expect "the designated release is used" v3.0.0 "$(jq -r .tag_name "$OUT")"
 expect "only one request was needed" 1 "$(grep -c curl "$CALLS")"
 
+prefixed() {
+  : >"$CALLS"
+  : >"$OUT"
+  _forge_release_json github maplibre/martin latest "martin-v" "$OUT"
+}
+MOCK_LATEST_CODE=200 MOCK_LATEST_BODY='{"tag_name":"martin-v1.16.1","draft":false,"prerelease":false}' \
+  MOCK_BODY='[{"tag_name":"mbtiles-v0.15.0","draft":false,"prerelease":false}]' prefixed
+expect "a prefix takes the designated release when it carries the prefix" martin-v1.16.1 "$(jq -r .tag_name "$OUT")"
+expect "without asking for the list" 1 "$(grep -c curl "$CALLS")"
+MOCK_LATEST_CODE=200 MOCK_LATEST_BODY='{"tag_name":"mbtiles-v0.15.0","draft":false,"prerelease":false}' \
+  MOCK_BODY='[{"tag_name":"martin-v1.16.1","draft":false,"prerelease":false},{"tag_name":"mbtiles-v0.15.0","draft":false,"prerelease":false}]' prefixed
+expect "another product's designated release falls back to the list" martin-v1.16.1 "$(jq -r .tag_name "$OUT")"
+
 # databasement: without jq the prefixed lookup read "no tags" and built a URL without a version.
 (
   ensure_dependencies() {

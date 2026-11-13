@@ -1645,9 +1645,10 @@ _forge_release_json() {
     # The maintainer's own "latest" marking beats anything the tag strings can
     # tell us: it is what separates a release line from nightlies, betas and a
     # second product's tags in the same repo, none of which are reliably
-    # flagged prerelease. Only the unfiltered, stable case can use it.
-    if [[ -z "$tag_prefix" && "${GH_INCLUDE_PRERELEASE:-0}" != "1" ]] &&
-      _forge_designated_release "$forge" "$base" "$repo_path" "$out"; then
+    # flagged prerelease. Only the stable case can use it; a tag prefix only when that release carries it.
+    if [[ "${GH_INCLUDE_PRERELEASE:-0}" != "1" ]] &&
+      _forge_designated_release "$forge" "$base" "$repo_path" "$out" &&
+      [[ -z "$tag_prefix" || "$(jq -r '.tag_name // ""' "$out" 2>/dev/null)" == "$tag_prefix"* ]]; then
       [[ "$forge" == "github" ]] && _forge_keep_raw "$out"
       return 0
     fi
