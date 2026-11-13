@@ -2432,8 +2432,7 @@ EOF
       }
       msg_ok "Updated ruby-build definitions"
     fi
-    # The build tree goes to disk: /tmp is tmpfs on Debian 13, where it counted
-    # against the container's memory. The docs took minutes and no server reads them.
+    # /tmp is tmpfs on Debian 13 and counts against the container's memory
     local build_tmp
     build_tmp="$(mktemp -d -p /var/tmp ruby-build.XXXXXX 2>/dev/null)" || build_tmp=""
     $STD env TMPDIR="${build_tmp:-/tmp}" RUBY_CONFIGURE_OPTS="--disable-install-doc ${RUBY_CONFIGURE_OPTS:-}" "$RBENV_BIN" install "$RUBY_VERSION" || {

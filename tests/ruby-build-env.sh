@@ -29,7 +29,6 @@ apt-cache() { echo found; }
 apt() { :; }
 cache_installed_version() { :; }
 
-# rbenv and ruby-build are already there; the fake rbenv records how install runs.
 export HOME="$TEST_DIR/home"
 RBENV="$HOME/.rbenv"
 mkdir -p "$RBENV/bin" "$RBENV/plugins/ruby-build/share/ruby-build"
