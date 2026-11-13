@@ -49,12 +49,16 @@ devscripts_telemetry() {
   marker="${dir}/devscripts-telemetry-accepted"
 
   if [[ ! -f "$marker" ]]; then
-    local text="DevScripts are testing builds. Their install telemetry decides which scripts are ready for ProxmoxVE, so it is always on for scripts from this repository, whatever your DIAGNOSTICS setting is.
+    local text="DevScripts are testing builds and always send anonymous install
+telemetry. This helps the team decide which scripts are ready for release.
 
-Sent with each run, anonymously: the script name, success or failure with the error message, install time, CPU, RAM, disk, GPU, OS and Proxmox version.
+What is sent: script name, success/failure with error message, install
+time, hardware (CPU, RAM, disk, GPU), OS, and Proxmox version.
 
-Your setting for ProxmoxVE scripts does not change.
-Data: https://telemetry.community-scripts.org"
+Your DIAGNOSTICS setting for regular scripts is unchanged.
+Data: https://telemetry.community-scripts.org/
+
+Selecting Exit closes this script."
     local interactive=0
     if [[ -t 0 && "${TERM:-dumb}" != "dumb" ]] && command -v whiptail &>/dev/null; then
       interactive=1
