@@ -1306,9 +1306,7 @@ _forge_descriptor() {
 # on beta38 never saw the rc. The numeric core is now padded to one width and
 # followed by a rank for the pre-release label (dev < alpha < beta < pre < rc
 # < none), then the digits that follow it. Any other suffix ranks as a final
-# release, so -ls45 or -1 revisions still order by their number. A single
-# letter right after the last digit is a revision too: release-2026-07-14c
-# (DokuWiki) or 1.1.1w (OpenSSL) rank above the same version without it.
+# release, so -ls45 or -1 revisions still order by their number.
 _FORGE_JQ_VKEY_DEF='def _forge_vkey:
   sub("^[^0-9]*"; "")
   | (ascii_downcase | capture("[0-9](?<s>[a-z])$") // {s: ""}).s as $rev
