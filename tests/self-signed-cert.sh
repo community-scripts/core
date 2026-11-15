@@ -43,5 +43,13 @@ create_self_signed_cert demo
 check "an expiring certificate is renewed" "825" "$(days_left)"
 check "and the key stays private" "600" "$(stat -c %a "$TEST_DIR/demo/demo.key")"
 
+# GitHub's runners have a 66-character FQDN; a CN takes at most 64.
+hostname() { case "$1" in -f) echo "runnervmccnms.3w315rw44o5elhmmntizv1xeth.bx.internal.cloudapp.net" ;; *) command hostname "$@" ;; esac; }
+mv "$TEST_DIR/demo" "$TEST_DIR/demo.before"
+create_self_signed_cert demo
+check "a FQDN longer than a CN allows still gets a certificate" "825" "$(days_left)"
+check "with the full name in its SAN" 1 "$(openssl x509 -noout -ext subjectAltName -in "$crt" 2>/dev/null | grep -c 'runnervmccnms.3w315rw44o5elhmmntizv1xeth.bx.internal.cloudapp.net')"
+unset -f hostname
+
 echo "${passed} passed, ${failed} failed"
 [[ "$failed" -eq 0 ]]
