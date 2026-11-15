@@ -2178,13 +2178,14 @@ create_self_signed_cert() {
     return 100
   }
 
-  local san="DNS:${HOSTNAME},DNS:localhost,IP:${IP},IP:127.0.0.1"
+  local san="DNS:${HOSTNAME},DNS:localhost,IP:127.0.0.1" cn="${HOSTNAME%%.*}"
+  [[ -n "$IP" ]] && san="${san},IP:${IP}"
   [[ -n "$EXTRA_SAN" ]] && san="${san},${EXTRA_SAN}"
 
   mkdir -p "$CERT_DIR"
   # 825 days is the most macOS and iOS accept, even for a certificate the user trusts.
   $STD openssl req -new -newkey rsa:2048 -days 825 -nodes -x509 \
-    -subj "/CN=${HOSTNAME}" \
+    -subj "/CN=${cn:0:64}" \
     -addext "subjectAltName=${san}" \
     -keyout "$CERT_KEY" \
     -out "$CERT_CRT" || {
