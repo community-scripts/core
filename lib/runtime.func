@@ -2538,7 +2538,16 @@ setup_rust() {
   # Scenario 1: Rustup not installed - fresh install
   if ! command -v rustup &>/dev/null; then
     msg_info "Setup Rust ($RUST_TOOLCHAIN, profile: $RUST_PROFILE)"
-    curl -fsSL https://sh.rustup.rs | $STD sh -s -- -y --profile "$RUST_PROFILE" --default-toolchain "$RUST_TOOLCHAIN" || {
+    # rustup gives up on a connection reset halfway through a component
+    local _rust_try _rust_ok=0
+    for _rust_try in 1 2 3; do
+      if curl -fsSL https://sh.rustup.rs | $STD sh -s -- -y --profile "$RUST_PROFILE" --default-toolchain "$RUST_TOOLCHAIN"; then
+        _rust_ok=1
+        break
+      fi
+      [[ "$_rust_try" -lt 3 ]] && sleep $((_rust_try * 10))
+    done
+    [[ "$_rust_ok" -eq 1 ]] || {
       msg_error "Failed to install Rust"
       msg_error "Hint: Check connectivity to sh.rustup.rs and static.rust-lang.org"
       return 7
