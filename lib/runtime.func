@@ -1794,25 +1794,44 @@ setup_nodejs() {
     # removed without a reinstall behind it, a half-finished global install --
     # each leaves a module npm still lists while `command -v` finds nothing, and
     # the caller is about to run exactly that binary. So ask the question the
-    # caller cares about, and put back whatever cannot answer it.
-    local mod_bin
+    # caller cares about, and put back whatever cannot answer it. The binaries
+    # come from the package's own bin field: single-file-cli installs
+    # `single-file`, @vue/cli installs `vue`.
+    local mod_pkg mod_bin mod_bins missing still npm_root
+    npm_root="$(npm root -g 2>/dev/null)"
     for mod in "${MODULES[@]}"; do
-      # Scoped packages do not name their binary (@vue/cli installs `vue`), so
-      # there is nothing reliable to probe for.
-      [[ "$mod" == @*/* ]] && continue
-      mod_bin="${mod%@*}"
-      [[ -z "$mod_bin" ]] && continue
-      command -v "$mod_bin" >/dev/null 2>&1 && continue
-
-      msg_warn "$mod_bin is installed but not on PATH - reinstalling"
-      if { $STD npm install -g --force "$mod" 2>/dev/null ||
-        $STD npm install -g --force "${mod_bin}@latest" 2>/dev/null; } &&
-        command -v "$mod_bin" >/dev/null 2>&1; then
-        msg_ok "Restored $mod_bin"
+      if [[ "$mod" == @* ]]; then
+        mod_pkg="${mod#@}"
+        mod_pkg="@${mod_pkg%@*}"
       else
-        msg_error "$mod_bin is not callable and could not be restored"
-        [[ " ${failed_modules[*]:-} " == *" $mod_bin "* ]] || failed_modules+=("$mod_bin")
+        mod_pkg="${mod%@*}"
       fi
+      [[ -n "$mod_pkg" ]] || continue
+      mod_bins=""
+      [[ -n "$npm_root" && -f "$npm_root/$mod_pkg/package.json" ]] &&
+        mod_bins="$(node -e 'const p=require(process.argv[1]);const b=p.bin;if(typeof b==="string")console.log(p.name.replace(/^@[^/]+\//,""));else if(b)console.log(Object.keys(b).join(" "))' "$npm_root/$mod_pkg/package.json" 2>/dev/null)"
+      [[ -z "$mod_bins" && "$mod_pkg" != @*/* ]] && mod_bins="$mod_pkg"
+      missing=""
+      for mod_bin in $mod_bins; do
+        command -v "$mod_bin" >/dev/null 2>&1 || missing+=" $mod_bin"
+      done
+      [[ -z "$missing" ]] && continue
+
+      msg_warn "${missing# } is installed but not on PATH - reinstalling"
+      still="$missing"
+      if $STD npm install -g --force "$mod" 2>/dev/null ||
+        $STD npm install -g --force "${mod_pkg}@latest" 2>/dev/null; then
+        still=""
+        for mod_bin in $missing; do
+          command -v "$mod_bin" >/dev/null 2>&1 || still+=" $mod_bin"
+        done
+      fi
+      if [[ -z "$still" ]]; then
+        msg_ok "Restored $mod_pkg"
+        continue
+      fi
+      msg_error "${still# } is not callable and could not be restored"
+      [[ " ${failed_modules[*]:-} " == *" $mod_pkg "* ]] || failed_modules+=("$mod_pkg")
     done
 
     if ((${#failed_modules[@]} > 0)); then
