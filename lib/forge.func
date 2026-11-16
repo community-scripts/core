@@ -2271,7 +2271,7 @@ _forge_is_script_app() {
 _forge_deb_units() {
   command -v systemctl >/dev/null 2>&1 || return 0
   [[ -d /run/systemd/system ]] || return 0
-  dpkg -L "$1" 2>/dev/null | grep -E '/systemd/system/[^/@]+\.service$' | sed 's#.*/##' | sort -u
+  dpkg -L "$1" 2>/dev/null | sed -n 's#.*/systemd/system/\([^/@]\+\.service\)$#\1#p' | sort -u
 }
 
 # ------------------------------------------------------------------------------
