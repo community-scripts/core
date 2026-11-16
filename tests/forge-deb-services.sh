@@ -43,8 +43,14 @@ dpkg() {
   case "$1" in
   --print-architecture) echo amd64 ;;
   -s) [[ "$INSTALLED" == yes ]] ;;
-  -L) printf '%s\n' /usr/bin/demo /lib/systemd/system/demo.service \
-    /lib/systemd/system/demo-worker.service /lib/systemd/system/demo-job@.service ;;
+  -L)
+    if [[ "${NO_UNITS:-}" == yes ]]; then
+      echo /usr/bin/demo
+    else
+      printf '%s\n' /usr/bin/demo /lib/systemd/system/demo.service \
+        /lib/systemd/system/demo-worker.service /lib/systemd/system/demo-job@.service
+    fi
+    ;;
   esac
 }
 systemctl() {
@@ -73,6 +79,11 @@ check "a unit stopped before the update stays stopped" "" "$(deploy)"
 
 INSTALLED=yes ACTIVE="demo.service" ENABLED="demo.service"
 check "templates are never touched" "0" "$(deploy >/dev/null; grep -c 'demo-job@' "$LOG")"
+
+NO_UNITS=yes
+_forge_deb_units demo >/dev/null
+check "a package without units is not an error" "0" "$?"
+unset NO_UNITS
 
 echo "${passed} passed, ${failed} failed"
 [[ "$failed" -eq 0 ]]
