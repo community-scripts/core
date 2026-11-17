@@ -52,15 +52,12 @@ often around 10 GiB, which is why the backend prints how to grow it.
 
 **Not every operator is root.** An Incus host is routinely driven by an
 unprivileged user. That is why `community_scripts_dir()` exists at all, and why
-the header cache, logs and defaults all go through it. It also means
-`kernel.keys.maxkeys` cannot be written from an unprivileged user namespace, so
-that sysctl is set only for privileged containers, and only when the host value
-is actually below the target.
+the header cache, logs and defaults all go through it.
 
-**Optional settings must not brick the container.** A rejected `linux.sysctl.*`
-key stops the instance from starting, so they are applied softly and rolled back
-on failure — and the rollback confirms the container really is running via
-`incus list -c s`, rather than trusting the exit status of a start.
+**No per-container `kernel.keys.maxkeys`.** lxc applies `linux.sysctl.*` with
+`/proc/sys` already read-only, so that key stopped privileged and unprivileged
+containers alike from starting. A failed restart is still recovered by a forced
+stop and start, confirmed via `incus list -c s` rather than the exit status.
 
 **No pty.** The install runs through `incus exec` *without* `-t`. Allocating one
 looks harmless and is not: apt's dpkg progress does a `tcsetattr` on stdin, gets
