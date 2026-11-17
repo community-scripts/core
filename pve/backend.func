@@ -3141,7 +3141,7 @@ create_lxc_container() {
   # Downloads a linuxcontainers rootfs template to $1.
   # Does Proxmox offer this OS/version/arch? Local first, then the catalog.
   _pveam_offers_template() {
-    local search pattern
+    local search pattern list rc=0
     search="${PCT_OSTYPE}-${PCT_OSVERSION:-}"
     case "$PCT_OSTYPE" in
     debian | ubuntu) pattern="-standard_" ;;
@@ -3149,10 +3149,15 @@ create_lxc_container() {
     *) pattern="" ;;
     esac
 
-    if pveam list "$TEMPLATE_STORAGE" 2>/dev/null |
-      awk -v s="$search" -v p="$pattern" -v a="$ARCH" \
-        '$1 ~ s && $1 ~ p && $1 ~ ("_" a "\\.(tar\\.zst|tar\\.xz|tar\\.gz)$") {found=1}
-         END {exit !found}'; then
+    list="$(_cs_bounded 30 pveam list "$TEMPLATE_STORAGE")" || rc=$?
+    if ((rc == 124)); then
+      msg_error "Template storage '$TEMPLATE_STORAGE' does not answer: 'pveam list $TEMPLATE_STORAGE' was still running after 30 s."
+      msg_custom "🔧" "${YW}" "Check it with 'pvesm status' (and 'zpool status' for ZFS), or pick another template storage in the advanced settings."
+      exit 217
+    fi
+    if awk -v s="$search" -v p="$pattern" -v a="$ARCH" \
+      '$1 ~ s && $1 ~ p && $1 ~ ("_" a "\\.(tar\\.zst|tar\\.xz|tar\\.gz)$") {found=1}
+       END {exit !found}' <<<"$list"; then
       return 0
     fi
 
@@ -3421,7 +3426,12 @@ create_lxc_container() {
   CUSTOM_TEMPLATE_VARIANT=""
   CUSTOM_TEMPLATE_PATH=""
 
-  if ! _pveam_offers_template; then
+  local _pveam_miss=""
+  msg_info "Looking up the ${PCT_OSTYPE} ${PCT_OSVERSION:-} template"
+  _pveam_offers_template || _pveam_miss=1
+  # Both paths open their own block next; a later msg_ok must not resume this one.
+  _MSG_BLOCKS=()
+  if [[ -n "$_pveam_miss" ]]; then
     msg_info "No Proxmox template for ${PCT_OSTYPE} ${PCT_OSVERSION:-} on ${ARCH}, trying linuxcontainers.org"
 
     _lxc_catalog_index="$(mktemp)"
