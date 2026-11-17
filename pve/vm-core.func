@@ -710,6 +710,7 @@ error_handler() {
   local command="${2:-unknown}"
 
   _EH_REPORTING=1
+  [[ "${_VM_QM_FAILED_LINE:-}" == "$line_number" ]] && command="$_VM_QM_FAILED_CMD"
   _vm_take_silent_failure "$line_number" && command="$_SILENT_FAILED_CMD_SEEN"
   FAILED_COMMAND="$command" FAILED_LINE="$line_number" FAILED_FUNCTION="${FUNCNAME[1]:-}"
   export FAILED_COMMAND FAILED_LINE FAILED_FUNCTION
@@ -767,8 +768,22 @@ vm_claim_vmid() {
   return 0
 }
 
+# Until this run's own qm create succeeds, qm runs through here; cleanup_vmid removes only that VM.
+_VM_CREATED_ID=""
+qm() {
+  local rc=0
+  command qm "$@" || rc=$?
+  if ((rc != 0)); then
+    _VM_QM_FAILED_LINE="${BASH_LINENO[0]}" _VM_QM_FAILED_CMD="qm $*"
+  elif [[ "${1:-}" == create ]]; then
+    _VM_CREATED_ID="${2:-}"
+    unset -f qm
+  fi
+  return "$rc"
+}
+
 cleanup_vmid() {
-  if [[ -z "${VMID:-}" ]]; then
+  if [[ -z "${VMID:-}" || "$VMID" != "${_VM_CREATED_ID:-}" ]]; then
     return
   fi
   if qm status "$VMID" &>/dev/null; then
@@ -1008,7 +1023,17 @@ vm_check_dialog_env() {
 # them, so a run needs no tty. Names are prefixed because VMID, HN and friends
 # are the script's own working variables.
 vm_apply_env_overrides() {
-  [[ -n "${VM_VMID:-}" ]] && VMID="$VM_VMID"
+  if [[ -n "${VM_VMID:-}" ]]; then
+    if [[ ! "$VM_VMID" =~ ^[1-9][0-9]{2,8}$ ]]; then
+      msg_error "VM_VMID ${VM_VMID} is not a number from 100 to 999999999"
+      exit 205
+    fi
+    if pct status "$VM_VMID" &>/dev/null || qm status "$VM_VMID" &>/dev/null; then
+      msg_error "VM_VMID ${VM_VMID} is already in use by a VM or container"
+      exit 206
+    fi
+    VMID="$VM_VMID"
+  fi
   [[ -n "${VM_DISK_SIZE:-}" ]] && DISK_SIZE="$VM_DISK_SIZE"
   [[ -n "${VM_DISK_CACHE:-}" ]] && DISK_CACHE="$VM_DISK_CACHE"
   [[ -n "${VM_HOSTNAME:-}" ]] && HN="$VM_HOSTNAME"
