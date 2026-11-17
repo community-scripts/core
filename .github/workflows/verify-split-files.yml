@@ -46,10 +46,12 @@ on:
       - "tests/nodejs-npm-restore.sh"
       - "tests/forge-connection.sh"
       - "tests/failed-command-output.sh"
+      - "tests/failed-command-source-line.sh"
       - "tests/stale-silent-record.sh"
       - "tests/tool-run-log.sh"
       - "tests/exit-code-hints.sh"
       - "tests/telemetry-trace.sh"
+      - "tests/telemetry-redaction.sh"
       - "tests/host-probes.sh"
       - "tests/forge-release-json.sh"
       - "tests/install-cleanup.sh"
@@ -118,10 +120,12 @@ on:
       - "tests/nodejs-npm-restore.sh"
       - "tests/forge-connection.sh"
       - "tests/failed-command-output.sh"
+      - "tests/failed-command-source-line.sh"
       - "tests/stale-silent-record.sh"
       - "tests/tool-run-log.sh"
       - "tests/exit-code-hints.sh"
       - "tests/telemetry-trace.sh"
+      - "tests/telemetry-redaction.sh"
       - "tests/host-probes.sh"
       - "tests/forge-release-json.sh"
       - "tests/install-cleanup.sh"
@@ -245,6 +249,8 @@ jobs:
 
       - name: Failed command output tests
         run: bash tests/failed-command-output.sh
+      - name: Failed command source line tests
+        run: bash tests/failed-command-source-line.sh
       - name: Stale silent record tests
         run: bash tests/stale-silent-record.sh
       - name: Tool run log tests
@@ -255,6 +261,8 @@ jobs:
 
       - name: Telemetry trace tests
         run: bash tests/telemetry-trace.sh
+      - name: Telemetry redaction tests
+        run: bash tests/telemetry-redaction.sh
 
       - name: Host probe tests
         run: bash tests/host-probes.sh
