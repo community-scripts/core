@@ -13,7 +13,7 @@
 #
 #   EXIT_CODE=<n>
 #   LINE=<n>
-#   COMMAND=<command, one line>
+#   COMMAND=<command as written in the script, one line>
 #   FUNCTION=<function the command ran in>
 #   STEP=<msg_info text of the running step>
 #   MESSAGE=<first msg_error of that step>
@@ -88,10 +88,16 @@ _TM_NOISE=(
 )
 _TM_NOISE_RE="^($(IFS='|'; echo "${_TM_NOISE[*]}"))"
 
-# stdin filter: ANSI and CR stripped, IPv4 anonymised, noise and blank lines dropped
+# stdin filter: ANSI and CR stripped, addresses and credentials masked, noise and blank lines dropped
 _tm_clean_log() {
   sed -E -e 's/\r$//' -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\\(033|e)\[[0-9;?]*[a-zA-Z]//g' \
-    -e 's/\b([0-9]{1,3})\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b/\1.x.x.x/g' |
+    -e 's/\b([0-9]{1,3})\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b/\1.x.x.x/g' \
+    -e 's#([A-Za-z][A-Za-z0-9+.-]*://)[^/?@[:space:]]+@#\1***@#g' \
+    -e 's/([A-Za-z0-9_.-]*(pass(wd|word)?([_.0-9-][A-Za-z0-9_.-]*)?|(token|secret|api[_-]?key|authorization)[A-Za-z0-9_.-]*)\\?["'\'']?[[:space:]]*[=:][[:space:]]*\\?["'\'']?((bearer|basic|token|digest)[[:space:]]+)?)[^[:space:]"'\'',;&\\:=][^[:space:]"'\'',;&\\]*/\1***/Ig' \
+    -e 's/((password|identified( with [^[:space:]]+)? by)[[:space:]]+)(["'\''])[^"'\'']*["'\'']/\1\4***\4/Ig' \
+    -e '/@[^[:space:]]*\.(service|socket|timer|target|mount|path|slice|scope)\b/!s/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/<email>/g' \
+    -e 's/(^|[^[:alnum:]:])[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}/\1<mac>/g' \
+    -e 's/(^|[^[:alnum:]:])([0-9A-Fa-f]{1,4}(:[0-9A-Fa-f]{1,4}){7}|[0-9A-Fa-f]{1,4}(:[0-9A-Fa-f]{1,4}){0,6}::([0-9A-Fa-f]{1,4}(:[0-9A-Fa-f]{1,4}){0,6})?|::[0-9A-Fa-f]{1,4}(:[0-9A-Fa-f]{1,4}){0,6})/\1<ipv6>/g' |
     grep -avE "$_TM_NOISE_RE" | grep -avE '^[[:space:]]*$' || true
 }
 
