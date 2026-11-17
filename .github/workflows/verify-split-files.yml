@@ -34,6 +34,7 @@ on:
       - "tests/pve-no-ip-facts.sh"
       - "tests/sudo-env.sh"
       - "tests/template-broken.sh"
+      - "tests/template-catalog-timeout.sh"
       - "tests/deb822-local-keyring.sh"
       - "tests/ct-stop-facts.sh"
       - "tests/gpu-pci-class.sh"
@@ -106,6 +107,7 @@ on:
       - "tests/pve-no-ip-facts.sh"
       - "tests/sudo-env.sh"
       - "tests/template-broken.sh"
+      - "tests/template-catalog-timeout.sh"
       - "tests/deb822-local-keyring.sh"
       - "tests/ct-stop-facts.sh"
       - "tests/gpu-pci-class.sh"
@@ -209,6 +211,9 @@ jobs:
 
       - name: Broken template tests
         run: bash tests/template-broken.sh
+
+      - name: Template catalog timeout tests
+        run: bash tests/template-catalog-timeout.sh
 
       - name: deb822 local keyring tests
         run: bash tests/deb822-local-keyring.sh
