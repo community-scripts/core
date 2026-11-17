@@ -140,10 +140,9 @@ _tm_find_errinfo() {
   local candidate
   for candidate in \
     "${TELEMETRY_ERRINFO:-}" \
-    "/tmp/.errinfo-${SESSION_ID:-none}" \
     "${BUILD_LOG:-/nonexistent}.errinfo" \
     "${INSTALL_LOG:-/nonexistent}.errinfo"; do
-    if [[ -n "$candidate" && -s "$candidate" ]]; then
+    if [[ -f "$candidate" && ! -L "$candidate" && -s "$candidate" ]]; then
       echo "$candidate"
       return 0
     fi
@@ -195,7 +194,7 @@ _tm_error_context() {
       TM_ERR_FUNCTION=$(sed -n 's/^FUNCTION=//p' "$errinfo" | head -n1)
       local phase v
       phase=$(sed -n 's/^PHASE=//p' "$errinfo" | head -n1)
-      [[ -z "$phase" && "$errinfo" == "/tmp/.errinfo-${SESSION_ID:-none}" ]] && phase="container"
+      [[ -z "$phase" && "$errinfo" == */.errinfo-"${SESSION_ID:-none}" ]] && phase="container"
       if [[ "$phase" == "container" ]]; then
         # The host's own message ("Installation failed in container ...") says nothing the container did not.
         TM_ERR_PHASE="container"
