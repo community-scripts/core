@@ -30,7 +30,10 @@ pct() {
 journalctl() {
   case " $* " in
   *" -k "*) cat "$TEST_DIR/kernel" ;;
-  *" -D $ROOT/var/log/journal "*) cat "$TEST_DIR/ctjournal" ;;
+  *" -D $ROOT/var/log/journal "*)
+    cat "$TEST_DIR/ctjournal"
+    find -L "$ROOT/var/log/journal" -name '*.journal' -type f -exec cat {} +
+    ;;
   *) return 1 ;;
   esac
 }
@@ -65,6 +68,42 @@ for i in $(seq 1 30); do echo "Nov 11 10:48:0$((i % 10)) ct kernel: line $i" >>"
 out="$(_pve_ct_stop_facts)"
 expect "without a journal, the tail of syslog" "line 30" "$(tail -n1 <<<"$out" | awk '{print $(NF-1), $NF}')"
 expect "twelve syslog lines without a shutdown marker" 12 "$(grep -c 'kernel: line' <<<"$out")"
+
+reset
+echo "Nov 11 10:48:00 ct kernel: rotated" >"$ROOT/var/log/syslog.1"
+ln -s syslog.1 "$ROOT/var/log/syslog"
+out="$(_pve_ct_stop_facts)"
+expect "a link that stays inside the rootfs is read" "kernel: rotated" "$(tail -n1 <<<"$out" | awk '{print $(NF-1), $NF}')"
+
+reset
+mv "$TEST_DIR/lxc" "$TEST_DIR/disk"
+ln -s disk "$TEST_DIR/lxc"
+echo "Nov 11 10:49:00 ct kernel: moved" >"$ROOT/var/log/syslog"
+out="$(_pve_ct_stop_facts)"
+expect "a rootfs behind a linked /var/lib/lxc is read" "kernel: moved" "$(tail -n1 <<<"$out" | awk '{print $(NF-1), $NF}')"
+rm -rf "$TEST_DIR/disk"
+
+mkdir -p "$TEST_DIR/host/log"
+printf '%s\n' 'host secret 1' 'host secret 2' >"$TEST_DIR/host/secret"
+cp "$TEST_DIR/host/secret" "$TEST_DIR/host/log/syslog"
+
+reset
+ln -s "$TEST_DIR/host/secret" "$ROOT/var/log/syslog"
+out="$(_pve_ct_stop_facts)"
+expect "a syslog link out of the rootfs is not read" "" "$out"
+expect "and the rootfs is unmounted again" "mount unmount" "$(paste -sd' ' "$TEST_DIR/pct.calls")"
+
+reset
+rmdir "$ROOT/var/log"
+ln -s "$TEST_DIR/host/log" "$ROOT/var/log"
+out="$(_pve_ct_stop_facts)"
+expect "a var/log link out of the rootfs is not read" "" "$out"
+
+reset
+mkdir -p "$ROOT/var/log/journal/0123456789abcdef"
+ln -s "$TEST_DIR/host/secret" "$ROOT/var/log/journal/0123456789abcdef/system.journal"
+out="$(_pve_ct_stop_facts)"
+expect "a journal with a link inside is not read" "" "$out"
 
 reset
 mkdir -p "$ROOT/var/log/journal"

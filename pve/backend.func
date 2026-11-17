@@ -227,14 +227,17 @@ _pve_ct_stopped_by() {
 # Why a container stopped by itself is in its own journal, which stops with it:
 # what the host kernel logged about it, and where its shutdown began.
 _pve_ct_stop_facts() {
-  local root="/var/lib/lxc/${CTID}/rootfs" log=""
+  local root="/var/lib/lxc/${CTID}/rootfs" log="" f
   journalctl -k --since "@${_CS_INSTALL_STARTED:-0}" -o cat --no-pager 2>/dev/null |
     grep -E "lxc-${CTID}_<|/lxc/${CTID}/" | tail -n 5 | sed "s/^/${TAB}kernel: /" || true
   pct mount "$CTID" >/dev/null 2>&1 || return 0
-  if [[ -d "$root/var/log/journal" ]]; then
-    log="$(journalctl -D "$root/var/log/journal" -n 300 -o short-monotonic --no-hostname --no-pager -q 2>/dev/null)" || log=""
-  else
-    log="$(tail -n 300 "$root/var/log/syslog" 2>/dev/null || tail -n 300 "$root/var/log/messages" 2>/dev/null)" || log=""
+  root="$(realpath -e -- "$root" 2>/dev/null || echo "$root")"
+  # The host resolves links below the mount itself, so only what stays inside the rootfs is read.
+  f="$(realpath -e -- "$root/var/log/journal" 2>/dev/null)" || f=""
+  if [[ "$f" == "$root"/* && -d "$f" && -z "$(find "$f" ! -type f ! -type d -print -quit 2>/dev/null)" ]]; then
+    log="$(journalctl -D "$f" -n 300 -o short-monotonic --no-hostname --no-pager -q 2>/dev/null)" || log=""
+  elif f="$(realpath -e -- "$root/var/log/syslog" 2>/dev/null)" || f="$(realpath -e -- "$root/var/log/messages" 2>/dev/null)"; then
+    [[ "$f" == "$root"/* && -f "$f" ]] && log="$(tail -n 300 -- "$f" 2>/dev/null)" || log=""
   fi
   pct unmount "$CTID" >/dev/null 2>&1 || true
   [[ -n "$log" ]] || return 0
