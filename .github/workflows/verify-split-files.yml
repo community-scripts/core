@@ -59,6 +59,7 @@ on:
       - "tests/container-removal-offer.sh"
       - "tests/incus-restricted-project.sh"
       - "tests/incus-target.sh"
+      - "tests/incus-network-wait.sh"
       - "tests/incus-guest-file-pull.sh"
       - "tests/incus-storage-space.sh"
       - "tests/release-stamp-pending.sh"
@@ -133,6 +134,7 @@ on:
       - "tests/container-removal-offer.sh"
       - "tests/incus-restricted-project.sh"
       - "tests/incus-target.sh"
+      - "tests/incus-network-wait.sh"
       - "tests/incus-guest-file-pull.sh"
       - "tests/incus-storage-space.sh"
       - "tests/release-stamp-pending.sh"
@@ -282,6 +284,9 @@ jobs:
 
       - name: Incus target tests
         run: bash tests/incus-target.sh
+
+      - name: Incus network wait tests
+        run: bash tests/incus-network-wait.sh
 
       - name: Incus guest file pull tests
         run: bash tests/incus-guest-file-pull.sh
