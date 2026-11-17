@@ -938,9 +938,10 @@ incus_wait_for_network() {
 
   local ip_in_lxc="" i
   for ((i = 1; i <= max_wait; i++)); do
-    ip_in_lxc=$(incus_ct_exec ip -4 addr show dev eth0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1)
-    [[ -z "$ip_in_lxc" ]] && ip_in_lxc=$(incus_ct_exec ip -6 addr show dev eth0 scope global 2>/dev/null | awk '/inet6 / {print $2}' | cut -d/ -f1 | head -n1)
-    [[ -z "$ip_in_lxc" ]] && ip_in_lxc=$(incus_instance_field "${CT_NAME}" 4 | tr -d '"' | awk '{print $1}' | cut -d/ -f1)
+    # Right after a (re)start eth0 can be missing and exec can fail; both mean "not yet".
+    ip_in_lxc=$(incus_ct_exec ip -4 addr show dev eth0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1) || true
+    [[ -z "$ip_in_lxc" ]] && { ip_in_lxc=$(incus_ct_exec ip -6 addr show dev eth0 scope global 2>/dev/null | awk '/inet6 / {print $2}' | cut -d/ -f1 | head -n1) || true; }
+    [[ -z "$ip_in_lxc" ]] && { ip_in_lxc=$(incus_instance_field "${CT_NAME}" 4 | tr -d '"' | awk '{print $1}' | cut -d/ -f1) || true; }
     [[ -n "$ip_in_lxc" && "$ip_in_lxc" != "-" ]] && break
     sleep 1
   done
@@ -981,12 +982,12 @@ fix_gpu_gids() {
   [[ -z "${GPU_TYPE:-}" ]] && return 0
   msg_info "Detecting and setting correct GPU group IDs"
   local video_gid render_gid
-  video_gid=$(incus_ct_exec getent group video 2>/dev/null | cut -d: -f3)
-  render_gid=$(incus_ct_exec getent group render 2>/dev/null | cut -d: -f3)
+  video_gid=$(incus_ct_exec getent group video 2>/dev/null | cut -d: -f3) || true
+  render_gid=$(incus_ct_exec getent group render 2>/dev/null | cut -d: -f3) || true
   [[ -z "$video_gid" ]] && incus_ct_exec groupadd -r video 2>/dev/null || true
   [[ -z "$render_gid" ]] && incus_ct_exec groupadd -r render 2>/dev/null || true
-  video_gid=$(incus_ct_exec getent group video 2>/dev/null | cut -d: -f3)
-  render_gid=$(incus_ct_exec getent group render 2>/dev/null | cut -d: -f3)
+  video_gid=$(incus_ct_exec getent group video 2>/dev/null | cut -d: -f3) || true
+  render_gid=$(incus_ct_exec getent group render 2>/dev/null | cut -d: -f3) || true
   [[ -z "$video_gid" ]] && video_gid="44"
   [[ -z "$render_gid" ]] && render_gid="104"
 
