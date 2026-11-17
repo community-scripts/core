@@ -1039,7 +1039,6 @@ silent() {
   _cs_reattach_output
   # A failure the caller handled (a retry loop) must not be reported for a later, unrelated error.
   unset _SILENT_FAILED_RC _SILENT_FAILED_CMD _SILENT_FAILED_LINE _SILENT_FAILED_LOG
-  local cmd="$*"
   # apt warns about its CLI whenever stdout is not a terminal, and here it never is.
   if [[ "${1:-}" == "apt" ]]; then
     set -- apt -o Apt::Cmd::Disable-Script-Warning=true "${@:2}"
@@ -1103,6 +1102,10 @@ silent() {
   fi
 
   if [[ $rc -ne 0 ]]; then
+    # The source line, never the expanded arguments: those carry passwords and tokens.
+    local cmd=""
+    declare -f _eh_source_line >/dev/null 2>&1 && cmd="$(_eh_source_line "${BASH_SOURCE[1]:-}" "$caller_line")"
+    [[ -n "$cmd" ]] || cmd="${1##*/} (arguments withheld)"
     export _SILENT_FAILED_RC="$rc"
     export _SILENT_FAILED_CMD="$cmd"
     export _SILENT_FAILED_LINE="$caller_line"
