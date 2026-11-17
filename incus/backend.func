@@ -11,6 +11,7 @@
 
 [[ -n "${_INCUS_BACKEND_LOADED:-}" ]] && return
 _INCUS_BACKEND_LOADED=1
+_INCUS_PULL_DIR=""
 
 incus_ct_exec() {
   incus exec "${CT_NAME}" -- "$@"
@@ -1228,8 +1229,27 @@ mkfifo ${_base}.in" >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
   INCUS_LAST_INSTALL_EXIT=$install_exit_code
 }
 
+_incus_pull_guest_text() {
+  local scratch tmp rc=1
+  scratch="$(mktemp -d)" || return 1
+  tmp="$(mktemp "${2}.XXXXXX")" || {
+    rmdir "$scratch"
+    return 1
+  }
+  # Only the bytes: "-" never recreates a guest link or mode here, and 6.0.4/6.0.5 still drop a link into the working directory.
+  (cd "$scratch" && timeout 20 incus file pull "${CT_NAME}${1}" - 2>/dev/null) | head -c "${3:-8388608}" >"$tmp" || true
+  if [[ -s "$tmp" ]] && mv -f "$tmp" "$2"; then
+    rc=0
+  else
+    rm -f "$tmp"
+  fi
+  rm -rf "$scratch"
+  return "$rc"
+}
+
 _incus_build_combined_log() {
   combined_log="${combined_log:-/tmp/incus-install-${SESSION_ID}-combined.log}"
+  (umask 077 && : >"$combined_log")
   {
     echo "================================================================================"
     echo "COMBINED INSTALLATION LOG - ${APP:-LXC}"
@@ -1250,8 +1270,9 @@ _incus_build_combined_log() {
     } >>"$combined_log"
   fi
 
-  local temp_install_log="/tmp/.install-temp-${SESSION_ID}.log"
-  if incus file pull "${CT_NAME}/root/.install-${SESSION_ID}.log" "$temp_install_log" 2>/dev/null; then
+  [[ -n "${_INCUS_PULL_DIR:-}" ]] || _INCUS_PULL_DIR="$(mktemp -d)" || _INCUS_PULL_DIR=""
+  local temp_install_log="${_INCUS_PULL_DIR:-/nonexistent}/install.log"
+  if _incus_pull_guest_text "/root/.install-${SESSION_ID}.log" "$temp_install_log" && [[ -f "$temp_install_log" && ! -L "$temp_install_log" ]]; then
     {
       echo "================================================================================"
       echo "PHASE 2: APPLICATION INSTALLATION (Container)"
@@ -1264,8 +1285,8 @@ _incus_build_combined_log() {
 
   # Pull the structured error capture (.errinfo) - primary source for the
   # telemetry error trace (exact output of the failing command)
-  local host_errinfo="/tmp/.errinfo-${SESSION_ID}"
-  if incus file pull "${CT_NAME}/root/.install-${SESSION_ID}.log.errinfo" "$host_errinfo" 2>/dev/null && [[ -s "$host_errinfo" ]]; then
+  local host_errinfo="${_INCUS_PULL_DIR:-/nonexistent}/.errinfo-${SESSION_ID}"
+  if _incus_pull_guest_text "/root/.install-${SESSION_ID}.log.errinfo" "$host_errinfo" && [[ -f "$host_errinfo" && ! -L "$host_errinfo" ]]; then
     TELEMETRY_ERRINFO="$host_errinfo"
     export TELEMETRY_ERRINFO
   fi

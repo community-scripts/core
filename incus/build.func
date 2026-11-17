@@ -510,8 +510,9 @@ ensure_log_on_host() {
   [[ -z "${CT_NAME:-}" || -z "${SESSION_ID:-}" ]] && return 0
   local remote_log="/root/.install-${SESSION_ID}.log"
   local local_log="${BUILD_LOG:-$INCUS_BUILD_LOG}.install"
-  incus file pull "${CT_NAME}${remote_log}" "$local_log" 2>/dev/null || true
-  if [[ -f "$local_log" && -f "${BUILD_LOG:-}" ]]; then
+  _incus_pull_guest_text "$remote_log" "$local_log" || true
+  if [[ -f "$local_log" && ! -L "$local_log" && -f "${BUILD_LOG:-}" ]]; then
+    (umask 077 && : >"${combined_log}")
     {
       echo "================================================================================"
       echo "COMBINED INSTALLATION LOG - ${APP:-LXC}"
@@ -549,6 +550,7 @@ api_exit_script() {
     # Clean exit without completion = user backed out → aborted, not success
     post_update_to_api "aborted" "0" 2>/dev/null || true
   fi
+  [[ -z "${_INCUS_PULL_DIR:-}" ]] || rm -rf "$_INCUS_PULL_DIR"
 }
 
 header_info() {

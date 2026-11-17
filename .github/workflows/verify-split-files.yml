@@ -59,10 +59,12 @@ on:
       - "tests/container-removal-offer.sh"
       - "tests/incus-restricted-project.sh"
       - "tests/incus-target.sh"
+      - "tests/incus-guest-file-pull.sh"
       - "tests/incus-storage-space.sh"
       - "tests/release-stamp-pending.sh"
       - "tests/pct-start-reason.sh"
       - "tests/vm-silent.sh"
+      - "tests/vm-cleanup-own-vm.sh"
       - "tests/vm-failure-reasons.sh"
       - "tests/silent-verbose.sh"
       - "tests/github-release-noapi.sh"
@@ -131,10 +133,12 @@ on:
       - "tests/container-removal-offer.sh"
       - "tests/incus-restricted-project.sh"
       - "tests/incus-target.sh"
+      - "tests/incus-guest-file-pull.sh"
       - "tests/incus-storage-space.sh"
       - "tests/release-stamp-pending.sh"
       - "tests/pct-start-reason.sh"
       - "tests/vm-silent.sh"
+      - "tests/vm-cleanup-own-vm.sh"
       - "tests/vm-failure-reasons.sh"
       - "tests/silent-verbose.sh"
       - "tests/github-release-noapi.sh"
@@ -279,6 +283,9 @@ jobs:
       - name: Incus target tests
         run: bash tests/incus-target.sh
 
+      - name: Incus guest file pull tests
+        run: bash tests/incus-guest-file-pull.sh
+
       - name: Incus storage space tests
         run: bash tests/incus-storage-space.sh
       - name: Release stamp pending marker tests
@@ -287,6 +294,8 @@ jobs:
         run: bash tests/pct-start-reason.sh
       - name: VM silent helper tests
         run: bash tests/vm-silent.sh
+      - name: VM cleanup tests
+        run: bash tests/vm-cleanup-own-vm.sh
       - name: VM failure reason tests
         run: bash tests/vm-failure-reasons.sh
       - name: Verbose silent tests
