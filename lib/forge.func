@@ -2192,7 +2192,7 @@ _gh_scan_older_releases() {
 
     if [[ "$mode" == "binary" ]]; then
       local arch
-      arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
+      arch=$(dpkg --print-architecture 2>/dev/null) || arch=$(uname -m)
       [[ "$arch" == "x86_64" ]] && arch="amd64"
       [[ "$arch" == "aarch64" ]] && arch="arm64"
 
@@ -2393,7 +2393,7 @@ fetch_and_deploy_release() {
 
   binary)
     local arch
-    arch="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+    arch="$(dpkg --print-architecture 2>/dev/null)" || arch="$(uname -m)"
     [[ "$arch" == "x86_64" ]] && arch="amd64"
     [[ "$arch" == "aarch64" ]] && arch="arm64"
 
@@ -2893,7 +2893,7 @@ _gl_scan_older_releases() {
 
     if [[ "$mode" == "binary" ]]; then
       local arch
-      arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
+      arch=$(dpkg --print-architecture 2>/dev/null) || arch=$(uname -m)
       [[ "$arch" == "x86_64" ]] && arch="amd64"
       [[ "$arch" == "aarch64" ]] && arch="arm64"
 
