@@ -1140,9 +1140,10 @@ verify_repo_available() {
     fi
   fi
 
-  # Perform actual check with short timeout
+  # One 5 s attempt read a slow mirror as a missing suite, and setup_postgresql
+  # then installed the distro's major version instead of the requested one.
   local result=1
-  if curl -fsSL --max-time 5 --connect-timeout 3 "${repo_url}/dists/${suite}/Release" &>/dev/null; then
+  if curl -fsSL --retry 2 --max-time 15 --connect-timeout 5 "${repo_url}/dists/${suite}/Release" &>/dev/null; then
     result=0
   fi
 
