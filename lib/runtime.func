@@ -2904,7 +2904,12 @@ setup_uv() {
 
   # Scenario 2: New install or upgrade
   if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" != "$TARGET_VERSION" ]]; then
-    msg_info "Upgrade uv from $INSTALLED_VERSION to $TARGET_VERSION"
+    # A project's uv pin can be older than the installed uv.
+    if [[ "$(printf '%s\n%s\n' "$INSTALLED_VERSION" "$TARGET_VERSION" | sort -V | tail -n 1)" == "$INSTALLED_VERSION" ]]; then
+      msg_info "Downgrade uv from $INSTALLED_VERSION to $TARGET_VERSION"
+    else
+      msg_info "Upgrade uv from $INSTALLED_VERSION to $TARGET_VERSION"
+    fi
   else
     msg_info "Setup uv $TARGET_VERSION"
   fi
