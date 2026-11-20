@@ -71,6 +71,7 @@ on:
       - "tests/vm-cleanup-own-vm.sh"
       - "tests/vm-failure-reasons.sh"
       - "tests/vm-root-fs-soft.sh"
+      - "tests/tool-exit-signals.sh"
       - "tests/vm-customize-reason.sh"
       - "tests/silent-verbose.sh"
       - "tests/github-release-noapi.sh"
@@ -151,6 +152,7 @@ on:
       - "tests/vm-cleanup-own-vm.sh"
       - "tests/vm-failure-reasons.sh"
       - "tests/vm-root-fs-soft.sh"
+      - "tests/tool-exit-signals.sh"
       - "tests/vm-customize-reason.sh"
       - "tests/silent-verbose.sh"
       - "tests/github-release-noapi.sh"
@@ -322,6 +324,8 @@ jobs:
         run: bash tests/vm-failure-reasons.sh
       - name: VM root filesystem soft-failure tests
         run: bash tests/vm-root-fs-soft.sh
+      - name: Tool exit and signal tests
+        run: bash tests/tool-exit-signals.sh
       - name: VM image step reason tests
         run: bash tests/vm-customize-reason.sh
       - name: Verbose silent tests

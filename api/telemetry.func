@@ -454,6 +454,9 @@ _tm_dialog_exit() {
 # the only trace of what failed.
 _telemetry_report_exit() {
   local ec="${1:-0}" cmd="${2:-}"
+  # This trap replaces core's EXIT trap, which stopped the spinner; a tool
+  # leaving during msg_info otherwise left it drawing over the prompt.
+  declare -f stop_spinner >/dev/null 2>&1 && stop_spinner
   local status="success" reason=""
   if [[ "$ec" -ne 0 ]]; then
     status="failed"
