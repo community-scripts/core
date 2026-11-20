@@ -334,8 +334,12 @@ function setup_cloud_init() {
   _ci_msg_info "Configuring Cloud-Init"
 
   # Create Cloud-Init drive (try ide2 first, then scsi1 as fallback)
+  local ci_drive_out
   if ! qm set "$vmid" --ide2 "${storage}:cloudinit" >/dev/null 2>&1; then
-    qm set "$vmid" --scsi1 "${storage}:cloudinit" >/dev/null 2>&1
+    if ! ci_drive_out="$(qm set "$vmid" --scsi1 "${storage}:cloudinit" 2>&1)"; then
+      _ci_msg_error "Could not add a Cloud-Init drive on ${storage}: $(grep -v '^[[:space:]]*$' <<<"$ci_drive_out" | tail -n 1)"
+      return 1
+    fi
   fi
 
   # Set user
