@@ -70,6 +70,7 @@ on:
       - "tests/vm-silent.sh"
       - "tests/vm-cleanup-own-vm.sh"
       - "tests/vm-failure-reasons.sh"
+      - "tests/vm-customize-reason.sh"
       - "tests/silent-verbose.sh"
       - "tests/github-release-noapi.sh"
       - "tests/github-token-from-vars.sh"
@@ -148,6 +149,7 @@ on:
       - "tests/vm-silent.sh"
       - "tests/vm-cleanup-own-vm.sh"
       - "tests/vm-failure-reasons.sh"
+      - "tests/vm-customize-reason.sh"
       - "tests/silent-verbose.sh"
       - "tests/github-release-noapi.sh"
       - "tests/github-token-from-vars.sh"
@@ -316,6 +318,8 @@ jobs:
         run: bash tests/vm-cleanup-own-vm.sh
       - name: VM failure reason tests
         run: bash tests/vm-failure-reasons.sh
+      - name: VM image step reason tests
+        run: bash tests/vm-customize-reason.sh
       - name: Verbose silent tests
         run: bash tests/silent-verbose.sh
       - name: VM dialog Esc tests
