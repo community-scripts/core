@@ -97,6 +97,7 @@ pct() {
   exec)
     shift 3
     case "$1" in
+    true) ((!${ATTACH_FAILS:-0})) ;;
     test) [[ -f "${TEST_DIR}${3}" ]] ;;
     cat) cat "${TEST_DIR}${2}" 2>/dev/null ;;
     kill) command kill "$2" "$3" 2>/dev/null ;;
@@ -158,6 +159,12 @@ journalctl() { echo "lxc-start: 100: ../src/lxc/start.c: exited"; }
 CT_STATE="status: running"
 _pve_ct_gone_during_setup >/dev/null
 expect "a running container is not gone" 1 "$?"
+
+ATTACH_FAILS=1
+out="$(_pve_ct_gone_during_setup; echo "rc=$_CS_SETUP_GONE_RC cat=$ERROR_CATEGORY_OVERRIDE")"
+expect "a running container that cannot be entered is gone" "rc=199 cat=proxmox" "$(tail -n 1 <<<"$out")"
+expect "and says so" 1 "$(grep -c 'error: Container 100 still reads as running but can no longer be entered' <<<"$out")"
+unset ATTACH_FAILS ERROR_CATEGORY_OVERRIDE
 
 CT_STATE="status: stopped"
 MOCK_TASKS_JSON='[{"type":"vzshutdown","upid":"UPID:pve:00034662:021098C4:6AE99CC8:vzshutdown:100:root@pam:","user":"root@pam"}]'

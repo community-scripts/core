@@ -2144,7 +2144,7 @@ _vm_root_fs() {
       NR == 1 { for (i = 1; i <= NF; i++) h[$i] = i; next }
       !h["Name"] || !h["Size"] || !h["VFS"] { exit 1 }
       $h["VFS"] ~ /^(ext[234]|xfs|btrfs)$/ { print $h["Size"] + 0, $h["Name"] }
-    ' | sort -rn | head -1
+    ' | sort -rn | head -1 || true
 }
 
 # Unpack a downloaded image; the format comes from the file name. Without a

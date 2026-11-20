@@ -381,7 +381,7 @@ default_vars() {
 # Incus server when driving a remote, otherwise this host. Needs no dpkg.
 _cs_host_arch() {
   local a="${INCUS_SERVER_ARCH:-}"
-  [[ -n "$a" ]] || a="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+  [[ -n "$a" ]] || a="$(dpkg --print-architecture 2>/dev/null)" || a="$(uname -m)"
   case "$a" in
   x86_64) a="amd64" ;;
   aarch64) a="arm64" ;;
@@ -2863,4 +2863,7 @@ arch_resolve() {
 }
 
 trap 'on_hup_keepalive' HUP
-trap 'stop_spinner' EXIT INT TERM
+trap 'stop_spinner' EXIT
+# Ctrl-C used to stop only the spinner, and the run went on with the next command.
+trap 'stop_spinner; exit 130' INT
+trap 'stop_spinner; exit 143' TERM
