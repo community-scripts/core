@@ -28,6 +28,7 @@ on:
       - "tests/vm-host-limits.sh"
       - "tests/mongodb-upgrade.sh"
       - "tests/uv-required-version.sh"
+      - "tests/uv-download-mirror.sh"
       - "tests/docker-lxcfs.sh"
       - "tests/install-script-fetch.sh"
       - "tests/java-memory.sh"
@@ -109,6 +110,7 @@ on:
       - "tests/vm-host-limits.sh"
       - "tests/mongodb-upgrade.sh"
       - "tests/uv-required-version.sh"
+      - "tests/uv-download-mirror.sh"
       - "tests/docker-lxcfs.sh"
       - "tests/install-script-fetch.sh"
       - "tests/java-memory.sh"
@@ -209,6 +211,9 @@ jobs:
 
       - name: uv pin regression tests
         run: bash tests/uv-required-version.sh
+
+      - name: uv download mirror tests
+        run: bash tests/uv-download-mirror.sh
 
       - name: Docker lxcfs visibility regression tests
         run: bash tests/docker-lxcfs.sh

@@ -2866,10 +2866,14 @@ setup_uv() {
     TARGET_VERSION="$(_uv_required_version "$PROJECT_DIR")" || TARGET_VERSION=""
   fi
   if [[ -z "$TARGET_VERSION" ]]; then
-    TARGET_VERSION=$(get_latest_github_release "astral-sh/uv") || {
-      msg_error "Could not fetch latest uv version from GitHub API"
+    # PyPI carries every uv release too, and answers when the GitHub API does not.
+    TARGET_VERSION=$(get_latest_github_release "astral-sh/uv") ||
+      TARGET_VERSION=$(curl -fsSL --connect-timeout 10 --max-time 30 "https://pypi.org/pypi/uv/json" 2>/dev/null | jq -r '.info.version // empty' 2>/dev/null) ||
+      TARGET_VERSION=""
+    if [[ -z "$TARGET_VERSION" ]]; then
+      msg_error "Could not fetch latest uv version from GitHub or PyPI"
       return 7
-    }
+    fi
   fi
 
   # Get currently installed version
@@ -2916,9 +2920,11 @@ setup_uv() {
 
   local UV_URL="https://github.com/astral-sh/uv/releases/download/${TARGET_VERSION}/${UV_TAR}"
 
-  if ! curl_with_retry "$UV_URL" "$TMP_DIR/uv.tar.gz"; then
+  # Astral serves the same release files from its own host.
+  if ! curl_with_retry "$UV_URL" "$TMP_DIR/uv.tar.gz" &&
+    ! curl_with_retry "https://releases.astral.sh/github/uv/releases/download/${TARGET_VERSION}/${UV_TAR}" "$TMP_DIR/uv.tar.gz"; then
     msg_error "Failed to download uv from $UV_URL"
-    msg_error "Hint: GitHub Releases — check connectivity or set GITHUB_TOKEN to avoid rate-limiting"
+    msg_error "Hint: neither github.com nor releases.astral.sh delivered it — check connectivity"
     return 7
   fi
 
