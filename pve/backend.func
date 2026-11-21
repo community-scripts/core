@@ -426,6 +426,30 @@ _template_download_failed() {
   fi
 }
 
+# _template_fetch_https <template> - pveam downloads over plain http, and a
+# host that cannot reach port 80 there still reaches the same file over https.
+# Path and sha512 come from pveam's own catalog; the file lands where pveam
+# would have put it. Fails when the catalog lacks the template or the download
+# does not match its checksum.
+_template_fetch_https() {
+  local tpl="$1" catalog="/var/lib/pve-manager/apl-info/download.proxmox.com" loc="" sum="" dest part
+  [[ -r "$catalog" ]] || return 1
+  read -r loc sum < <(awk -v t="$tpl" '
+    $1 == "Location:" { n = split($2, a, "/"); hit = (a[n] == t); loc = $2 }
+    hit && $1 == "sha512sum:" { print loc, $2; exit }' "$catalog") || true
+  [[ -n "$loc" && -n "$sum" ]] || return 1
+  dest="$(pvesm path "${TEMPLATE_STORAGE}:vztmpl/${tpl}" 2>/dev/null)" || return 1
+  part="${dest}.part"
+  mkdir -p "${dest%/*}" 2>/dev/null || return 1
+  if _cs_shield_hangup curl -fsSL --connect-timeout 15 --max-time 900 --retry 2 -o "$part" "https://download.proxmox.com/images/${loc}" &&
+    [[ "$(sha512sum "$part" | awk '{print $1}')" == "$sum" ]]; then
+    mv -f "$part" "$dest"
+    return 0
+  fi
+  rm -f "$part"
+  return 1
+}
+
 # ------------------------------------------------------------------------------
 # lxc_os_supported <os> <version>
 #
@@ -3704,6 +3728,13 @@ create_lxc_container() {
           fi
         fi
         if [[ $attempt -eq 3 ]]; then
+          if ! grep -qi 'no space left' <<<"$_dl_out"; then
+            msg_info "Downloading template $TEMPLATE over HTTPS"
+            if _template_fetch_https "$TEMPLATE"; then
+              msg_ok "Template download successful (over HTTPS)."
+              break
+            fi
+          fi
           _template_download_failed "$_dl_out"
           exit 222
         fi
