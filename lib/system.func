@@ -702,10 +702,21 @@ _purge_is_safe() {
   return 0
 }
 
+# _upgrade_source_reachable <tool> <key url> - asked before the installed
+# version is purged. With the new version's repository out of reach the purge
+# left the container without the tool, or without its database server.
+_upgrade_source_reachable() {
+  curl -fsSL --connect-timeout 10 --max-time 30 --retry 2 --retry-delay 2 -o /dev/null "$2" 2>/dev/null && return 0
+  msg_error "$1 upgrade not started: $2 is out of reach, the installed version stays"
+  return 1
+}
+
 # ------------------------------------------------------------------------------
 # Remove old tool version (purge + cleanup repos; data directories are kept)
 # Returns 1 without purging when the purge would also remove other packages
 # Usage: remove_old_tool_version "mariadb" "repository-name"
+# Ask _upgrade_source_reachable first: the purge is not undone when the new
+# version then cannot be fetched.
 # ------------------------------------------------------------------------------
 remove_old_tool_version() {
   local tool_name="$1"

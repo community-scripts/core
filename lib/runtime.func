@@ -1511,6 +1511,7 @@ setup_nodejs() {
       msg_info "Upgrade Node.js from $CURRENT_NODE_VERSION to $NODE_VERSION"
       node_setup_ok_msg="Upgrade Node.js to $NODE_VERSION"
       if _purge_is_safe nodejs npm; then
+        _upgrade_source_reachable "Node.js" "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key" || return 250
         remove_old_tool_version "nodejs" || return 1
       elif ((node_major < CURRENT_NODE_VERSION)); then
         msg_error "Node.js $CURRENT_NODE_VERSION cannot be downgraded to $NODE_VERSION while another package depends on it"
@@ -1527,6 +1528,7 @@ setup_nodejs() {
 
     # Remove ALL Debian nodejs packages BEFORE adding NodeSource repo
     if ((!in_place)) && dpkg -l 2>/dev/null | grep -qE "^ii.*(nodejs|libnode|node-cjs|node-acorn|node-balanced|node-brace|node-minimatch|node-undici|node-xtend|node-corepack)"; then
+      _upgrade_source_reachable "Node.js" "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key" || return 250
       msg_info "Removing Debian-packaged Node.js and dependencies"
       $STD apt purge -y nodejs nodejs-doc libnode* node-* 2>/dev/null || true
       $STD apt autoremove -y 2>/dev/null || true

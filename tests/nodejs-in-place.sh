@@ -22,6 +22,7 @@ ensure_apt_working() { :; }
 ensure_dependencies() { :; }
 download_gpg_key() { :; }
 remove_old_tool_version() { echo "purge $1" >>"$CALLS"; }
+_upgrade_source_reachable() { [[ -z "${MOCK_SOURCE_DOWN:-}" ]]; }
 prepare_repository_setup() { :; }
 manage_tool_repository() { echo "repo $2" >>"$CALLS"; }
 cleanup_old_repo_files() { echo "drop repo $1" >>"$CALLS"; }
@@ -75,6 +76,9 @@ DEPENDENT=$'Purg nodejs [20.19.2]\nPurg thelounge [4.4.3]\nPurg libnode115 [20.1
 expect "nothing depends on nodejs: purge" 0 "$(MOCK_PURGE='Purg nodejs [20.19.2]' run)"
 expect "  the old version is purged" 1 "$(has 'purge nodejs')"
 expect "  Debian's packages are removed" 1 "$(grep -cE '^apt(-get)? purge -y nodejs' "$CALLS")"
+
+expect "NodeSource out of reach: the upgrade does not start" 250 "$(MOCK_SOURCE_DOWN=1 MOCK_PURGE='Purg nodejs [20.19.2]' run)"
+expect "  and nothing is purged" 0 "$(grep -c 'purge' "$CALLS")"
 
 expect "an app depends on nodejs: in place" 0 "$(MOCK_PURGE="$DEPENDENT" run)"
 expect "  nothing is purged" 0 "$(grep -c 'purge' "$CALLS")"

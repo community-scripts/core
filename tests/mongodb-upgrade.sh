@@ -25,6 +25,7 @@ ensure_apt_working() { :; }
 upgrade_packages_with_retry() { log "upgrade $*"; }
 install_packages_with_retry() { log "install $*"; }
 remove_old_tool_version() { log "purge $*"; }
+_upgrade_source_reachable() { [[ -z "${MOCK_SOURCE_DOWN:-}" ]]; }
 cleanup_orphaned_sources() { :; }
 prepare_repository_setup() { :; }
 manage_tool_repository() { log "repo $2"; }
@@ -86,6 +87,10 @@ end
 
 MOCK_INSTALLED="8.0" begin "same series only takes patch updates" 0
 expect "upgrade mongodb-org"; reject "repo"; reject "install mongodb-org"
+end
+
+MOCK_SOURCE_DOWN=1 MOCK_INSTALLED="7.0" MOCK_PURGE=$'Purg mongodb-org [7.0.22]\nPurg mongodb-org-server [7.0.22]' begin "an unreachable repository keeps the installed server" 250
+reject "purge mongodb"; reject "repo"
 end
 
 MOCK_INSTALLED="7.0" MOCK_PURGE=$'Purg mongodb-org [7.0.22]\nPurg mongodb-org-server [7.0.22]' begin "purge when nothing depends on it" 0
