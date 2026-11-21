@@ -38,6 +38,7 @@ on:
       - "tests/template-catalog-timeout.sh"
       - "tests/deb822-local-keyring.sh"
       - "tests/ct-stop-facts.sh"
+      - "tests/template-https-fallback.sh"
       - "tests/gpu-pci-class.sh"
       - "tests/hangup-host-commands.sh"
       - "tests/nvidia-version-pin.sh"
@@ -122,6 +123,7 @@ on:
       - "tests/template-catalog-timeout.sh"
       - "tests/deb822-local-keyring.sh"
       - "tests/ct-stop-facts.sh"
+      - "tests/template-https-fallback.sh"
       - "tests/gpu-pci-class.sh"
       - "tests/hangup-host-commands.sh"
       - "tests/nvidia-version-pin.sh"
@@ -245,6 +247,9 @@ jobs:
 
       - name: Container stop facts tests
         run: bash tests/ct-stop-facts.sh
+
+      - name: Template HTTPS fallback tests
+        run: bash tests/template-https-fallback.sh
 
       - name: GPU detection by PCI class tests
         run: bash tests/gpu-pci-class.sh
