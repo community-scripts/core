@@ -1188,7 +1188,8 @@ start() {
   declare -f detect_lxc_platform >/dev/null 2>&1 && _cs_platform="$(detect_lxc_platform)"
 
   if command -v pveversion >/dev/null 2>&1; then
-    runtime_script_status_guard install || return 0
+    # A return here let the ct script go on into build_container (#18815).
+    runtime_script_status_guard install || exit 0
     install_script || return 0
     return 0
   elif [[ "$_cs_platform" == "pve" || "$_cs_platform" == "incus" ]]; then
