@@ -1031,23 +1031,30 @@ setup_go() {
   # Scenario 2: Different version or not installed
   if [[ -n "$CURRENT_VERSION" && "$CURRENT_VERSION" != "$GO_VERSION" ]]; then
     msg_info "Upgrade Go from $CURRENT_VERSION to $GO_VERSION"
-    remove_old_tool_version "go" || {
-      msg_error "Aborting Go upgrade: another package depends on it"
-      return 1
-    }
   else
     msg_info "Setup Go $GO_VERSION"
   fi
 
   local TARBALL="go${GO_VERSION}.linux-${ARCH}.tar.gz"
-  local URL="https://go.dev/dl/${TARBALL}"
   local TMP_TAR=$(mktemp)
 
-  if ! CURL_TIMEOUT=300 curl_with_retry "$URL" "$TMP_TAR"; then
+  # go.dev/dl only redirects to dl.google.com, and that redirect answered 404
+  # for a published release (VE #18893). Downloaded before the old Go goes, so
+  # a failed download no longer leaves the container without one.
+  if ! CURL_TIMEOUT=300 curl_with_retry "https://go.dev/dl/${TARBALL}" "$TMP_TAR" &&
+    ! CURL_TIMEOUT=300 curl_with_retry "https://dl.google.com/go/${TARBALL}" "$TMP_TAR"; then
     msg_error "Failed to download Go $GO_VERSION"
-    msg_error "Hint: Check connectivity to go.dev/dl — URL: $URL"
+    msg_error "Hint: Check connectivity to go.dev and dl.google.com — https://go.dev/dl/${TARBALL}"
     rm -f "$TMP_TAR"
     return 250
+  fi
+
+  if [[ -n "$CURRENT_VERSION" ]]; then
+    remove_old_tool_version "go" || {
+      msg_error "Aborting Go upgrade: another package depends on it"
+      rm -f "$TMP_TAR"
+      return 1
+    }
   fi
 
   $STD tar -C /usr/local -xzf "$TMP_TAR" || {
