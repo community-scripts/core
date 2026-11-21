@@ -42,6 +42,7 @@ on:
       - "tests/nvidia-version-pin.sh"
       - "tests/external-installer.sh"
       - "tests/forge-version-key.sh"
+      - "tests/go-download-fallback.sh"
       - "tests/nodejs-key-refresh.sh"
       - "tests/nodejs-in-place.sh"
       - "tests/nodejs-npm-restore.sh"
@@ -123,6 +124,7 @@ on:
       - "tests/nvidia-version-pin.sh"
       - "tests/external-installer.sh"
       - "tests/forge-version-key.sh"
+      - "tests/go-download-fallback.sh"
       - "tests/nodejs-key-refresh.sh"
       - "tests/nodejs-in-place.sh"
       - "tests/nodejs-npm-restore.sh"
@@ -251,6 +253,8 @@ jobs:
 
       - name: Forge version key regression tests
         run: bash tests/forge-version-key.sh
+      - name: Go download fallback tests
+        run: bash tests/go-download-fallback.sh
 
       - name: Node.js key refresh tests
         run: bash tests/nodejs-key-refresh.sh
