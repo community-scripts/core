@@ -368,8 +368,17 @@ _pve_wait_for_detached_install() {
 }
 
 # A closed console killed this pipeline, and a downloaded template read as missing.
+# pveam list is not the last word either: runs ended with 222/223 over a
+# template that pveam download had just confirmed. pct create needs the file,
+# so a readable archive at the storage's path counts.
 _template_in_storage() {
-  pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -qF "$1"
+  local out rc=0 path
+  out="$(pveam list "$TEMPLATE_STORAGE" 2>&1)" || rc=$?
+  grep -qF "$1" <<<"$out" && return 0
+  path="$(pvesm path "${TEMPLATE_STORAGE}:vztmpl/$1" 2>/dev/null)" || return 1
+  _template_broken "$path" && return 1
+  log_msg "[WARN] pveam list ${TEMPLATE_STORAGE} (exit ${rc}) does not show $1, ${path} is a valid archive: ${out##*$'\n'}"
+  return 0
 }
 
 # Where a template lands in $TEMPLATE_STORAGE, or the default dir layout when
