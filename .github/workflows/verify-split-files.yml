@@ -35,6 +35,7 @@ on:
       - "tests/sudo-env.sh"
       - "tests/template-broken.sh"
       - "tests/template-catalog-timeout.sh"
+      - "tests/template-in-storage.sh"
       - "tests/deb822-local-keyring.sh"
       - "tests/ct-stop-facts.sh"
       - "tests/gpu-pci-class.sh"
@@ -116,6 +117,7 @@ on:
       - "tests/sudo-env.sh"
       - "tests/template-broken.sh"
       - "tests/template-catalog-timeout.sh"
+      - "tests/template-in-storage.sh"
       - "tests/deb822-local-keyring.sh"
       - "tests/ct-stop-facts.sh"
       - "tests/gpu-pci-class.sh"
@@ -230,6 +232,9 @@ jobs:
 
       - name: Template catalog timeout tests
         run: bash tests/template-catalog-timeout.sh
+
+      - name: Template in storage tests
+        run: bash tests/template-in-storage.sh
 
       - name: deb822 local keyring tests
         run: bash tests/deb822-local-keyring.sh

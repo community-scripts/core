@@ -92,7 +92,7 @@ expect "the shielded check finds it" 0 \
 
 expect "the start step uses the shield" 1 "$(grep -c '_start_out="$(_cs_shield_hangup pct start "$CTID" 2>&1)"' "$BACKEND")"
 expect "both template checks use it" 2 "$(grep -c '_cs_shield_hangup _template_in_storage "$TEMPLATE"' "$BACKEND")"
-expect "the pveam list | grep pipeline lives only in the helper" 1 "$(grep -c 'pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -q' "$BACKEND" | tr -d ' ')"
+expect "no template check pipes pveam list into grep -q" 0 "$(grep -c 'pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -q' "$BACKEND" | tr -d ' ')"
 
 printf '%s passed, %s failed\n' "$passed" "$failed"
 ((failed == 0))
