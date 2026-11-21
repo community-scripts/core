@@ -74,6 +74,7 @@ check_for_gh_branch
 check_for_gh_release
 check_for_gh_tag
 check_for_gl_release
+check_for_gl_tag
 check_for_release
 cleanup_legacy_install
 cleanup_old_repo_files

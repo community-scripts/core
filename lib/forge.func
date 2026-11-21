@@ -1124,6 +1124,33 @@ check_for_gh_tag() {
   return 1
 }
 
+# GitLab counterpart of check_for_gh_tag; <pattern> is the glob get_latest_gl_tag takes (e.g. "v*").
+check_for_gl_tag() {
+  local app="$1"
+  local repo="$2"
+  local pattern="${3:-}"
+  local app_lc=""
+  app_lc="$(echo "${app,,}" | tr -d ' ')"
+  local current_file="$HOME/.${app_lc}"
+
+  msg_info "Checking for update: ${app}"
+
+  local latest=""
+  latest=$(get_latest_gl_tag "$repo" "$pattern") || return 22
+
+  local current=""
+  [[ -f "$current_file" ]] && current="$(<"$current_file")"
+
+  if [[ -z "$current" || "$current" != "$latest" ]]; then
+    CHECK_UPDATE_RELEASE="$latest"
+    msg_ok "Update available: ${app} ${current:-not installed} → ${latest}"
+    return 0
+  fi
+
+  msg_ok "No update available: ${app} (${latest})"
+  return 1
+}
+
 # ==============================================================================
 # INSTALL FUNCTIONS
 # ==============================================================================
