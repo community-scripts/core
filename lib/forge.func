@@ -1497,8 +1497,9 @@ _forge_http_get() {
   [[ -n "$auth" ]] && headers+=(-H "$auth")
 
   # A dropped connection, a truncated body and a non-JSON 200 all land on 000.
-  local attempt=1 delay=2 api_message=""
+  local attempt=1 delay=2 api_message="" not_json=0
   while :; do
+    not_json=0
     code="$(_forge_curl "$out" "${headers[@]}" "$url")"
     if [[ "$forge" == "github" && -n "$auth" ]] &&
       { { [[ "$code" == "401" ]] && _github_token_rejected; } ||
@@ -1512,6 +1513,7 @@ _forge_http_get() {
     if [[ "$code" == "200" ]] && command -v jq >/dev/null 2>&1; then
       if ! jq -e . >/dev/null 2>&1 <"$out"; then
         code="000"
+        not_json=1
       else
         api_message="$(jq -r 'if type == "object" and has("message") and (has("tag_name") | not)
           then .message else empty end' "$out" 2>/dev/null)"
@@ -1532,7 +1534,14 @@ _forge_http_get() {
   case "$code" in
   200) return 0 ;;
   000)
-    msg_error "${forge}: connection failed, or the response was cut short or not JSON, after ${attempt} attempts"
+    # One line covered both cases and left the user guessing (VE #18891).
+    if ((not_json)); then
+      msg_error "${forge} answered, but not with JSON: a captive portal or a proxy error page is in the way"
+      msg_error "The response starts with: $(head -c 160 "$out" | tr -cd '[:print:]')"
+    else
+      msg_error "${forge}: no connection after ${attempt} attempts"
+      _forge_explain_failure "$(_forge_descriptor "$forge" host)"
+    fi
     return 7
     ;;
   401)
