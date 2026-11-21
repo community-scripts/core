@@ -64,6 +64,7 @@ _setup_nvidia_gpu
 _setup_rocm
 _tools_cleanup_temp_dirs
 _tools_register_temp_cleanup
+_upgrade_source_reachable
 _uv_pick_version
 _uv_release_list
 _uv_required_version

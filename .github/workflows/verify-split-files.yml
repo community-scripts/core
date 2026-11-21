@@ -46,6 +46,7 @@ on:
       - "tests/go-download-fallback.sh"
       - "tests/nodejs-key-refresh.sh"
       - "tests/nodejs-in-place.sh"
+      - "tests/upgrade-source-reachable.sh"
       - "tests/nodejs-npm-restore.sh"
       - "tests/forge-connection.sh"
       - "tests/failed-command-output.sh"
@@ -129,6 +130,7 @@ on:
       - "tests/go-download-fallback.sh"
       - "tests/nodejs-key-refresh.sh"
       - "tests/nodejs-in-place.sh"
+      - "tests/upgrade-source-reachable.sh"
       - "tests/nodejs-npm-restore.sh"
       - "tests/forge-connection.sh"
       - "tests/failed-command-output.sh"
@@ -266,6 +268,9 @@ jobs:
 
       - name: Node.js in-place upgrade tests
         run: bash tests/nodejs-in-place.sh
+
+      - name: Upgrade source reachable tests
+        run: bash tests/upgrade-source-reachable.sh
 
       - name: Node.js npm restore tests
         run: bash tests/nodejs-npm-restore.sh

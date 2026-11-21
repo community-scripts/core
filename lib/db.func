@@ -69,6 +69,7 @@ setup_clickhouse() {
   # Scenario 2: Different version - clean upgrade
   if [[ -n "$CURRENT_VERSION" && "$CURRENT_VERSION" != "$CLICKHOUSE_VERSION" ]]; then
     msg_info "Upgrade ClickHouse from $CURRENT_VERSION to $CLICKHOUSE_VERSION"
+    _upgrade_source_reachable "ClickHouse" "https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key" || return 250
     stop_all_services "clickhouse-server"
     remove_old_tool_version "clickhouse" || {
       msg_error "Aborting ClickHouse upgrade: another package depends on it"
@@ -296,6 +297,7 @@ EOF
   # Scenario 2b: Different version installed - clean upgrade
   if [[ -n "$CURRENT_VERSION" ]] && ! version_matches_spec "$CURRENT_VERSION" "$MARIADB_VERSION"; then
     msg_info "Upgrade MariaDB from $CURRENT_VERSION to $MARIADB_VERSION"
+    _upgrade_source_reachable "MariaDB" "https://mariadb.org/mariadb_release_signing_key.asc" || return 250
     remove_old_tool_version "mariadb" || {
       msg_error "Aborting MariaDB upgrade: another package depends on it"
       return 1
@@ -887,9 +889,13 @@ setup_mongodb() {
 
   # Scenario 2: Different version installed - clean upgrade
   local in_place=0
+  # MongoDB 8.x versions beyond 8.0 reuse the server-8.0.asc PGP key
+  local MONGO_KEY_VERSION="${MONGO_VERSION}"
+  [[ "${MONGO_VERSION}" == 8.[1-9]* ]] && MONGO_KEY_VERSION="8.0"
   if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" != "$MONGO_VERSION" ]]; then
     msg_info "Upgrade MongoDB from $INSTALLED_VERSION to $MONGO_VERSION"
     if _purge_is_safe 'mongodb*'; then
+      _upgrade_source_reachable "MongoDB" "https://www.mongodb.org/static/pgp/server-${MONGO_KEY_VERSION}.asc" || return 250
       remove_old_tool_version "mongodb" || return 1
     else
       # An app package depends on mongodb-org-server (Omada), so the purge
@@ -911,9 +917,6 @@ setup_mongodb() {
   }
 
   # Setup repository
-  # MongoDB 8.x versions beyond 8.0 reuse the server-8.0.asc PGP key
-  local MONGO_KEY_VERSION="${MONGO_VERSION}"
-  [[ "${MONGO_VERSION}" == 8.[1-9]* ]] && MONGO_KEY_VERSION="8.0"
   manage_tool_repository "mongodb" "$MONGO_VERSION" "$MONGO_BASE_URL" \
     "https://www.mongodb.org/static/pgp/server-${MONGO_KEY_VERSION}.asc" || {
     msg_error "Failed to setup MongoDB repository"
@@ -1101,6 +1104,7 @@ setup_mysql() {
   # Scenario 2: Different version installed - clean upgrade
   if [[ -n "$CURRENT_VERSION" ]] && ! version_matches_spec "$CURRENT_VERSION" "$MYSQL_VERSION"; then
     msg_info "Upgrade MySQL from $CURRENT_VERSION to $MYSQL_VERSION"
+    _upgrade_source_reachable "MySQL" "https://repo.mysql.com/RPM-GPG-KEY-mysql-2025" || return 250
     remove_old_tool_version "mysql" || {
       msg_error "Aborting MySQL upgrade: another package depends on it"
       return 1
