@@ -2477,7 +2477,7 @@ fetch_and_deploy_release() {
     [[ "${DPKG_FORCE_CONFOLD:-}" == "1" ]] && dpkg_opts="-o Dpkg::Options::=--force-confold"
     [[ "${DPKG_FORCE_CONFNEW:-}" == "1" ]] && dpkg_opts="-o Dpkg::Options::=--force-confnew"
     # SYSTEMD_OFFLINE skips the package's own service start: restart what ran, start what a fresh install enabled.
-    local deb_pkg deb_fresh="" unit
+    local deb_pkg deb_fresh="" unit deb_units
     local -a deb_was_active=()
     deb_pkg="$(dpkg-deb -f "$tmpdir/$filename" Package 2>/dev/null)"
     if [[ -n "$deb_pkg" ]]; then
@@ -2497,7 +2497,10 @@ fetch_and_deploy_release() {
       }
     }
     if [[ -n "$deb_pkg" ]]; then
-      for unit in $(_forge_deb_units "$deb_pkg"); do
+      deb_units="$(_forge_deb_units "$deb_pkg")"
+      # It skips the package's daemon-reload too, and a restart without one runs the old unit file.
+      [[ -n "$deb_units" ]] && { systemctl daemon-reload 2>/dev/null || true; }
+      for unit in $deb_units; do
         if [[ " ${deb_was_active[*]} " == *" $unit "* ]]; then
           systemctl restart "$unit" 2>/dev/null || msg_warn "${unit} did not restart after the ${deb_pkg} update"
         elif [[ -n "$deb_fresh" ]] && systemctl is-enabled --quiet "$unit" 2>/dev/null; then
