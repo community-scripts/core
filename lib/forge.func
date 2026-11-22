@@ -1481,7 +1481,8 @@ _forge_explain_failure() {
 # _forge_http_get()
 #
 # - GET into a file, mapping the status onto the codes callers already see:
-#   0 ok, 7 no connection, 22 everything else
+#   0 ok, 7 no connection, 22 everything else; a GitHub rate limit returns 29
+#   unreported, check_for_release reads github.com then
 # - Codeberg used to fetch with -f, which makes curl exit before any status is
 #   seen, leaving its whole error branch unreachable
 # ------------------------------------------------------------------------------
@@ -1552,6 +1553,7 @@ _forge_http_get() {
   esac
 
   if [[ "$code" == "$(_forge_descriptor "$forge" ratelimit)" ]]; then
+    [[ "$forge" == "github" ]] && return 29
     msg_error "${forge}: rate limit reached. Raise it with: $(_forge_descriptor "$forge" hint)"
     return 22
   fi
@@ -1948,12 +1950,24 @@ check_for_release() {
     list="$(_forge_descriptor "$forge" list)"
     _forge_http_get "$forge" "${base}/${repo_path}${list}" "$json_file"
     rc=$?
-    ((rc != 0)) && return "$rc"
-    if [[ ! -s "$json_file" ]]; then
-      msg_error "Empty response from ${forge} for ${app}"
-      return 22
+    # Waiting does not lift an hourly limit; github.com still names the latest release or a pinned tag.
+    if ((rc == 29)) && [[ -z "$tag_prefix" ]] &&
+      { [[ -n "$pinned_version_in" ]] || [[ "${GH_INCLUDE_PRERELEASE:-0}" != "1" ]]; } &&
+      _github_release_noapi "$source" "${pinned_version_in:-latest}" "$json_file"; then
+      msg_warn "GitHub API rate limit reached; read the release from github.com instead. A token avoids this: var_github_token"
+      releases_json="[$(<"$json_file")]"
+    else
+      if ((rc == 29)); then
+        msg_error "${forge}: rate limit reached. Raise it with: $(_forge_descriptor "$forge" hint)"
+        return 22
+      fi
+      ((rc != 0)) && return "$rc"
+      if [[ ! -s "$json_file" ]]; then
+        msg_error "Empty response from ${forge} for ${app}"
+        return 22
+      fi
+      releases_json="$(<"$json_file")"
     fi
-    releases_json="$(<"$json_file")"
   fi
 
   if ! jq -e . >/dev/null 2>&1 <<<"$releases_json"; then
