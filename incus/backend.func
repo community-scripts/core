@@ -1021,7 +1021,9 @@ EOF"
       incus_ct_exec bash -c "${_ct_env} ln -sf \"/usr/share/zoneinfo/$tz_val\" /etc/localtime && echo \"$tz_val\" >/etc/timezone || true"
     fi
 
-    local _base_pkgs="sudo curl mc gnupg2 jq"
+    # From cron on: what a Proxmox template ships and the linuxcontainers.org
+    # images lack. Install scripts written on Proxmox use it without asking.
+    local _base_pkgs="sudo curl mc gnupg2 jq cron logrotate wget xz-utils bzip2 file less nano whiptail python3 perl lsof cpio"
     [[ "$ARCH" == "arm64" ]] && _base_pkgs+=" openssh-server wget gcc"
 
     if ! incus_ct_exec bash -c "${_ct_env} getent hosts deb.debian.org >/dev/null 2>&1 && getent hosts archive.ubuntu.com >/dev/null 2>&1"; then
