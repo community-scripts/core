@@ -66,6 +66,11 @@ the header cache, logs and defaults all go through it.
 containers alike from starting. A failed restart is still recovered by a forced
 stop and start, confirmed via `incus list -c s` rather than the exit status.
 
+**Template parity.** A Proxmox template ships cron, python3, perl, wget,
+xz-utils, bzip2 and more that the linuxcontainers.org images lack, and install
+scripts written on Proxmox use them without installing them. The backend adds
+that set to its base packages, so a script does not have to know where it runs.
+
 **No pty.** The install runs through `incus exec` *without* `-t`. Allocating one
 looks harmless and is not: apt's dpkg progress does a `tcsetattr` on stdin, gets
 `EIO`, and the shell dies mid-install while the run still reports success. The
