@@ -50,6 +50,13 @@ the pool source; unparseable stays `unknown` rather than becoming a wrong number
 The figure is *pool* free space, not host disk — a default loop-backed pool is
 often around 10 GiB, which is why the backend prints how to grow it.
 
+**After `build_container`, a ct script calls neither `pct` nor `incus`.** Both
+backends define the same host-side helpers: `ct_exec <command...>`,
+`ct_restart`, `ct_exec_hint <command>` (the line a user types on this host) and
+`ct_attach_volume <GB> <mount point>`. On Proxmox the volume is a mount point
+on the container's storage and goes with the container; on Incus it is a custom
+volume, which stays when the container is deleted.
+
 **Not every operator is root.** An Incus host is routinely driven by an
 unprivileged user. That is why `community_scripts_dir()` exists at all, and why
 the header cache, logs and defaults all go through it.
@@ -58,13 +65,6 @@ the header cache, logs and defaults all go through it.
 `/proc/sys` already read-only, so that key stopped privileged and unprivileged
 containers alike from starting. A failed restart is still recovered by a forced
 stop and start, confirmed via `incus list -c s` rather than the exit status.
-
-**After `build_container`, a ct script calls neither `pct` nor `incus`.** Both
-backends define the same host-side helpers: `ct_exec <command...>`,
-`ct_restart`, `ct_exec_hint <command>` (the line a user types on this host) and
-`ct_attach_volume <GB> <mount point>`. On Proxmox the volume is a mount point
-on the container's storage and goes with the container; on Incus it is a custom
-volume, which stays when the container is deleted.
 
 **No pty.** The install runs through `incus exec` *without* `-t`. Allocating one
 looks harmless and is not: apt's dpkg progress does a `tcsetattr` on stdin, gets
