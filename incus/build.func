@@ -603,6 +603,37 @@ build_container() {
   incus_build_container
 }
 
+# Host-side calls for a ct script after build_container, the same four the
+# Proxmox backend defines.
+
+# ct_exec <command...> - run a command in the new container
+ct_exec() {
+  incus_ct_exec "$@"
+}
+
+# ct_restart - reboot the new container
+ct_restart() {
+  incus restart "${CT_NAME}"
+}
+
+# ct_exec_hint <command> - what to type on this host to run it in the container
+ct_exec_hint() {
+  echo "incus exec ${CT_NAME} -- $*"
+}
+
+# ct_attach_volume <size in GB> <mount point> - a custom volume on the
+# container's pool. Incus keeps it when the container is deleted.
+ct_attach_volume() {
+  local size="$1" mp="$2" pool="${CONTAINER_STORAGE:-${STORAGE_POOL:-default}}" log="${BUILD_LOG:-/dev/null}"
+  local name="${mp##*/}"
+  if incus storage volume create "$pool" "${CT_NAME}-${name}" size="${size}GiB" >>"$log" 2>&1 &&
+    incus config device add "${CT_NAME}" "$name" disk pool="$pool" source="${CT_NAME}-${name}" path="$mp" >>"$log" 2>&1; then
+    return 0
+  fi
+  msg_error "Could not attach a ${size} GB volume at ${mp} (see the log)"
+  return 1
+}
+
 description() {
   CTID="${CT_NAME:-$CTID}"
   IP=$(incus exec "${CT_NAME}" -- hostname -I 2>/dev/null | awk '{print $1}' || true)

@@ -70,6 +70,7 @@ on:
       - "tests/incus-network-wait.sh"
       - "tests/incus-guest-file-pull.sh"
       - "tests/incus-storage-space.sh"
+      - "tests/ct-host-helpers.sh"
       - "tests/release-stamp-pending.sh"
       - "tests/pct-start-reason.sh"
       - "tests/vm-silent.sh"
@@ -157,6 +158,7 @@ on:
       - "tests/incus-network-wait.sh"
       - "tests/incus-guest-file-pull.sh"
       - "tests/incus-storage-space.sh"
+      - "tests/ct-host-helpers.sh"
       - "tests/release-stamp-pending.sh"
       - "tests/pct-start-reason.sh"
       - "tests/vm-silent.sh"
@@ -338,6 +340,9 @@ jobs:
 
       - name: Incus storage space tests
         run: bash tests/incus-storage-space.sh
+
+      - name: ct host helper tests
+        run: bash tests/ct-host-helpers.sh
       - name: Release stamp pending marker tests
         run: bash tests/release-stamp-pending.sh
       - name: pct start reason tests
