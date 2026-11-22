@@ -233,6 +233,34 @@ vm_fetch_image "https://dl.test/openwrt.img.gz" "$KEPT" --cache --sha256 "$IMAGE
 assert_eq "$(sha256sum "$KEPT" | cut -d' ' -f1)" "$IMAGE_SHA256" "fresh download in place"
 ok "a kept cache is reused until the upstream checksum changes"
 
+eval "stub_$(declare -f curl)"
+RESUME_CALLS="$TEST_DIR/resume-calls"
+: >"$RESUME_CALLS"
+curl() {
+  local out="" resume=no
+  while (($#)); do
+    case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -C) resume=yes; shift 2 ;;
+    *) shift ;;
+    esac
+  done
+  printf '%s %s\n' "$resume" "$(stat -c%s "$out" 2>/dev/null || echo 0)" >>"$RESUME_CALLS"
+  if [[ ! -s "$out" ]]; then
+    head -c 7 "$IMAGE" >"$out"
+    return 56
+  fi
+  tail -c +8 "$IMAGE" >>"$out"
+}
+reset_logs
+vm_fetch_image "https://dl.test/broken.img" "$TEST_DIR/cache/broken.img" --sha256 "$IMAGE_SHA256" ||
+  fail "a transfer that broke off must resume"
+assert_eq "$(sha256sum "$TEST_DIR/cache/broken.img" | cut -d' ' -f1)" "$IMAGE_SHA256" "resumed image is whole"
+assert_eq "$(sed -n 2p "$RESUME_CALLS")" "yes 7" "second attempt continues from the partial file"
+assert_contains "$WARNINGS" "broke off, resuming"
+eval "$(declare -f stub_curl | sed '1s/^stub_curl/curl/')"
+ok "vm_fetch_image resumes a transfer that broke off"
+
 # ── vm_import_disk ──────────────────────────────────────────────────────────
 VMID=100
 QM_MODERN=yes
