@@ -58,6 +58,7 @@ systemctl() {
   is-active) [[ " $ACTIVE " == *" $3 "* ]] ;;
   is-enabled) [[ " $ENABLED " == *" $3 "* ]] ;;
   restart | start) echo "$1 $2" >>"$LOG" ;;
+  daemon-reload) echo "$1" >>"$LOG" ;;
   esac
 }
 
@@ -65,7 +66,7 @@ deploy() {
   : >"$LOG"
   rm -f "$HOME"/.demo*
   fetch_and_deploy_release github demo owner/demo binary latest "" "demo_*_amd64.deb" >/dev/null 2>&1
-  grep -E '^(start|restart) ' "$LOG" | sort | tr '\n' ' ' | sed 's/ $//'
+  grep -E '^(start|restart) ' "$LOG" | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//'
 }
 
 INSTALLED=no ACTIVE="" ENABLED="demo.service"
@@ -80,9 +81,13 @@ check "a unit stopped before the update stays stopped" "" "$(deploy)"
 INSTALLED=yes ACTIVE="demo.service" ENABLED="demo.service"
 check "templates are never touched" "0" "$(deploy >/dev/null; grep -c 'demo-job@' "$LOG")"
 
+check "units are reloaded before the restart" "daemon-reload restart demo.service" \
+  "$(deploy >/dev/null; grep -E '^(daemon-reload|restart)' "$LOG" | tr '\n' ' ' | sed 's/ $//')"
+
 NO_UNITS=yes
 _forge_deb_units demo >/dev/null
 check "a package without units is not an error" "0" "$?"
+check "a package without units triggers no reload" "0" "$(deploy >/dev/null; grep -c '^daemon-reload' "$LOG")"
 unset NO_UNITS
 
 echo "${passed} passed, ${failed} failed"
