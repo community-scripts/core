@@ -1973,7 +1973,7 @@ vm_fetch_image() {
   shift 2
   local min_bytes=0 exact_bytes="" sha256="" sha1="" advisory_sha1="" needs_bytes=""
   local checksum_url="" cache=no xz=no
-  local got avail_mib need_mib have part sha_tool="" sha_want="" discovered rc=0 why=""
+  local got avail_mib need_mib have part sha_tool="" sha_want="" discovered rc=0 why="" try
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -2055,7 +2055,22 @@ vm_fetch_image() {
   rm -f "$part"
   # curl's message reaches the terminal only; its exit status goes into the
   # trace. Named after the target: SourceForge URLs end in /download.
-  curl -f#SL --retry 3 --retry-delay 5 -o "$part" "$url" || rc=$?
+  # A connection that breaks mid-transfer (18, 56, 92) resumes from the partial
+  # file; --retry alone neither retries those nor keeps what arrived.
+  for try in 1 2 3; do
+    rc=0
+    curl -f#SL --retry 3 --retry-delay 5 -C - -o "$part" "$url" || rc=$?
+    case "$rc" in
+    18 | 56 | 92)
+      if ((try < 3)); then
+        msg_warn "Download of $(basename "$target") broke off, resuming"
+        sleep 5
+      fi
+      ;;
+    33) rm -f "$part" ;;
+    *) break ;;
+    esac
+  done
   if ((rc != 0)); then
     rm -f "$part"
     declare -f explain_exit_code >/dev/null 2>&1 && why=": $(explain_exit_code "$rc")"
