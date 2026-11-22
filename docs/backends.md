@@ -59,6 +59,13 @@ the header cache, logs and defaults all go through it.
 containers alike from starting. A failed restart is still recovered by a forced
 stop and start, confirmed via `incus list -c s` rather than the exit status.
 
+**After `build_container`, a ct script calls neither `pct` nor `incus`.** Both
+backends define the same host-side helpers: `ct_exec <command...>`,
+`ct_restart`, `ct_exec_hint <command>` (the line a user types on this host) and
+`ct_attach_volume <GB> <mount point>`. On Proxmox the volume is a mount point
+on the container's storage and goes with the container; on Incus it is a custom
+volume, which stays when the container is deleted.
+
 **No pty.** The install runs through `incus exec` *without* `-t`. Allocating one
 looks harmless and is not: apt's dpkg progress does a `tcsetattr` on stdin, gets
 `EIO`, and the shell dies mid-install while the run still reports success. The

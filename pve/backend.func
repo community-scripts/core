@@ -4067,6 +4067,46 @@ create_lxc_container() {
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
+# Host-side calls for a ct script after build_container. The Incus backend
+# defines the same four, so a script names neither pct nor incus.
+# ------------------------------------------------------------------------------
+
+# ct_exec <command...> - run a command in the new container
+ct_exec() {
+  pct exec "$CTID" -- "$@"
+}
+
+# ct_restart - reboot the new container
+ct_restart() {
+  pct reboot "$CTID"
+}
+
+# ct_exec_hint <command> - what to type on this host to run it in the container
+ct_exec_hint() {
+  echo "pct exec ${CTID} -- $*"
+}
+
+# ct_attach_volume <size in GB> <mount point> - a volume of its own on the
+# container's storage, apart from the root disk and included in backups
+ct_attach_volume() {
+  local size="$1" mp="$2" n=0 i rc=0 log="${BUILD_LOG:-/dev/null}" protected=""
+  while pct config "$CTID" 2>/dev/null | grep "^mp${n}:" >/dev/null; do n=$((n + 1)); done
+  [[ "${PROTECT_CT:-}" == "1" || "${PROTECT_CT:-}" == "yes" ]] && protected=1
+  pct stop "$CTID" >>"$log" 2>&1 || true
+  [[ -z "$protected" ]] || pct set "$CTID" --protection 0 >>"$log" 2>&1 || true
+  pct set "$CTID" "-mp${n}" "${CONTAINER_STORAGE}:${size},mp=${mp},backup=1" >>"$log" 2>&1 || rc=1
+  [[ -z "$protected" ]] || pct set "$CTID" --protection 1 >>"$log" 2>&1 || true
+  pct start "$CTID" >>"$log" 2>&1 || rc=1
+  for i in {1..10}; do
+    [[ "$(pct status "$CTID" 2>/dev/null)" == "status: running" ]] && break
+    sleep 1
+  done
+  ((rc == 0)) && return 0
+  msg_error "Could not attach a ${size} GB volume at ${mp} (see the log)"
+  return 1
+}
+
+# ------------------------------------------------------------------------------
 # description()
 #
 # - Sets container description with formatted HTML content
