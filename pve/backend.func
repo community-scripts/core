@@ -258,23 +258,31 @@ _pve_ct_stop_facts() {
 # when someone stopped it (an abort), 199 when it stopped by itself.
 # ------------------------------------------------------------------------------
 _pve_ct_gone_during_setup() {
-  local by st
-  # A closed console killed pct status itself, and its empty answer read as "not running".
-  st="$(_cs_shield_hangup pct status "$CTID" 2>/dev/null)" || st="$(_cs_shield_hangup pct status "$CTID" 2>/dev/null)"
-  if [[ "$st" == "status: running" ]]; then
-    # Without its lxc monitor a container still reads as running, while every
-    # lxc-attach fails with "Failed to get init pid".
+  local by st="" i
+  # A container on its way down still reads as running for a moment, and one
+  # that was rebooted cannot be entered yet: 95 of 175 runs reported in a week
+  # as "can no longer be entered" had in fact stopped, and lost their reason.
+  # So ask until the answer holds.
+  for i in 1 2 3 4 5 6 7 8; do
+    # A closed console killed pct status itself, and its empty answer read as "not running".
+    st="$(_cs_shield_hangup pct status "$CTID" 2>/dev/null)" || st="$(_cs_shield_hangup pct status "$CTID" 2>/dev/null)"
+    [[ "$st" == "status: running" ]] || break
     _cs_shield_hangup pct exec "$CTID" -- true >/dev/null 2>&1 && return 1
-    msg_error "Container ${CTID} still reads as running but can no longer be entered"
-    journalctl -u "pve-container@${CTID}" -n 10 --no-pager -o cat 2>/dev/null | sed "s/^/${TAB}/" || true
-    export ERROR_CATEGORY_OVERRIDE="proxmox"
-    _CS_SETUP_GONE_RC=199
-    return 0
-  fi
+    sleep 2
+  done
   by="$(_pve_ct_stopped_by)"
   if [[ -n "$by" ]]; then
     msg_warn "Container ${CTID} was stopped during its setup (${by})"
     _CS_SETUP_GONE_RC=143
+    return 0
+  fi
+  if [[ "$st" == "status: running" ]]; then
+    # Without its lxc monitor a container still reads as running, while every
+    # lxc-attach fails with "Failed to get init pid".
+    msg_error "Container ${CTID} still reads as running but can no longer be entered"
+    journalctl -u "pve-container@${CTID}" -n 10 --no-pager -o cat 2>/dev/null | sed "s/^/${TAB}/" || true
+    export ERROR_CATEGORY_OVERRIDE="proxmox"
+    _CS_SETUP_GONE_RC=199
     return 0
   fi
   msg_error "Container ${CTID} stopped by itself during its setup"

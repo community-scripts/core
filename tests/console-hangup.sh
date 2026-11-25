@@ -176,6 +176,43 @@ MOCK_TASKS_JSON='[]'
 out="$(_pve_ct_gone_during_setup; echo "rc=$_CS_SETUP_GONE_RC cat=$ERROR_CATEGORY_OVERRIDE")"
 expect "a container that stopped by itself is reported as such" "rc=199 cat=proxmox" "$(tail -n 1 <<<"$out")"
 expect "with its own journal" 1 "$(grep -c '  lxc-start: 100: ../src/lxc/start.c: exited' <<<"$out")"
+
+# A container on its way down still reads as running at the first look, and a
+# rebooted one cannot be entered yet. The check asks until the answer holds.
+eval "$(declare -f pct | sed '1s/^pct/pct_plain/')"
+sleep() { :; }
+pct() {
+  local n
+  if [[ "$1" == status ]]; then
+    n=$(($(cat "$TEST_DIR/looks") + 1))
+    echo "$n" >"$TEST_DIR/looks"
+    ((n > RUNNING_LOOKS)) && echo "status: stopped" || echo "status: running"
+  elif [[ "$1" == exec && "$4" == true ]]; then
+    (($(cat "$TEST_DIR/looks") >= ENTER_FROM))
+  else
+    pct_plain "$@"
+  fi
+}
+look() { echo 0 >"$TEST_DIR/looks"; _pve_ct_gone_during_setup; echo "rc=${_CS_SETUP_GONE_RC:-} ret=$?"; }
+
+RUNNING_LOOKS=1 ENTER_FROM=99
+out="$(look)"
+expect "a container caught on its way down is reported as stopped" 1 "$(grep -c 'error: Container 100 stopped by itself during its setup' <<<"$out")"
+expect "not as one that cannot be entered" 0 "$(grep -c 'can no longer be entered' <<<"$out")"
+
+MOCK_TASKS_JSON='[{"type":"vzstop","upid":"UPID:pve:00034662:021098C4:6AE99CC8:vzstop:100:root@pam:","user":"root@pam"}]'
+out="$(look)"
+expect "and when someone stopped it, as an abort that names them" \
+  "warn: Container 100 was stopped during its setup (vzstop by root@pam)|rc=143 ret=0" "$(paste -sd'|' <<<"$out")"
+
+MOCK_TASKS_JSON='[]' RUNNING_LOOKS=99 ENTER_FROM=3
+expect "a container that can be entered again after a moment is not gone" "rc= ret=1" "$(unset _CS_SETUP_GONE_RC; look)"
+
+MOCK_TASKS_JSON='[{"type":"vzreboot","upid":"UPID:pve:00034662:021098C4:6AE99CC8:vzreboot:100:root@pam:","user":"root@pam"}]' ENTER_FROM=99
+out="$(look)"
+expect "one that stays shut after a reboot from outside names the reboot" 1 "$(grep -c 'was stopped during its setup (vzreboot by root@pam)' <<<"$out")"
+eval "$(declare -f pct_plain | sed '1s/^pct_plain/pct/')"
+unset -f sleep pct_plain look
 unset -f pvenode msg_warn msg_error journalctl
 unset MOCK_TASKS_JSON _CS_INSTALL_STARTED
 
