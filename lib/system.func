@@ -1386,7 +1386,8 @@ create_temp_dir() {
 # Override the store location with BACKUP_DIR if the default does not fit.
 # ------------------------------------------------------------------------------
 create_backup() {
-  local store manifest path dest
+  local store manifest path dest real entry bs='\'
+  local -a nested excludes
   store="${BACKUP_DIR:-/opt/${NSAPP:-app}.backup}"
   manifest="${store}/.manifest"
 
@@ -1415,9 +1416,34 @@ create_backup() {
       continue
     fi
     dest="${store}/files${path}"
-    if ! mkdir -p "$(dirname "$dest")" || ! cp -a "$path" "$dest"; then
-      msg_error "Backup of '${path}' failed - aborting update"
-      exit 1
+    nested=()
+    if [[ -d "$path" ]] && declare -f _cs_mounts_under >/dev/null 2>&1; then
+      real="$(realpath "$path")"
+      _cs_mounts_under "$real" nested || nested=()
+    fi
+    if ((${#nested[@]} == 0)); then
+      if ! mkdir -p "$(dirname "$dest")" || ! cp -a "$path" "$dest"; then
+        msg_error "Backup of '${path}' failed - aborting update"
+        exit 1
+      fi
+    else
+      # What is mounted below stays out of the store: it can be large,
+      # read-only, or a secret meant to exist only on the host. tar, because
+      # cp -x misses a bind mount from the same filesystem and BusyBox has none.
+      msg_warn "Leaving out of the backup what is mounted below '${path}': ${nested[*]}"
+      excludes=()
+      for entry in "${nested[@]}"; do
+        entry="./${entry#"$real"/}"
+        entry="${entry//"$bs"/"$bs$bs"}"
+        entry="${entry//"*"/"$bs*"}"
+        entry="${entry//"?"/"$bs?"}"
+        entry="${entry//"["/"${bs}["}"
+        excludes+=("--exclude=${entry}")
+      done
+      if ! mkdir -p "$dest" || ! (set -o pipefail && tar -C "$path" "${excludes[@]}" -cf - . | tar -C "$dest" -xpf -); then
+        msg_error "Backup of '${path}' failed - aborting update"
+        exit 1
+      fi
     fi
     echo "$path" >>"$manifest"
   done
@@ -1426,6 +1452,7 @@ create_backup() {
 
 restore_backup() {
   local store manifest path src
+  local -a nested
   store="${BACKUP_DIR:-/opt/${NSAPP:-app}.backup}"
   manifest="${store}/.manifest"
 
@@ -1440,8 +1467,20 @@ restore_backup() {
     src="${store}/files${path}"
     [[ -e "$src" ]] || continue
     mkdir -p "$(dirname "$path")"
-    rm -rf "$path"
-    cp -a "$src" "$path"
+    nested=()
+    if [[ -d "$src" && -d "$path" ]] && declare -f _cs_mounts_under >/dev/null 2>&1 &&
+      declare -f _cs_clean_target_dir >/dev/null 2>&1; then
+      _cs_mounts_under "$(realpath "$path")" nested || nested=()
+    fi
+    if ((${#nested[@]} == 0)); then
+      rm -rf "$path"
+      cp -a "$src" "$path"
+    else
+      # rm -rf would stop at a read-only mount below, or empty a writable one
+      # on the host side; the mounted paths are left as they are.
+      CLEAN_INSTALL_KEEP="" _cs_clean_target_dir "$path"
+      cp -a "$src/." "$path/"
+    fi
   done <"$manifest"
   rm -rf "$store"
   msg_ok "Restored data"

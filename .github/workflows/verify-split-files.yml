@@ -87,6 +87,7 @@ on:
       - "tests/vm-dialog-esc.sh"
       - "tests/forge-clean-install.sh"
       - "tests/db-helper-context.sh"
+      - "tests/backup-nested-mount.sh"
       - "tests/forge-tag-spelling.sh"
       - "tests/forge-deb-services.sh"
       - "tests/self-signed-cert.sh"
@@ -176,6 +177,7 @@ on:
       - "tests/vm-dialog-esc.sh"
       - "tests/forge-clean-install.sh"
       - "tests/db-helper-context.sh"
+      - "tests/backup-nested-mount.sh"
       - "tests/forge-tag-spelling.sh"
       - "tests/forge-deb-services.sh"
       - "tests/self-signed-cert.sh"
@@ -380,6 +382,8 @@ jobs:
         run: bash tests/forge-clean-install.sh
       - name: Database helpers outside an install tests
         run: bash tests/db-helper-context.sh
+      - name: Backup and restore leave a mount below alone
+        run: bash tests/backup-nested-mount.sh
       - name: Pinned tag with or without its v tests
         run: bash tests/forge-tag-spelling.sh
       - name: Services after a .deb install tests
