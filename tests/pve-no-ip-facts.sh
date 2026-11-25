@@ -64,5 +64,24 @@ bridge ovs
 check "an Open vSwitch bridge has no brif and is not judged" "Container network: ip=192.168.1.50/24, eth0 DOWN" \
   "$(_pve_no_ip_facts 101 vmbr0 | paste -sd'|')"
 
+# Twenty looks without an address: the bridge is asked for a DHCP offer, and
+# only "nobody answered" ends the wait early.
+eval "$(awk '/^(_pve_dhcp_absent|_pve_dhcp_probe)[(][)] [{]/,/^}/' "$CORE_DIR/pve/backend.func" |
+  sed "s#/sys/class/net#$TEST_DIR/net#g")"
+check "a bridge that does not exist cannot be asked" 2 "$(_pve_dhcp_probe nosuchbr 1 && echo 0 || echo $?)"
+
+_pve_dhcp_probe() { echo "$1" >>"$TEST_DIR/asked"; return "$PROBE_RC"; }
+absent() { : >"$TEST_DIR/asked"; NET0="$1" PROBE_RC="$2"; _pve_dhcp_absent 100 && echo absent || echo "not absent"; }
+check "dhcp and nobody answers: absent" absent "$(absent 'name=eth0,bridge=vmbr1,hwaddr=AA:BB,ip=dhcp,type=veth' 1)"
+absent 'name=eth0,bridge=vmbr1,hwaddr=AA:BB,ip=dhcp,type=veth' 1 >/dev/null
+check "the container's own bridge is asked" vmbr1 "$(cat "$TEST_DIR/asked")"
+check "dhcp and a server answers: keep waiting" "not absent" "$(absent 'name=eth0,bridge=vmbr0,ip=dhcp' 0)"
+check "the host could not ask: keep waiting" "not absent" "$(absent 'name=eth0,bridge=vmbr0,ip=dhcp' 2)"
+absent 'name=eth0,bridge=vmbr0,ip=dhcp,tag=200' 1 >/dev/null
+check "a VLAN tag is not probed" "" "$(cat "$TEST_DIR/asked")"
+absent 'name=eth0,bridge=vmbr0,gw=10.0.0.1,ip=10.0.0.5/24' 1 >/dev/null
+check "a static address is not probed" "" "$(cat "$TEST_DIR/asked")"
+check "the wait asks once, at the twentieth look" 1 "$(grep -c 'if \[ "\$i" -eq 20 \] && _pve_dhcp_absent "\$CTID"; then' "$CORE_DIR/pve/backend.func")"
+
 printf '%s passed, %s failed\n' "$passed" "$failed"
 ((failed == 0))

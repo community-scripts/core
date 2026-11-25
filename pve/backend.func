@@ -176,6 +176,65 @@ _pve_no_ip_facts() {
   fi
 }
 
+# _pve_dhcp_probe <bridge> <seconds> - sends a DHCPDISCOVER from the host and
+# waits for an offer. 0 with the server's address, 1 nobody answered, 2 could
+# not ask.
+_pve_dhcp_probe() {
+  command -v python3 >/dev/null 2>&1 && [[ -d "/sys/class/net/$1" ]] || return 2
+  python3 - "$1" "$2" 2>/dev/null <<'PROBE'
+import random, socket, struct, sys, time
+try:
+    ifname, wait = sys.argv[1], float(sys.argv[2])
+    mac = bytes([0x02] + [random.randrange(256) for _ in range(5)])
+    xid = random.getrandbits(32)
+    s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0800))
+    s.bind((ifname, 0x0800))
+    s.settimeout(0.5)
+    bootp = struct.pack("!BBBBIHH16s16s192s4s", 1, 1, 6, 0, xid, 0, 0x8000, b"", mac, b"", b"\x63\x82\x53\x63")
+    bootp += bytes([53, 1, 1, 55, 2, 1, 3, 255])
+    udp = struct.pack("!HHHH", 68, 67, 8 + len(bootp), 0) + bootp
+    ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(udp), 0, 0, 64, 17, 0, bytes(4), b"\xff" * 4)
+    csum = sum(struct.unpack("!10H", ip))
+    csum = (csum >> 16) + (csum & 0xFFFF)
+    ip = ip[:10] + struct.pack("!H", ~(csum + (csum >> 16)) & 0xFFFF) + ip[12:]
+    frame = b"\xff" * 6 + mac + b"\x08\x00" + ip + udp
+    end = time.time() + wait
+    sent = 0
+    while time.time() < end:
+        if time.time() >= sent + 2:
+            s.send(frame)
+            sent = time.time()
+        try:
+            p = s.recv(2048)
+        except socket.timeout:
+            continue
+        ihl = (p[14] & 0x0F) * 4
+        if p[23] != 17 or p[14 + ihl:14 + ihl + 4] != b"\x00\x43\x00\x44":
+            continue
+        b = p[14 + ihl + 8:]
+        if len(b) < 240 or b[0] != 2 or struct.unpack("!I", b[4:8])[0] != xid:
+            continue
+        print(socket.inet_ntoa(p[26:30]))
+        sys.exit(0)
+    sys.exit(1)
+except SystemExit:
+    raise
+except Exception:
+    sys.exit(2)
+PROBE
+}
+
+# _pve_dhcp_absent <ctid> - the container asks for DHCP on an untagged bridge
+# and no server answers there. Anything it cannot tell reads as "not absent".
+_pve_dhcp_absent() {
+  local net0 brg rc=0
+  net0="$(pct config "$1" 2>/dev/null | sed -n 's/^net0: //p')"
+  [[ ",${net0}," == *",ip=dhcp,"* && ",${net0}," != *",tag="* ]] || return 1
+  brg="$(grep -oE '(^|,)bridge=[^,]+' <<<"$net0" | cut -d= -f2)"
+  _pve_dhcp_probe "$brg" 5 >/dev/null || rc=$?
+  ((rc == 1))
+}
+
 # ------------------------------------------------------------------------------
 # _pct_start_failed <ctid> [pct start output]
 #
@@ -1264,7 +1323,7 @@ EOF
     msg_info "Waiting for the container network"
 
     # Wait for IP assignment (IPv4 or IPv6)
-    local ip_in_lxc=""
+    local ip_in_lxc="" _no_dhcp=""
     for i in {1..60}; do
       # Try IPv4 first
       ip_in_lxc=$(pct exec "$CTID" -- ip -4 addr show dev eth0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1) || true
@@ -1274,6 +1333,12 @@ EOF
       fi
       [ -n "$ip_in_lxc" ] && break
       _pve_ct_gone_during_setup && exit "$_CS_SETUP_GONE_RC"
+      # Without a DHCP server the remaining forty looks took four to eight
+      # minutes to say what the bridge answers in five seconds.
+      if [ "$i" -eq 20 ] && _pve_dhcp_absent "$CTID"; then
+        _no_dhcp=1
+        break
+      fi
       if [ "$i" -le 20 ]; then
         sleep 1
       elif [ "$i" -le 40 ]; then
@@ -1284,7 +1349,11 @@ EOF
     done
 
     if [ -z "$ip_in_lxc" ]; then
-      msg_error "No IP assigned to CT $CTID after 60 attempts"
+      if [ -n "$_no_dhcp" ]; then
+        msg_error "No IP assigned to CT $CTID: no DHCP server answers on its bridge"
+      else
+        msg_error "No IP assigned to CT $CTID after 60 attempts"
+      fi
       _pve_no_ip_facts "$CTID" "$BRG"
       msg_custom "🔧" "${YW}" "Troubleshooting:"
       echo "  • Verify bridge ${BRG} exists and has connectivity"
