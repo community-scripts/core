@@ -492,7 +492,7 @@ incus_create_lxc_container() {
       fi
     done
     if [[ "$launched" -ne 1 ]]; then
-      msg_error "Failed to create container ${CT_NAME}"
+      msg_error "Failed to create container ${CT_NAME}: $(grep -E '^Error:' "$LOGFILE" 2>/dev/null | tail -n 1 | cut -c1-200)"
       echo -e "${YW}Last launch errors:${CL}"
       tail -n 30 "$LOGFILE" 2>/dev/null | sed 's/^/  /' || true
       echo -e "${YW}Log: ${BL}${LOGFILE}${CL}"
@@ -978,6 +978,28 @@ fix_gpu_gids() {
   msg_ok "GPU passthrough configured (video:${video_gid}, render:${render_gid})"
 }
 
+# _incus_ct_net_facts [log] - what the container can reach, and apt's own last
+# error, for a base package install that failed.
+_incus_ct_net_facts() {
+  local gw dns last
+  gw="$(incus_ct_exec ip -4 route show default 2>/dev/null | awk '{print $3; exit}')" || gw=""
+  dns="$(incus_ct_exec awk '/^nameserver/ {printf "%s ", $2}' /etc/resolv.conf 2>/dev/null)" || dns=""
+  msg_warn "Container network: gateway ${gw:-none}, DNS ${dns:-none}"
+  if [[ -n "$gw" ]] && ! incus_ct_exec ping -c 1 -W 2 "$gw" &>/dev/null; then
+    msg_warn "The gateway ${gw} does not answer the container"
+  fi
+  if ! incus_ct_exec timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' &>/dev/null; then
+    msg_warn "The container has no connection out (1.1.1.1:443)"
+  elif ! incus_ct_exec getent hosts deb.debian.org &>/dev/null; then
+    msg_warn "The container reaches the internet but resolves no names"
+  fi
+  # The fetch error is the cause; "has no installation candidate" only follows from it.
+  last="$(grep -iE '^(E|Err|W):.*(resolv|connect|fetch|unreachable|timed out)' "${1:-/dev/null}" 2>/dev/null | tail -n 1 | cut -c1-200)" || last=""
+  [[ -n "$last" ]] || last="$(grep -E '^(E|Err):' "${1:-/dev/null}" 2>/dev/null | tail -n 1 | cut -c1-200)" || last=""
+  [[ -z "$last" ]] || msg_custom "ℹ️" "${YW}" "apt: ${last}"
+  return 0
+}
+
 incus_fix_debian13_root_ownership() {
   [[ "${var_os:-}" == "debian" && "${var_version:-}" == "13" ]] || return 0
   incus_ct_exec chown root:root / 2>/dev/null || true
@@ -1031,7 +1053,9 @@ EOF"
       incus_ct_exec bash -c "echo -e 'nameserver 8.8.8.8\nnameserver 1.1.1.1' >/etc/resolv.conf" || true
     fi
 
-    incus_ct_exec bash -c "${_ct_env} apt-get update >/dev/null 2>&1 && apt-get install -y ${_base_pkgs} >/dev/null 2>&1" || {
+    # apt's output goes to the log: sent to /dev/null, 16 failed runs in two weeks said nothing about why.
+    local _apt_log="${BUILD_LOG:-${INCUS_BUILD_LOG:-/dev/null}}"
+    incus_ct_exec bash -c "${_ct_env} apt-get update 2>&1 && apt-get install -y ${_base_pkgs} 2>&1" >>"$_apt_log" 2>&1 || {
       msg_warn "apt-get update failed, trying alternate mirrors..."
       msg_custom "ℹ️" "${YW}" "Probing alternate mirrors (this can take 1-2 minutes on network issues)"
       incus_ct_exec env APT_BASE="$_base_pkgs" bash -c '
@@ -1046,10 +1070,15 @@ EOF"
           sed -i "s|URIs: http[s]*://[^/]*/|URIs: http://${m}/|g; s|deb http[s]*://[^/]*/|deb http://${m}/|g" /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
           sed -i "s|deb http[s]*://[^/]*/|deb http://${m}/|g" /etc/apt/sources.list 2>/dev/null || true
           rm -rf /var/lib/apt/lists/*
-          apt-get update >/dev/null 2>&1 && apt-get install -y $APT_BASE >/dev/null 2>&1 && exit 0
+          echo "--- mirror ${m}"
+          apt-get update 2>&1 && apt-get install -y $APT_BASE 2>&1 && exit 0
         done
         exit 1
-      ' || { msg_error "apt-get base packages installation failed"; exit 100; }
+      ' >>"$_apt_log" 2>&1 || {
+        msg_error "apt-get base packages installation failed"
+        _incus_ct_net_facts "$_apt_log"
+        exit 100
+      }
     }
   else
     sleep 2
