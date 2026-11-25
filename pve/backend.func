@@ -3895,6 +3895,14 @@ create_lxc_container() {
     fi
   }
 
+  # pct's last line is the reason. The message used to name only the log file,
+  # which sent the user to read it and gave the telemetry nothing to count.
+  _pct_create_reason() {
+    local why
+    why="$(grep -v '^[[:space:]]*$' "${LOGFILE:-/dev/null}" 2>/dev/null | tail -n 1 | sed -E 's/^unable to create CT [0-9]+ - //' | cut -c1-200)"
+    echo "${why:-pct create printed nothing}"
+  }
+
   _lxc_stack_too_old() {
     msg_error "pve-container $(pkg_ver pve-container) does not support ${PCT_OSTYPE:-this} ${PCT_OSVERSION:-template}, and no newer version is available from the configured repositories."
     msg_custom "🔧" "${YW}" "Enable a Proxmox VE package repository, run 'apt update && apt dist-upgrade' on the host, then retry."
@@ -3989,7 +3997,8 @@ create_lxc_container() {
       if _pct_create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" $PCT_OPTIONS ${_PW_ARGS[@]+"${_PW_ARGS[@]}"} >"$LOGFILE" 2>&1; then
         msg_ok "Container successfully created with new ID $CTID"
       else
-        msg_error "Container creation failed even with new ID $CTID. See $LOGFILE"
+        msg_error "Container creation failed even with new ID $CTID: $(_pct_create_reason)"
+        msg_custom "ℹ️" "${YW}" "Full output: $LOGFILE"
         _flush_pct_log
         exit 209
       fi
@@ -4045,7 +4054,8 @@ create_lxc_container() {
                 ;;
               esac
             else
-              msg_error "Container creation failed. See $LOGFILE"
+              msg_error "Container creation failed: $(_pct_create_reason)"
+              msg_custom "ℹ️" "${YW}" "Full output: $LOGFILE"
               if whiptail --yesno "pct create failed.\nDo you want to enable verbose debug mode and view detailed logs?" 12 70; then
                 set -x
                 _pct_create "$CTID" "local:vztmpl/${TEMPLATE}" $PCT_OPTIONS ${_PW_ARGS[@]+"${_PW_ARGS[@]}"} 2>&1 | tee -a "$LOGFILE"
@@ -4085,7 +4095,8 @@ create_lxc_container() {
               ;;
             esac
           else
-            msg_error "Container creation failed. See $LOGFILE"
+            msg_error "Container creation failed: $(_pct_create_reason)"
+            msg_custom "ℹ️" "${YW}" "Full output: $LOGFILE"
             if whiptail --yesno "pct create failed.\nDo you want to enable verbose debug mode and view detailed logs?" 12 70; then
               set -x
               _pct_create "$CTID" "local:vztmpl/${TEMPLATE}" $PCT_OPTIONS ${_PW_ARGS[@]+"${_PW_ARGS[@]}"} 2>&1 | tee -a "$LOGFILE"
