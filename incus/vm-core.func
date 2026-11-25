@@ -1354,6 +1354,13 @@ vm_fetch_image() {
     esac
   done
 
+  local resolved
+  resolved="$(_vm_debian_build_url "$url")"
+  if [[ "$resolved" != "$url" ]]; then
+    msg_warn "cloud.debian.org has no $(basename "$url") in latest/ right now; using build $(basename "$(dirname "$resolved")")"
+    url="$resolved"
+  fi
+
   if [[ -n "$sha256" ]]; then
     sha_tool=sha256sum sha_want="${sha256,,}"
   elif [[ -n "$sha1" ]]; then
@@ -1391,11 +1398,7 @@ vm_fetch_image() {
 
   part="${target}.part"
   rm -f "$part"
-  if ! curl -f#SL --retry 3 --retry-delay 5 -o "$part" "$url"; then
-    rm -f "$part"
-    msg_error "Failed to download $(basename "$url")"
-    return 1
-  fi
+  _vm_download "$url" "$part" "$(basename "$target")" || return 1
 
   got=$(stat -c%s "$part" 2>/dev/null || echo 0)
   if [[ -n "$exact_bytes" ]] && ((got != exact_bytes)); then
