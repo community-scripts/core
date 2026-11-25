@@ -71,5 +71,17 @@ expect "a host whose timedatectl fails is named before any retry" 1 \
   "$(awk '/First attempt/,/already exists\|already in use/' "$CORE_DIR/pve/backend.func" | grep -c "grep -q \"command 'timedatectl show\" \"\$LOGFILE\"")"
 expect "and the pattern matches what pct create prints" 0 "$(grep -q "command 'timedatectl show" "$TEST_DIR/pct.log"; echo $?)"
 
+# 88 runs in a week ended with "Container creation failed. See /tmp/pct_create_...log":
+# a different file name each time, and the reason only inside it.
+eval "$(awk '/^  _pct_create_reason[(][)] [{]/,/^  }/' "$CORE_DIR/pve/backend.func")"
+LOGFILE="$TEST_DIR/pct.log"
+printf '%s\n' "400 Parameter verification failed." "net0: MTU size '9000' is bigger than bridge MTU '1500'" "" >"$LOGFILE"
+expect "the message carries pct's reason" "net0: MTU size '9000' is bigger than bridge MTU '1500'" "$(_pct_create_reason)"
+printf '%s\n' "extracting archive" "unable to create CT 105 - lvcreate 'pve/vm-105-disk-0' error:   Volume group \"pve\" has insufficient free space" >"$LOGFILE"
+expect "without the prefix that only repeats the ID" "lvcreate 'pve/vm-105-disk-0' error:   Volume group \"pve\" has insufficient free space" "$(_pct_create_reason)"
+: >"$LOGFILE"
+expect "an empty log says so" "pct create printed nothing" "$(_pct_create_reason)"
+expect "no failure message names only the log file any more" 0 "$(grep -c 'Container creation failed.*See \$LOGFILE' "$CORE_DIR/pve/backend.func")"
+
 printf '%s passed, %s failed\n' "$passed" "$failed"
 ((failed == 0))
