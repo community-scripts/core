@@ -703,6 +703,17 @@ ok "vm_finish reports done and the given message"
 # ── Incus counterparts ──────────────────────────────────────────────────────
 grep -qx '_incus_vm_source "vm/common.func"' "${COMMUNITY_SCRIPTS_CORE_DIR}/incus/vm-core.func" ||
   fail "incus/vm-core.func must load vm/common.func"
+
+# The Incus backend had its own copy of the download and lacked the resume and
+# the dated-build fallback the Proxmox one got. Both now call the shared code.
+for _backend in pve/vm-core.func incus/vm-core.func; do
+  _fetch="$(awk '/^vm_fetch_image\(\) \{/,/^}/' "${COMMUNITY_SCRIPTS_CORE_DIR}/${_backend}")"
+  grep -q '_vm_download "\$url" "\$part"' <<<"$_fetch" || fail "${_backend}: vm_fetch_image must download through _vm_download"
+  grep -q '_vm_debian_build_url "\$url"' <<<"$_fetch" || fail "${_backend}: vm_fetch_image must resolve Debian latest/ URLs"
+  grep -q 'curl -f#SL' <<<"$_fetch" && fail "${_backend}: vm_fetch_image must not carry its own curl call"
+  grep -qE '^(_vm_download|_vm_debian_build_url)\(\)' "${COMMUNITY_SCRIPTS_CORE_DIR}/${_backend}" && fail "${_backend} must not define the shared download helpers"
+done
+echo "ok   both backends share the image download"
 (
   eval "$(awk '/^_incus_vm_qm_only\(\)/,/^}/' "${COMMUNITY_SCRIPTS_CORE_DIR}/incus/vm-core.func")"
   eval "$(grep -E '^vm_(import_disk|start_vm|wait_guest_agent|guest_exec|wait_for_ip)\(\) \{ _incus_vm_qm_only' \
