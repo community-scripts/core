@@ -4,6 +4,7 @@ set -uo pipefail
 CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 eval "$(awk '/^incus_target[(][)] [{]/,/^}/' "$CORE_DIR/incus/core.func")"
 eval "$(awk '/^_cs_host_arch[(][)] [{]/,/^}/' "$CORE_DIR/core/core.func")"
+eval "$(awk '/^kvm_check[(][)] [{]/,/^}/' "$CORE_DIR/incus/vm-core.func")"
 
 TEST_DIR="$(mktemp -d)"
 trap 'rm -rf -- "$TEST_DIR"' EXIT
@@ -22,6 +23,7 @@ incus() {
     else
       printf 'config: {}\nenvironment:\n  addresses: []\n  architectures:\n    - %s\n    - i686\n  kernel_version: 6.12.0-incusos\n  server_name: box\n' "${MOCK_ARCH:-x86_64}"
     fi
+    if [[ -n "${MOCK_DRIVER:-}" ]]; then printf '  driver: %s\n' "$MOCK_DRIVER"; fi
     ;;
   esac
 }
@@ -55,6 +57,11 @@ expect "an unmapped architecture is passed through" riscv64 "$INCUS_SERVER_ARCH"
 
 MOCK_REMOTE=incus-001 MOCK_ARCH=i686 MOCK_KERNEL_ARCH=x86_64 incus_target
 expect "kernel_architecture wins over the list" amd64 "$INCUS_SERVER_ARCH"
+
+fatal() { echo "fatal: $*"; }
+expect "a remote with qemu passes without a local /dev/kvm" "" "$(INCUS_REMOTE=incus001 MOCK_DRIVER="lxc | qemu" kvm_check)"
+expect "a remote without qemu stops" 1 "$(INCUS_REMOTE=incus001 MOCK_DRIVER=lxc kvm_check | grep -c "no qemu driver")"
+expect "a remote without driver info is not judged by local /dev/kvm" "" "$(INCUS_REMOTE=incus001 kvm_check)"
 
 printf '%s passed, %s failed\n' "$passed" "$failed"
 ((failed == 0))

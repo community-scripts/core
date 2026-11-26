@@ -95,11 +95,16 @@ arch_check() {
   esac
 }
 
-# An Incus host without KVM can only run containers.
+# Asks the target server: on a remote, the local /dev/kvm says nothing.
 kvm_check() {
-  if [[ ! -e /dev/kvm ]]; then
-    fatal "No /dev/kvm on this host - Incus cannot run virtual machines here."
+  local drivers
+  drivers="$(LC_ALL=C incus info 2>/dev/null | awk '$1 == "driver:" {sub(/^[^:]*: */, ""); print; exit}')"
+  if [[ -n "$drivers" ]]; then
+    [[ "$drivers" == *qemu* ]] && return 0
+    fatal "Incus on '${INCUS_REMOTE:-local}' has no qemu driver (no KVM?) - it cannot run virtual machines."
   fi
+  [[ "${INCUS_REMOTE:-local}" != "local" || -e /dev/kvm ]] ||
+    fatal "No /dev/kvm on this host - Incus cannot run virtual machines here."
 }
 
 ssh_check() { :; }
