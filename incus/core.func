@@ -640,6 +640,17 @@ incus_get_storage_pools() {
   incus storage list -f csv,noheader 2>/dev/null | cut -d, -f1
 }
 
+incus_default_storage_pool() {
+  local pool
+  pool="$(LC_ALL=C incus profile device get default root pool 2>/dev/null || true)"
+  [[ -n "$pool" ]] || pool="$(incus_get_storage_pools | sed -n '/./{p;q}')"
+  printf '%s' "$pool"
+}
+
+incus_target_is_local() {
+  [[ "${INCUS_REMOTE:-local}" == "local" ]]
+}
+
 # ------------------------------------------------------------------------------
 # incus_get_networks()
 #

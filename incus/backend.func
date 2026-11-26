@@ -606,6 +606,15 @@ incus_is_gpu_app() {
   [[ "${var_gpu:-no}" == "yes" || "${ENABLE_GPU:-no}" == "yes" ]]
 }
 
+# "<vendor id> <pci address>" per GPU, as the target server reports them.
+_incus_target_gpus() {
+  LC_ALL=C incus info --resources 2>/dev/null | awk '
+    /^[^ \t]/ { in_gpu = ($0 ~ /^GPUs?:/); next }
+    !in_gpu { next }
+    /^[ \t]*Vendor:/ { vendor = ""; if (match($0, /\([0-9a-fA-F]+\)[ \t]*$/)) vendor = tolower(substr($0, RSTART + 1, 4)) }
+    /^[ \t]*PCI address:/ { print vendor, $NF }'
+}
+
 # Populate INTEL_GPUS/AMD_GPUS/NVIDIA_GPUS as "pci=<addr>|id=<n>|vendorid=<id>" selectors
 # per https://linuxcontainers.org/incus/docs/main/reference/devices_gpu/
 incus_detect_gpu_devices() {
@@ -615,22 +624,32 @@ incus_detect_gpu_devices() {
   NVIDIA_CHAR_DEVS=()
 
   local line pci vendor
-  # Prefer domain:bus:slot.func from lspci -D
-  while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-    pci=$(awk '{print $1}' <<<"$line")
-    [[ "$pci" =~ ^[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+\.[0-9a-fA-F]+$ ]] || continue
-    if grep -q '\[8086:' <<<"$line"; then
-      INTEL_GPUS+=("pci=${pci}")
-    elif grep -qE '\[1002:|\[1022:' <<<"$line"; then
-      AMD_GPUS+=("pci=${pci}")
-    elif grep -q '\[10de:' <<<"$line"; then
-      NVIDIA_GPUS+=("pci=${pci}")
-    fi
-  done < <(lspci -nn -D 2>/dev/null | grep -E '^[^ ]+ (VGA compatible|XGA compatible|3D|Display) controller[ :]' || true)
+  if incus_target_is_local; then
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      pci=$(awk '{print $1}' <<<"$line")
+      [[ "$pci" =~ ^[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+\.[0-9a-fA-F]+$ ]] || continue
+      if grep -q '\[8086:' <<<"$line"; then
+        INTEL_GPUS+=("pci=${pci}")
+      elif grep -qE '\[1002:|\[1022:' <<<"$line"; then
+        AMD_GPUS+=("pci=${pci}")
+      elif grep -q '\[10de:' <<<"$line"; then
+        NVIDIA_GPUS+=("pci=${pci}")
+      fi
+    done < <(lspci -nn -D 2>/dev/null | grep -E '^[^ ]+ (VGA compatible|XGA compatible|3D|Display) controller[ :]' || true)
+  else
+    while read -r vendor pci; do
+      [[ -n "$pci" ]] || continue
+      case "$vendor" in
+      8086) INTEL_GPUS+=("pci=${pci}") ;;
+      1002 | 1022) AMD_GPUS+=("pci=${pci}") ;;
+      10de) NVIDIA_GPUS+=("pci=${pci}") ;;
+      esac
+    done < <(_incus_target_gpus)
+  fi
 
   # DRM sysfs fallback (useful on ARM / non-PCI GPUs)
-  if [[ ${#INTEL_GPUS[@]} -eq 0 && ${#AMD_GPUS[@]} -eq 0 && ${#NVIDIA_GPUS[@]} -eq 0 && -d /sys/class/drm ]]; then
+  if incus_target_is_local && [[ ${#INTEL_GPUS[@]} -eq 0 && ${#AMD_GPUS[@]} -eq 0 && ${#NVIDIA_GPUS[@]} -eq 0 && -d /sys/class/drm ]]; then
     local card base drm_id vendor_hex
     for card in /sys/class/drm/card[0-9]*; do
       base=$(basename "$card")
@@ -655,11 +674,8 @@ incus_detect_gpu_devices() {
 
   # NVIDIA char devices as optional extra (driver nodes inside CT)
   local d
-  for d in /dev/nvidia*; do
-    [[ -c "$d" ]] && NVIDIA_CHAR_DEVS+=("$d")
-  done
-  if [[ -d /dev/nvidia-caps ]]; then
-    for d in /dev/nvidia-caps/*; do
+  if incus_target_is_local; then
+    for d in /dev/nvidia* /dev/nvidia-caps/*; do
       [[ -c "$d" ]] && NVIDIA_CHAR_DEVS+=("$d")
     done
   fi
@@ -837,7 +853,7 @@ incus_configure_device_passthrough() {
   fi
 
   # USB serial (privileged / optional bind) — mirrors PVE passthrough.func
-  if [[ "${CT_TYPE:-1}" == "0" || "${ENABLE_USB:-no}" == "yes" ]]; then
+  if incus_target_is_local && [[ "${CT_TYPE:-1}" == "0" || "${ENABLE_USB:-no}" == "yes" ]]; then
     local usb_dev usb_idx=0
     for usb_dev in /dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyACM0; do
       [[ -e "$usb_dev" ]] || continue
@@ -884,7 +900,7 @@ incus_configure_device_passthrough() {
     fi
   fi
 
-  if [[ -e /dev/apex_0 ]]; then
+  if incus_target_is_local && [[ -e /dev/apex_0 ]]; then
     msg_custom "🔌" "${BL}" "Detected Coral TPU - configuring passthrough"
     _incus_soft incus config device add "${CT_NAME}" apex0 unix-char source=/dev/apex_0 path=/dev/apex_0 >>"${LOGFILE:-$INCUS_BUILD_LOG}" 2>&1
   fi
