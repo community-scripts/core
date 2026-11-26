@@ -33,6 +33,7 @@ on:
       - "tests/install-script-fetch.sh"
       - "tests/java-memory.sh"
       - "tests/pve-no-ip-facts.sh"
+      - "tests/apt-lists-lock.sh"
       - "tests/sudo-env.sh"
       - "tests/template-broken.sh"
       - "tests/template-catalog-timeout.sh"
@@ -64,6 +65,7 @@ on:
       - "tests/console-hangup.sh"
       - "tests/setup-step-failures.sh"
       - "tests/pct-create-settings.sh"
+      - "tests/pve-base-packages-net-facts.sh"
       - "tests/container-removal-offer.sh"
       - "tests/incus-restricted-project.sh"
       - "tests/incus-target.sh"
@@ -123,6 +125,7 @@ on:
       - "tests/install-script-fetch.sh"
       - "tests/java-memory.sh"
       - "tests/pve-no-ip-facts.sh"
+      - "tests/apt-lists-lock.sh"
       - "tests/sudo-env.sh"
       - "tests/template-broken.sh"
       - "tests/template-catalog-timeout.sh"
@@ -154,6 +157,7 @@ on:
       - "tests/console-hangup.sh"
       - "tests/setup-step-failures.sh"
       - "tests/pct-create-settings.sh"
+      - "tests/pve-base-packages-net-facts.sh"
       - "tests/container-removal-offer.sh"
       - "tests/incus-restricted-project.sh"
       - "tests/incus-target.sh"
@@ -243,6 +247,9 @@ jobs:
       - name: No-IP diagnosis tests
         run: bash tests/pve-no-ip-facts.sh
 
+      - name: A held package lists lock is waited for, not taken for a bad mirror
+        run: bash tests/apt-lists-lock.sh
+
       - name: sudo environment tests
         run: bash tests/sudo-env.sh
 
@@ -327,6 +334,9 @@ jobs:
         run: bash tests/setup-step-failures.sh
       - name: pct create settings tests
         run: bash tests/pct-create-settings.sh
+
+      - name: A base package failure says what the container reaches
+        run: bash tests/pve-base-packages-net-facts.sh
       - name: Container removal offer tests
         run: bash tests/container-removal-offer.sh
 
