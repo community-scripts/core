@@ -64,6 +64,7 @@ on:
       - "tests/console-hangup.sh"
       - "tests/setup-step-failures.sh"
       - "tests/pct-create-settings.sh"
+      - "tests/pve-base-packages-net-facts.sh"
       - "tests/container-removal-offer.sh"
       - "tests/incus-restricted-project.sh"
       - "tests/incus-target.sh"
@@ -154,6 +155,7 @@ on:
       - "tests/console-hangup.sh"
       - "tests/setup-step-failures.sh"
       - "tests/pct-create-settings.sh"
+      - "tests/pve-base-packages-net-facts.sh"
       - "tests/container-removal-offer.sh"
       - "tests/incus-restricted-project.sh"
       - "tests/incus-target.sh"
@@ -327,6 +329,9 @@ jobs:
         run: bash tests/setup-step-failures.sh
       - name: pct create settings tests
         run: bash tests/pct-create-settings.sh
+
+      - name: A base package failure says what the container reaches
+        run: bash tests/pve-base-packages-net-facts.sh
       - name: Container removal offer tests
         run: bash tests/container-removal-offer.sh
 

@@ -145,6 +145,39 @@ _pct_create() {
 }
 
 # ------------------------------------------------------------------------------
+# _pve_ct_net_facts <log>
+#
+# What the container reaches when its base packages could not be fetched. Most
+# of those runs had no way out, and the message only said that apt or apk failed.
+# Returns 7 without a connection out, 6 when only names do not resolve.
+# ------------------------------------------------------------------------------
+_pve_ct_net_facts() {
+  local gw dns last host=deb.debian.org rc=0
+  [[ "${var_os:-}" == "alpine" ]] && host=dl-cdn.alpinelinux.org
+  gw="$(pct exec "$CTID" -- ip -4 route show default 2>/dev/null | awk '{print $3; exit}')" || gw=""
+  dns="$(pct exec "$CTID" -- awk '/^nameserver/ {printf "%s ", $2}' /etc/resolv.conf 2>/dev/null)" || dns=""
+  dns="${dns% }"
+  msg_warn "Container network: gateway ${gw:-none}, DNS ${dns:-none}"
+  if [[ -n "$gw" ]] && ! pct exec "$CTID" -- ping -c 1 -W 2 "$gw" &>/dev/null; then
+    msg_warn "The gateway ${gw} does not answer the container"
+  fi
+  if ! pct exec "$CTID" -- ping -c 1 -W 2 1.1.1.1 &>/dev/null &&
+    ! pct exec "$CTID" -- ping6 -c 1 -W 2 2606:4700:4700::1111 &>/dev/null &&
+    ! pct exec "$CTID" -- sh -c 'nc -z -w 3 1.1.1.1 443 || timeout 5 bash -c "exec 3<>/dev/tcp/1.1.1.1/443"' &>/dev/null; then
+    msg_warn "The container has no connection out (1.1.1.1)"
+    rc=7
+  elif ! pct exec "$CTID" -- getent hosts "$host" &>/dev/null; then
+    msg_warn "The container reaches the internet but resolves no names"
+    rc=6
+  fi
+  # The fetch error is the cause; "no such package" only follows from it.
+  last="$(grep -iE '^(E|Err|W|WARNING|ERROR):.*(resolv|connect|fetch|unreachable|timed out|DNS|TLS|network)' "${1:-/dev/null}" 2>/dev/null | tail -n 1 | cut -c1-200)" || last=""
+  [[ -n "$last" ]] || last="$(grep -E '^(E|Err|ERROR):' "${1:-/dev/null}" 2>/dev/null | tail -n 1 | cut -c1-200)" || last=""
+  [[ -z "$last" ]] || msg_custom "ℹ️" "${YW}" "${last}"
+  return $rc
+}
+
+# ------------------------------------------------------------------------------
 # _pve_no_ip_facts <ctid> <bridge>
 #
 # What the host can see about a container that got no address. It goes to the
@@ -1453,8 +1486,8 @@ EOF
         if _pve_ct_gone_during_setup; then
           install_exit_code=$_CS_SETUP_GONE_RC
         else
+          _pve_ct_net_facts "$BUILD_LOG" && install_exit_code=1 || install_exit_code=$?
           msg_error "Failed to install base packages in Alpine container"
-          install_exit_code=1
         fi
       fi
     }
@@ -1617,9 +1650,14 @@ EOF
 
         exit 2
       ' && mirror_exit=0 || mirror_exit=$?
+      local _net_rc=0
       if [[ $mirror_exit -ne 0 ]] && _pve_ct_gone_during_setup; then
         install_exit_code=$_CS_SETUP_GONE_RC
-      elif [[ $mirror_exit -eq 2 ]]; then
+      elif [[ $mirror_exit -ne 0 ]] && { _pve_ct_net_facts "$BUILD_LOG" || _net_rc=$?; ((_net_rc)); }; then
+        # No mirror helps a container without a way out, so none is asked for.
+        msg_error "apt-get base packages installation failed"
+        install_exit_code=$_net_rc
+      elif [[ $mirror_exit -eq 2 ]] && { : >/dev/tty; } 2>/dev/null; then
         msg_warn "Multiple mirrors failed (possible CDN synchronization issue)."
         if [[ "$var_os" == "ubuntu" ]]; then
           msg_warn "Find Ubuntu mirrors at: https://launchpad.net/ubuntu/+archivemirrors"
