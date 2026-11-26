@@ -33,6 +33,7 @@ on:
       - "tests/install-script-fetch.sh"
       - "tests/java-memory.sh"
       - "tests/pve-no-ip-facts.sh"
+      - "tests/apt-lists-lock.sh"
       - "tests/sudo-env.sh"
       - "tests/template-broken.sh"
       - "tests/template-catalog-timeout.sh"
@@ -123,6 +124,7 @@ on:
       - "tests/install-script-fetch.sh"
       - "tests/java-memory.sh"
       - "tests/pve-no-ip-facts.sh"
+      - "tests/apt-lists-lock.sh"
       - "tests/sudo-env.sh"
       - "tests/template-broken.sh"
       - "tests/template-catalog-timeout.sh"
@@ -242,6 +244,9 @@ jobs:
 
       - name: No-IP diagnosis tests
         run: bash tests/pve-no-ip-facts.sh
+
+      - name: A held package lists lock is waited for, not taken for a bad mirror
+        run: bash tests/apt-lists-lock.sh
 
       - name: sudo environment tests
         run: bash tests/sudo-env.sh
