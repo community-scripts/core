@@ -89,6 +89,7 @@ on:
       - "tests/db-helper-context.sh"
       - "tests/backup-nested-mount.sh"
       - "tests/forge-tag-spelling.sh"
+      - "tests/curl-download-reason.sh"
       - "tests/forge-deb-services.sh"
       - "tests/self-signed-cert.sh"
       - "tests/cs-clear.sh"
@@ -179,6 +180,7 @@ on:
       - "tests/db-helper-context.sh"
       - "tests/backup-nested-mount.sh"
       - "tests/forge-tag-spelling.sh"
+      - "tests/curl-download-reason.sh"
       - "tests/forge-deb-services.sh"
       - "tests/self-signed-cert.sh"
       - "tests/cs-clear.sh"
@@ -386,6 +388,9 @@ jobs:
         run: bash tests/backup-nested-mount.sh
       - name: Pinned tag with or without its v tests
         run: bash tests/forge-tag-spelling.sh
+
+      - name: A failed download says what curl said
+        run: bash tests/curl-download-reason.sh
       - name: Services after a .deb install tests
         run: bash tests/forge-deb-services.sh
       - name: Self-signed certificate tests
