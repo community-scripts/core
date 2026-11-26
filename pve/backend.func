@@ -1536,6 +1536,13 @@ EOF
     if ! pct exec "$CTID" -- bash -c "${_ct_env} getent hosts deb.debian.org >/dev/null 2>&1 && getent hosts archive.ubuntu.com >/dev/null 2>&1"; then
       msg_warn "APT repository DNS resolution failed in container, injecting public DNS servers"
       pct exec "$CTID" -- bash -c "echo -e 'nameserver 8.8.8.8\nnameserver 1.1.1.1' >/etc/resolv.conf"
+      # Still no names: apt spends ten minutes on its sources and mirrors before it gives up.
+      if [[ -z "${HTTP_PROXY:-}" && "${APT_CACHER:-}" != "yes" ]] && ! pct exec "$CTID" -- getent hosts deb.debian.org &>/dev/null; then
+        _pve_ct_net_facts "$BUILD_LOG" || {
+          install_exit_code=$?
+          msg_error "apt-get base packages installation failed"
+        }
+      fi
     fi
 
     # apt does not wait for the package lists lock; DPkg::Lock::Timeout only covers dpkg's.
@@ -1560,7 +1567,7 @@ EOF
       return $rc
     }'
 
-    _cs_shield_hangup pct exec "$CTID" -- bash -c "${_apt_update}; set -a; [ -f /etc/profile.d/90-http-proxy.sh ] && . /etc/profile.d/90-http-proxy.sh; set +a; ${_ct_env} cs_apt_update && apt-get install -y ${_base_pkgs} 2>&1" >>"$BUILD_LOG" 2>&1 || if _apt_rc=$?; _pve_ct_gone_during_setup; then
+    [[ $install_exit_code -ne 0 ]] || _cs_shield_hangup pct exec "$CTID" -- bash -c "${_apt_update}; set -a; [ -f /etc/profile.d/90-http-proxy.sh ] && . /etc/profile.d/90-http-proxy.sh; set +a; ${_ct_env} cs_apt_update && apt-get install -y ${_base_pkgs} 2>&1" >>"$BUILD_LOG" 2>&1 || if _apt_rc=$?; _pve_ct_gone_during_setup; then
       install_exit_code=$_CS_SETUP_GONE_RC
     elif [[ $_apt_rc -eq 75 ]]; then
       msg_error "apt-get base packages installation failed: another process in the container holds the package lists"

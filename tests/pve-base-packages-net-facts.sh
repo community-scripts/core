@@ -87,6 +87,8 @@ expect "a container without a way out is not asked for a mirror" 1 "$(grep -B4 '
 expect "and ends with the network code" 1 "$(grep -c 'install_exit_code=$_net_rc' "$src")"
 expect "without a terminal nobody is asked either" 1 "$(grep -c 'mirror_exit -eq 2 ]] && { : >/dev/tty; } 2>/dev/null; then' "$src")"
 
+expect "a container that still resolves nothing ends before apt runs" 1 "$(grep -c 'install_exit_code -ne 0 ]] || _cs_shield_hangup pct exec "$CTID" -- bash -c "${_apt_update}' "$src")"
+expect "unless a proxy or an apt cache does the resolving" 1 "$(grep -c 'z "${HTTP_PROXY:-}" && "${APT_CACHER:-}" != "yes" ]] && ! pct exec "$CTID" -- getent hosts deb.debian.org' "$src")"
 echo
 echo "$passed passed, $failed failed"
 [[ $failed -eq 0 ]]
