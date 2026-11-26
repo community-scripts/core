@@ -5,6 +5,8 @@ CORE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 eval "$(awk '/^incus_target[(][)] [{]/,/^}/' "$CORE_DIR/incus/core.func")"
 eval "$(awk '/^_cs_host_arch[(][)] [{]/,/^}/' "$CORE_DIR/core/core.func")"
 eval "$(awk '/^kvm_check[(][)] [{]/,/^}/' "$CORE_DIR/incus/vm-core.func")"
+eval "$(awk '/^vm_resolve_storage[(][)] [{]/,/^}/' "$CORE_DIR/incus/vm-core.func")"
+eval "$(awk '/^incus_get_storage_pools[(][)] [{]/,/^}/' "$CORE_DIR/incus/core.func")"
 
 TEST_DIR="$(mktemp -d)"
 trap 'rm -rf -- "$TEST_DIR"' EXIT
@@ -16,6 +18,8 @@ incus_msg_custom() { echo "$3" >>"$LOG"; }
 incus() {
   case "$1 ${2:-}" in
   "remote get-default") echo "${MOCK_REMOTE:-local}" ;;
+  "profile device") [[ -n "${MOCK_ROOT_POOL:-}" ]] && echo "$MOCK_ROOT_POOL" ;;
+  "storage list") printf '%s\n' ${MOCK_POOLS:-} ;;
   "info ")
     # Newer servers indent the list by four; kernel_architecture is the scalar we prefer.
     if [[ -n "${MOCK_KERNEL_ARCH:-}" ]]; then
@@ -62,6 +66,19 @@ fatal() { echo "fatal: $*"; }
 expect "a remote with qemu passes without a local /dev/kvm" "" "$(INCUS_REMOTE=incus001 MOCK_DRIVER="lxc | qemu" kvm_check)"
 expect "a remote without qemu stops" 1 "$(INCUS_REMOTE=incus001 MOCK_DRIVER=lxc kvm_check | grep -c "no qemu driver")"
 expect "a remote without driver info is not judged by local /dev/kvm" "" "$(INCUS_REMOTE=incus001 kvm_check)"
+
+unset var_storage VM_STORAGE
+MOCK_ROOT_POOL=local MOCK_POOLS="data local" vm_resolve_storage
+expect "the default profile's root pool is used" local "$var_storage"
+unset var_storage
+MOCK_POOLS="nvme local" vm_resolve_storage
+expect "without a root pool the first pool is used" nvme "$var_storage"
+var_storage=data
+MOCK_ROOT_POOL=local vm_resolve_storage
+expect "a pinned var_storage is kept" data "$var_storage"
+unset var_storage
+VM_STORAGE=fast MOCK_ROOT_POOL=local vm_resolve_storage
+expect "VM_STORAGE wins" fast "$var_storage"
 
 printf '%s passed, %s failed\n' "$passed" "$failed"
 ((failed == 0))
