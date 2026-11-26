@@ -328,6 +328,7 @@ vm_echo_default_settings() {
 # it is defined, so each script still supplies its own.
 vm_start_script() {
   vm_preflight
+  vm_resolve_storage
   if [[ "${VM_UNATTENDED:-0}" == "1" ]]; then
     METHOD="unattended"
     # This branch returns before vm_choose_settings_mode, where the bridge is
@@ -423,6 +424,15 @@ vm_confirm_new_vm() {
   local message="${2:-Create new VM?}"
   [[ "${VM_UNATTENDED:-0}" == "1" ]] && return 0
   prompt_confirm "$message" "y" 60
+}
+
+# Fills var_storage from the default profile's root pool, else the first pool.
+vm_resolve_storage() {
+  [[ -n "${VM_STORAGE:-}" ]] && var_storage="$VM_STORAGE"
+  [[ -n "${var_storage:-}" ]] && return 0
+  var_storage="$(LC_ALL=C incus profile device get default root pool 2>/dev/null || true)"
+  [[ -n "$var_storage" ]] || var_storage="$(incus_get_storage_pools | sed -n '/./{p;q}')"
+  return 0
 }
 
 # ------------------------------------------------------------------------------
