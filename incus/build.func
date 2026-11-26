@@ -624,7 +624,7 @@ ct_exec_hint() {
 # ct_attach_volume <size in GB> <mount point> - a custom volume on the
 # container's pool. Incus keeps it when the container is deleted.
 ct_attach_volume() {
-  local size="$1" mp="$2" pool="${CONTAINER_STORAGE:-${STORAGE_POOL:-default}}" log="${BUILD_LOG:-/dev/null}"
+  local size="$1" mp="$2" pool="${CONTAINER_STORAGE:-${STORAGE_POOL:-$(incus_default_storage_pool)}}" log="${BUILD_LOG:-/dev/null}"
   local name="${mp##*/}"
   if incus storage volume create "$pool" "${CT_NAME}-${name}" size="${size}GiB" >>"$log" 2>&1 &&
     incus config device add "${CT_NAME}" "$name" disk pool="$pool" source="${CT_NAME}-${name}" path="$mp" >>"$log" 2>&1; then
