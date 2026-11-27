@@ -199,6 +199,15 @@ populate_advanced_bridge_menu() {
     # not a choice worth presenting.
     case "$type" in
     bridge | ovn | macvlan) ;;
+    physical)
+      # Except a managed one on a bridge, which Incus attaches like a bridged
+      # NIC; that is the LAN network on IncusOS.
+      if grep -qE '^managed:[[:space:]]*true$' <<<"$cfg" && up=$(_incus_bridge_uplink "$n"); then
+        BRIDGES="${n}"$'\n'"${BRIDGES}"
+        BRIDGE_MENU_OPTIONS+=("$n" "LAN bridge (uplink: ${up})")
+      fi
+      continue
+      ;;
     *) continue ;;
     esac
 
