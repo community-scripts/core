@@ -923,12 +923,6 @@ $PCT_OPTIONS_STRING"
   -memory $RAM_SIZE
   -unprivileged $CT_TYPE"
 
-  # Protection flag (if var_protection was set)
-  if [ "${PROTECT_CT:-}" == "1" ] || [ "${PROTECT_CT:-}" == "yes" ]; then
-    PCT_OPTIONS_STRING="$PCT_OPTIONS_STRING
-  -protection 1"
-  fi
-
   # Console mode (if var_cmode was set); pct takes shell, console or tty
   if [ -n "${CT_CMODE:-}" ]; then
     case "$CT_CMODE" in
@@ -2261,6 +2255,7 @@ $_install_script"
             msg_ok "Installation completed successfully after APT repair!"
             INSTALL_COMPLETE=true
             post_update_to_api "done" "0" "force"
+            _pve_protect_ct
             return 0
           else
             msg_error "Installation still failed after APT repair (exit code: ${apt_retry_code})"
@@ -2388,8 +2383,19 @@ $_install_script"
     exit $install_exit_code
   fi
 
+  _pve_protect_ct
   set -Eeuo pipefail
   trap 'error_handler' ERR
+}
+
+# Protection blocks pct destroy, so it waits for a finished install: set at
+# creation, every "Remove container" after a failure left it behind while
+# reporting it removed.
+_pve_protect_ct() {
+  [[ "${PROTECT_CT:-}" == "1" || "${PROTECT_CT:-}" == "yes" ]] || return 0
+  pct set "$CTID" --protection 1 >>"${BUILD_LOG:-/dev/null}" 2>&1 ||
+    msg_warn "Could not enable protection on container ${CTID}: pct set ${CTID} --protection 1"
+  return 0
 }
 
 destroy_lxc() {
