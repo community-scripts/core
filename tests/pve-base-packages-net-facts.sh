@@ -89,6 +89,13 @@ expect "without a terminal nobody is asked either" 1 "$(grep -c 'mirror_exit -eq
 
 expect "a container that still resolves nothing ends before apt runs" 1 "$(grep -c 'install_exit_code -ne 0 ]] || _cs_shield_hangup pct exec "$CTID" -- bash -c "${_apt_update}' "$src")"
 expect "unless a proxy or an apt cache does the resolving" 1 "$(grep -c 'z "${HTTP_PROXY:-}" && "${APT_CACHER:-}" != "yes" ]] && ! pct exec "$CTID" -- getent hosts deb.debian.org' "$src")"
+
+# A container without a gateway was offered "Retry with DNS override", which
+# rebuilt it and failed the same way.
+for f in pve/backend.func incus/backend.func; do
+  expect "$f offers no DNS retry without a connection out" 1 \
+    "$(grep -B2 'Retry with DNS override in LXC' "$CORE_DIR/$f" | grep -c 'is_network_issue" == true && $install_exit_code -ne 7 ]]')"
+done
 echo
 echo "$passed passed, $failed failed"
 [[ $failed -eq 0 ]]

@@ -2115,7 +2115,8 @@ $_install_script"
       fi
     fi
 
-    if [[ "$is_network_issue" == true ]]; then
+    # 7: no connection out at all, which other DNS servers do not change
+    if [[ "$is_network_issue" == true && $install_exit_code -ne 7 ]]; then
       echo -e "  ${GN}${next_option})${CL} Retry with DNS override in LXC (8.8.8.8 / 1.1.1.1)"
       DNS_OPTION=$next_option
       next_option=$((next_option + 1))
