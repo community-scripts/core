@@ -1242,13 +1242,16 @@ vm_prompt_static_lease() {
 vm_check_image() {
   local image="${1:?image}"
   local remote="${image%%:*}" fingerprint="${image#*:}"
-  [[ "$image" != *:* ]] && remote="local"
+  # A bare name is an image we imported: it lives on the target, and "local:"
+  # on a client that drives a remote is a daemon that does not exist.
+  [[ "$image" != *:* ]] && remote="${INCUS_REMOTE:-local}"
 
   msg_info "Checking image ${image} for a VM variant"
   # Filter on the remote instead of scanning the alias column: incus truncates
   # that column ("debian/13 (3 more)"), so an exact match missed variants that
-  # were present and every run continued on a warning instead.
-  if [[ -n "$(LC_ALL=C incus image list "${remote}:${fingerprint}" type=virtual-machine --format csv -c l 2>/dev/null)" ]]; then
+  # were present and every run continued on a warning instead. Remote and filter
+  # are separate arguments: Incus 7 matches nothing for "images:debian/13".
+  if [[ -n "$(LC_ALL=C incus image list "${remote}:" "${fingerprint}" type=virtual-machine --format csv -c l 2>/dev/null)" ]]; then
     msg_ok "Image ${image} has a VM variant"
     return 0
   fi
