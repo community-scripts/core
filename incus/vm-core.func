@@ -86,20 +86,24 @@ check_root() { incus_root_check; }
 pve_check() { incus_check; }
 
 arch_check() {
-  # uname, not dpkg: an Incus host is not necessarily Debian-based.
   local arch
-  arch="$(uname -m 2>/dev/null || echo unknown)"
+  arch="$(_cs_host_arch)"
   case "$arch" in
   x86_64 | amd64 | aarch64 | arm64) ;;
   *) fatal "Unsupported architecture for Incus VMs: $arch" ;;
   esac
 }
 
-# An Incus host without KVM can only run containers.
+# Asks the target server: on a remote, the local /dev/kvm says nothing.
 kvm_check() {
-  if [[ ! -e /dev/kvm ]]; then
-    fatal "No /dev/kvm on this host - Incus cannot run virtual machines here."
+  local drivers
+  drivers="$(LC_ALL=C incus info 2>/dev/null | awk '$1 == "driver:" {sub(/^[^:]*: */, ""); print; exit}')"
+  if [[ -n "$drivers" ]]; then
+    [[ "$drivers" == *qemu* ]] && return 0
+    fatal "Incus on '${INCUS_REMOTE:-local}' has no qemu driver (no KVM?) - it cannot run virtual machines."
   fi
+  [[ "${INCUS_REMOTE:-local}" != "local" || -e /dev/kvm ]] ||
+    fatal "No /dev/kvm on this host - Incus cannot run virtual machines here."
 }
 
 ssh_check() { :; }
@@ -207,8 +211,8 @@ vm_preflight() {
   [[ -n "${_CS_VM_PREFLIGHT_DONE:-}" ]] && return 0
   _CS_VM_PREFLIGHT_DONE=1
   check_root
-  [[ "${var_arm64:-no}" == "yes" ]] || arch_check
   pve_check
+  [[ "${var_arm64:-no}" == "yes" ]] || arch_check
   ssh_check
   # An Incus host without /dev/kvm only runs containers, and finding that out
   # after the wizard wastes the operator's time.
@@ -323,6 +327,7 @@ vm_echo_default_settings() {
 # it is defined, so each script still supplies its own.
 vm_start_script() {
   vm_preflight
+  vm_resolve_storage
   if [[ "${VM_UNATTENDED:-0}" == "1" ]]; then
     METHOD="unattended"
     # This branch returns before vm_choose_settings_mode, where the bridge is
@@ -420,6 +425,13 @@ vm_confirm_new_vm() {
   prompt_confirm "$message" "y" 60
 }
 
+# Fills var_storage from the default profile's root pool, else the first pool.
+vm_resolve_storage() {
+  [[ -n "${VM_STORAGE:-}" ]] && var_storage="$VM_STORAGE"
+  [[ -n "${var_storage:-}" ]] || var_storage="$(incus_default_storage_pool)"
+  return 0
+}
+
 # ------------------------------------------------------------------------------
 # vm_resolve_bridge()
 #
@@ -511,7 +523,7 @@ vm_confirm_advanced_settings() {
 # Parity with pve/vm-core.func: a shared template may ask for the host
 # architecture on either backend. Incus itself picks the image arch.
 vm_arch() {
-  case "${VM_ARCH:-$(dpkg --print-architecture 2>/dev/null || uname -m)}" in
+  case "${VM_ARCH:-$(_cs_host_arch)}" in
   arm64 | aarch64) echo "arm64" ;;
   *) echo "amd64" ;;
   esac
@@ -809,7 +821,7 @@ _vm_pool_free_gib() {
   [[ "$free" =~ ^[0-9]+$ ]] || free=""
   if [[ -z "$free" ]]; then
     src="$(LC_ALL=C incus storage get "$pool" source 2>/dev/null || true)"
-    [[ -n "$src" && -d "$src" ]] &&
+    incus_target_is_local && [[ -n "$src" && -d "$src" ]] &&
       free="$(df -PB1 "$src" 2>/dev/null | awk 'NR==2 {print $4}')"
   fi
   [[ "$free" =~ ^[0-9]+$ ]] && ((free > 0)) || return 1
@@ -920,7 +932,7 @@ vm_define_disk_references() {
   for ((i = 0; i < disk_count; i++)); do
     disk_name="${HN:-vm}-disk-${i}"
     printf -v "DISK${i}" '%s' "$disk_name"
-    printf -v "DISK${i}_REF" '%s' "${STORAGE:-default}:${disk_name}"
+    printf -v "DISK${i}_REF" '%s' "${STORAGE:-$(incus_default_storage_pool)}:${disk_name}"
   done
 }
 
@@ -1230,13 +1242,16 @@ vm_prompt_static_lease() {
 vm_check_image() {
   local image="${1:?image}"
   local remote="${image%%:*}" fingerprint="${image#*:}"
-  [[ "$image" != *:* ]] && remote="local"
+  # A bare name is an image we imported: it lives on the target, and "local:"
+  # on a client that drives a remote is a daemon that does not exist.
+  [[ "$image" != *:* ]] && remote="${INCUS_REMOTE:-local}"
 
   msg_info "Checking image ${image} for a VM variant"
   # Filter on the remote instead of scanning the alias column: incus truncates
   # that column ("debian/13 (3 more)"), so an exact match missed variants that
-  # were present and every run continued on a warning instead.
-  if [[ -n "$(LC_ALL=C incus image list "${remote}:${fingerprint}" type=virtual-machine --format csv -c l 2>/dev/null)" ]]; then
+  # were present and every run continued on a warning instead. Remote and filter
+  # are separate arguments: Incus 7 matches nothing for "images:debian/13".
+  if [[ -n "$(LC_ALL=C incus image list "${remote}:" "${fingerprint}" type=virtual-machine --format csv -c l 2>/dev/null)" ]]; then
     msg_ok "Image ${image} has a VM variant"
     return 0
   fi
@@ -1710,7 +1725,11 @@ _vm_import_local_image() {
   command -v tar >/dev/null 2>&1 || { msg_error "tar is required to import a disk image into Incus"; return 1; }
 
   alias="${alias:-cs-$(basename "${file%.*}")}"
-  arch="$(uname -m)"
+  arch="$(_cs_host_arch)"
+  case "$arch" in
+  arm64) arch="aarch64" ;;
+  amd64) arch="x86_64" ;;
+  esac
 
   magic=$(head -c 3 "$file" 2>/dev/null | tr -d '\0')
   if [[ "$magic" != "QFI" ]]; then
@@ -1973,7 +1992,8 @@ incus_vm_create() {
   # LAN one, which is the whole reason vm_resolve_bridge exists.
   [[ -n "${BRG:-}" ]] || BRG="$(incus_pick_default_network)"
   args+=(--network "${BRG}")
-  args+=(--storage "${STORAGE:-default}")
+  [[ -n "${STORAGE:-}" ]] || STORAGE="$(incus_default_storage_pool)"
+  args+=(--storage "${STORAGE}")
 
   # Root disk: size plus the optional bus and cache overrides.
   local root_dev="root,size=${incus_size}"
@@ -2070,7 +2090,7 @@ incus_vm_create() {
 
   if [[ -n "${EXTRA_DISK_SIZE:-}" ]]; then
     if incus config device add "$vm_name" data disk \
-      pool="${STORAGE:-default}" size="${EXTRA_DISK_SIZE}GiB" >/dev/null 2>&1; then
+      pool="${STORAGE}" size="${EXTRA_DISK_SIZE}GiB" >/dev/null 2>&1; then
       msg_ok "Attached a ${EXTRA_DISK_SIZE} GiB second disk (unformatted)"
     else
       msg_warn "Could not attach the second disk"
