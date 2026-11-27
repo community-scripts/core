@@ -69,6 +69,7 @@ on:
       - "tests/container-removal-offer.sh"
       - "tests/incus-restricted-project.sh"
       - "tests/incus-target.sh"
+      - "tests/incus-network-candidates.sh"
       - "tests/incus-vm-image-check.sh"
       - "tests/incus-base-packages.sh"
       - "tests/incus-network-wait.sh"
@@ -163,6 +164,7 @@ on:
       - "tests/container-removal-offer.sh"
       - "tests/incus-restricted-project.sh"
       - "tests/incus-target.sh"
+      - "tests/incus-network-candidates.sh"
       - "tests/incus-vm-image-check.sh"
       - "tests/incus-base-packages.sh"
       - "tests/incus-network-wait.sh"
@@ -349,6 +351,9 @@ jobs:
 
       - name: Incus target tests
         run: bash tests/incus-target.sh
+
+      - name: The network picker offers the LAN network, also on IncusOS
+        run: bash tests/incus-network-candidates.sh
 
       - name: An imported VM image is checked on the target remote
         run: bash tests/incus-vm-image-check.sh

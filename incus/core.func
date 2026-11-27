@@ -660,6 +660,21 @@ incus_get_networks() {
   incus network list -f csv,noheader 2>/dev/null | grep -v '^lo$' | cut -d, -f1
 }
 
+# Prints the members of the Linux bridge behind a network, as the server sees
+# them; `ip link` reads this machine, which on a remote client is not the
+# server. For a managed physical network Incus reports its parent, which tells
+# a bridged uplink from a bare NIC. Returns 1 when no bridge is behind it.
+_incus_bridge_members() {
+  local state
+  state=$(incus query "/1.0/networks/${1:?network}/state" 2>/dev/null) || return 1
+  grep -qE '"bridge":[[:space:]]*\{' <<<"$state" || return 1
+  awk '
+    /"upper_devices":/ { if ($0 ~ /\[[[:space:]]*\]|null/) exit; f = 1; next }
+    f && /\]/ { exit }
+    f { gsub(/[",[:space:]]/, ""); if ($0 != "") print }
+  ' <<<"$state"
+}
+
 # Prints the first member of a bridge that is not a guest interface, so a
 # caller can tell a LAN bridge from a private one. A bridge carrying a physical
 # NIC or a VLAN reaches the network; one holding only veth and tap devices does
@@ -674,7 +689,7 @@ _incus_bridge_uplink() {
     esac
     echo "$m"
     return 0
-  done < <(ip -o link show master "$br" 2>/dev/null | awk -F'[:@ ]+' '{print $2}')
+  done < <(_incus_bridge_members "$br")
   return 1
 }
 
@@ -713,7 +728,10 @@ incus_default_profile_network() {
 # `incus network list` also reports plain host interfaces as type physical, and
 # attaching one moves the host's NIC into the instance - which an unprivileged
 # container cannot start with, and which would cut the host off if it could.
-# Picking the uplink is a decision for the operator, never a default.
+# Picking the uplink is a decision for the operator, never a default. The
+# exception is a managed physical network whose parent is a bridge: Incus
+# (6.14+) attaches that like a bridged NIC, and it is how IncusOS puts
+# instances on the LAN.
 #
 # Unmanaged bridges do belong here though. A br0 or br20 built by hand in
 # netplan is precisely the bridge people want, and requiring managed:true
@@ -733,11 +751,18 @@ incus_network_candidates() {
   while IFS= read -r n; do
     [[ -z "$n" ]] && continue
     cfg=$(LC_ALL=C incus network show "$n" 2>/dev/null || true)
-    grep -qE '^type:[[:space:]]*bridge$' <<<"$cfg" || continue
 
     # used_by lists every instance and profile referencing the network. Only
     # the instances say anything about where this host's guests live.
     used=$(grep -cE '^-[[:space:]]+/1\.0/instances/' <<<"$cfg" || true)
+
+    if grep -qE '^type:[[:space:]]*physical$' <<<"$cfg"; then
+      if grep -qE '^managed:[[:space:]]*true$' <<<"$cfg" && _incus_bridge_uplink "$n" >/dev/null; then
+        uplink+=("${used:-0} $n")
+      fi
+      continue
+    fi
+    grep -qE '^type:[[:space:]]*bridge$' <<<"$cfg" || continue
 
     if grep -qE '^managed:[[:space:]]*true$' <<<"$cfg"; then
       if grep -qE '^[[:space:]]+ipv[46]\.nat:[[:space:]]*"?true"?' <<<"$cfg"; then
@@ -755,7 +780,11 @@ incus_network_candidates() {
   local -a ranked=()
   while IFS= read -r n; do
     [[ -n "$n" ]] && ranked+=("$n")
-  done < <(printf '%s\n' "${uplink[@]}" "${lan[@]}" "${nated[@]}" | sed '/^[[:space:]]*$/d' | sort -s -k1,1nr | cut -d' ' -f2-)
+  done < <({
+    printf '0 %s\n' "${uplink[@]}"
+    printf '1 %s\n' "${lan[@]}"
+    printf '2 %s\n' "${nated[@]}"
+  } | grep -vE '^[0-9] $' | sort -s -k1,1n -k2,2nr | cut -d' ' -f3-)
   ((${#ranked[@]})) || return 1
 
   # The default profile's network goes first when it is one of the candidates
