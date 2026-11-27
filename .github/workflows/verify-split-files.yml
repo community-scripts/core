@@ -75,6 +75,7 @@ on:
       - "tests/incus-guest-file-pull.sh"
       - "tests/incus-storage-space.sh"
       - "tests/ct-host-helpers.sh"
+      - "tests/protection-after-install.sh"
       - "tests/release-stamp-pending.sh"
       - "tests/pct-start-reason.sh"
       - "tests/vm-silent.sh"
@@ -168,6 +169,7 @@ on:
       - "tests/incus-guest-file-pull.sh"
       - "tests/incus-storage-space.sh"
       - "tests/ct-host-helpers.sh"
+      - "tests/protection-after-install.sh"
       - "tests/release-stamp-pending.sh"
       - "tests/pct-start-reason.sh"
       - "tests/vm-silent.sh"
@@ -365,6 +367,9 @@ jobs:
 
       - name: ct host helper tests
         run: bash tests/ct-host-helpers.sh
+
+      - name: A protected container can still be removed after a failed install
+        run: bash tests/protection-after-install.sh
       - name: Release stamp pending marker tests
         run: bash tests/release-stamp-pending.sh
       - name: pct start reason tests
