@@ -1249,13 +1249,9 @@ vm_check_image() {
   msg_info "Checking image ${image} for a VM variant"
   # Filter on the remote instead of scanning the alias column: incus truncates
   # that column ("debian/13 (3 more)"), so an exact match missed variants that
-  # were present and every run continued on a warning instead.
-  if [[ -n "$(LC_ALL=C incus image list "${remote}:${fingerprint}" type=virtual-machine --format csv -c l 2>/dev/null)" ]]; then
-    msg_ok "Image ${image} has a VM variant"
-    return 0
-  fi
-  # The list filter does not match the alias of an imported image.
-  if LC_ALL=C incus image info "${remote}:${fingerprint}" 2>/dev/null | grep -qx 'Type: virtual-machine'; then
+  # were present and every run continued on a warning instead. Remote and filter
+  # are separate arguments: Incus 7 matches nothing for "images:debian/13".
+  if [[ -n "$(LC_ALL=C incus image list "${remote}:" "${fingerprint}" type=virtual-machine --format csv -c l 2>/dev/null)" ]]; then
     msg_ok "Image ${image} has a VM variant"
     return 0
   fi
