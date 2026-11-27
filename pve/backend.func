@@ -2780,6 +2780,12 @@ validate_ct_settings() {
   if [[ -n "${GATE:-}" ]] && ! validate_gateway_ip "${GATE#,gw=}"; then
     problems+=("gateway '${GATE#,gw=}' is not an IPv4 address (var_gateway)")
   fi
+  # pct accepts it, but the container then has no route out and fails at its
+  # base packages. The wizard never lets a static address go without a gateway.
+  local gate="${GATE:-}"
+  if [[ "${NET:-}" == */* && -z "${gate#,gw=}" && -z "${HTTP_PROXY:-}" && ! "${IPV6_METHOD:-none}" =~ ^(auto|dhcp)$ ]]; then
+    problems+=("static IPv4 ${NET} has no gateway, so the container cannot reach the internet to install (var_gateway)")
+  fi
   if ! validate_nameservers "$ns"; then
     problems+=("DNS server '${ns}' must be IP addresses (var_ns)")
   fi
@@ -2791,7 +2797,7 @@ validate_ct_settings() {
   fi
 
   [[ ${#problems[@]} -eq 0 ]] && return 0
-  msg_error "These settings would be rejected by pct create:"
+  msg_error "These settings would be rejected by pct create or leave the container offline:"
   local p
   for p in "${problems[@]}"; do
     echo -e "${TAB}- ${p}"
