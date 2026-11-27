@@ -32,8 +32,28 @@ expect "an empty list stays empty" "" "$(_cs_pct_list , "  ")"
 
 valid() {
   CTID=105 CORE_COUNT=2 DISK_SIZE=8 RAM_SIZE=2048 PW="" NET=dhcp GATE="" ALLOW_MOUNT_FS=""
-  NS="-nameserver=1.1.1.1 9.9.9.9" SD="-searchdomain=home.lan"
+  NS="-nameserver=1.1.1.1 9.9.9.9" SD="-searchdomain=home.lan" HTTP_PROXY="" IPV6_METHOD=none
 }
+
+# A generated command with var_net and no var_gateway built the container and
+# failed at its base packages: "gateway none", no connection out.
+valid
+NET=192.168.20.33/24
+out="$(validate_ct_settings)"
+expect "a static address without a gateway is refused before pct create" 208 "$?"
+expect "and named" 1 "$(grep -c "static IPv4 192.168.20.33/24 has no gateway" <<<"$out")"
+GATE=192.168.20.1
+(validate_ct_settings) >/dev/null
+expect "with var_gateway it passes" 0 "$?"
+GATE=",gw=192.168.20.1"
+(validate_ct_settings) >/dev/null
+expect "and with the wizard's form" 0 "$?"
+GATE="" HTTP_PROXY="http://192.168.20.5:3128"
+(validate_ct_settings) >/dev/null
+expect "a proxy on the same network is a way out" 0 "$?"
+HTTP_PROXY="" IPV6_METHOD=auto
+(validate_ct_settings) >/dev/null
+expect "so is IPv6 from the network" 0 "$?"
 
 valid
 out="$(validate_ct_settings)"
