@@ -1618,7 +1618,9 @@ get_header() {
       return 0
     fi
 
-    if ! mkdir -p "$(dirname "$cached")" 2>/dev/null; then
+    # A cache another user created (a root run, then a non-root one) exists but
+    # is not ours to write: the download failed on it and the banner was gone.
+    if ! mkdir -p "$(dirname "$cached")" 2>/dev/null || [[ ! -w "$(dirname "$cached")" ]]; then
       # Nothing writable anywhere: still draw the banner, just uncached.
       curl -fsSL --connect-timeout 5 --max-time 15 "${core_url}/headers/${rel}" 2>/dev/null && return 0
       continue

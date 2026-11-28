@@ -80,6 +80,7 @@ on:
       - "tests/release-stamp-pending.sh"
       - "tests/pct-start-reason.sh"
       - "tests/vm-silent.sh"
+      - "tests/header-unwritable-cache.sh"
       - "tests/vm-cleanup-own-vm.sh"
       - "tests/vm-failure-reasons.sh"
       - "tests/vm-root-fs-soft.sh"
@@ -175,6 +176,7 @@ on:
       - "tests/release-stamp-pending.sh"
       - "tests/pct-start-reason.sh"
       - "tests/vm-silent.sh"
+      - "tests/header-unwritable-cache.sh"
       - "tests/vm-cleanup-own-vm.sh"
       - "tests/vm-failure-reasons.sh"
       - "tests/vm-root-fs-soft.sh"
@@ -381,6 +383,8 @@ jobs:
         run: bash tests/pct-start-reason.sh
       - name: VM silent helper tests
         run: bash tests/vm-silent.sh
+      - name: Header cache tests
+        run: bash tests/header-unwritable-cache.sh
       - name: VM cleanup tests
         run: bash tests/vm-cleanup-own-vm.sh
       - name: VM failure reason tests
