@@ -62,6 +62,7 @@ var_cpu=4
 var_ctid=150
 EOF
 printf 'var_vlan=\n' >"$SETS/untagged.vars"
+printf 'var_vlan=""\n' >"$SETS/untagged-q.vars"
 printf 'var_ns=10.0.0.1\nvar_tags=dmz\n' >"$SETS/DMZ_2.vars"
 printf 'var_vlan=99\n' >"$SETS/not a name.vars"
 printf 'var_vlan=98\n' >"$SETS/default.vars"
@@ -86,12 +87,13 @@ check "the environment wins over a set" "vmbr1|30|4|192.168.1.1|dhcp|" "$(run vl
 check "var_defaults picks the set" "vmbr1|20|4|192.168.1.1|dhcp|" "$(run "" var_defaults=vlan20)"
 check "var_defaults=default is default.vars" "vmbr0|10|2|192.168.1.1|unset|" "$(run "" var_defaults=default)"
 check "an empty value switches a default.vars setting off" "vmbr0||2|192.168.1.1|unset|" "$(run untagged)"
+check "so does a quoted one, as the website writes it" "vmbr0||2|192.168.1.1|unset|" "$(run untagged-q)"
 check "a name may carry capitals and _" "vmbr0|10|2|10.0.0.1|unset|" "$(run DMZ_2)"
 
 check "an unknown set stops the run, nothing is loaded" "rc=1|unset|unset|unset|unset|unset|" "$(run vlan99)"
 run vlan99 >/dev/null
 check "it names the file it looked for" 1 "$(grep -c "mydefaults/vlan99.vars is missing" "$LOG")"
-check "and what is there" 1 "$(grep -c 'Available: default DMZ_2 untagged vlan20' "$LOG")"
+check "and what is there" 1 "$(grep -c 'Available: default DMZ_2 untagged untagged-q vlan20' "$LOG")"
 check "a path is not a name" "rc=1|unset|unset|unset|unset|unset|" "$(run ../default)"
 check "nor is a name with a space" "rc=1|unset|unset|unset|unset|unset|" "$(run "not a name")"
 check "nor one of 33 characters" "rc=1|unset|unset|unset|unset|unset|" "$(run aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
@@ -101,7 +103,7 @@ check "a reserved key in a set is reported" 1 "$(grep -c 'var_ctid in .*vlan20.v
 check "the set file is exported for later steps" "$SETS/vlan20.vars" "$(default_var_settings vlan20 >/dev/null 2>&1 && echo "$CS_DEFAULTS_SET_FILE")"
 check "and gone without a set" "" "$(export CS_DEFAULTS_SET_FILE=stale && default_var_settings "" >/dev/null 2>&1 && echo "${CS_DEFAULTS_SET_FILE-}")"
 
-check "sets are listed sorted, files that are no names left out" "DMZ_2 untagged vlan20" "$(list_defaults_sets | paste -sd' ')"
+check "sets are listed sorted, files that are no names left out" "DMZ_2 untagged untagged-q vlan20" "$(list_defaults_sets | paste -sd' ')"
 check "a summary names bridge, VLAN and address" "vmbr1, VLAN 20, dhcp" "$(_defaults_set_summary "$SETS/vlan20.vars")"
 check "or counts the settings" "2 settings" "$(_defaults_set_summary "$SETS/DMZ_2.vars")"
 printf '#var_brg=
