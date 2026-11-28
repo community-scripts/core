@@ -72,7 +72,7 @@ expect "another failure is not retried" "1 100" "$calls $rc"
 src="$CORE_DIR/pve/backend.func"
 expect "the first attempt goes through the wait" 1 "$(grep -c 'cs_apt_update && apt-get install -y ${_base_pkgs}' "$src")"
 expect "a lock that stayed skips the mirrors" 1 "$(grep -c '_apt_rc -eq 75' "$src")"
-expect "the mirror loop waits too" 1 "$(grep -c 'APT_OUT=$(cs_apt_update)' "$src")"
+expect "the mirror loop waits too, on its security retry as well" 2 "$(grep -c 'APT_OUT=$(cs_apt_update)' "$src")"
 expect "and stops on a lock" 1 "$(grep -A3 'APT_OUT=$(cs_apt_update)' "$src" | grep -c 'APT_RC -eq 75')"
 
 echo

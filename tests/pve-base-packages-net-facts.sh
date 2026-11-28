@@ -82,7 +82,7 @@ facts
 expect "apt's fetch error too" 1 "$(grep -c "INFO E: Failed to fetch .*Temporary failure resolving" "$TEST_DIR/out")"
 
 src="$CORE_DIR/pve/backend.func"
-expect "the Alpine failure reports them and takes their code" 1 "$(grep -B1 'msg_error "Failed to install base packages in Alpine container"' "$src" | grep -c '_pve_ct_net_facts "$BUILD_LOG" && install_exit_code=1 || install_exit_code=$?')"
+expect "the Alpine failure reports them and takes their code, else 100" 1 "$(grep -B1 'msg_error "Failed to install base packages in Alpine container"' "$src" | grep -c '_pve_ct_net_facts "$BUILD_LOG" && install_exit_code=100 || install_exit_code=$?')"
 expect "a container without a way out is not asked for a mirror" 1 "$(grep -B4 'mirror_exit -eq 2 ]] && { : >/dev/tty; }' "$src" | grep -c '_pve_ct_net_facts "$BUILD_LOG" || _net_rc=$?; ((_net_rc))')"
 expect "and ends with the network code" 1 "$(grep -c 'install_exit_code=$_net_rc' "$src")"
 expect "without a terminal nobody is asked either" 1 "$(grep -c 'mirror_exit -eq 2 ]] && { : >/dev/tty; } 2>/dev/null; then' "$src")"

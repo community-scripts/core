@@ -994,26 +994,31 @@ fix_gpu_gids() {
   msg_ok "GPU passthrough configured (video:${video_gid}, render:${render_gid})"
 }
 
-# _incus_ct_net_facts [log] - what the container can reach, and apt's own last
-# error, for a base package install that failed.
+# _incus_ct_net_facts [log] [host] - what the container can reach, and the package
+# manager's own last error, for a base package install that failed.
+# Returns 7 without a connection out, 6 when only names do not resolve.
 _incus_ct_net_facts() {
-  local gw dns last
+  local gw dns last host="${2:-deb.debian.org}" rc=0
   gw="$(incus_ct_exec ip -4 route show default 2>/dev/null | awk '{print $3; exit}')" || gw=""
   dns="$(incus_ct_exec awk '/^nameserver/ {printf "%s ", $2}' /etc/resolv.conf 2>/dev/null)" || dns=""
   msg_warn "Container network: gateway ${gw:-none}, DNS ${dns:-none}"
   if [[ -n "$gw" ]] && ! incus_ct_exec ping -c 1 -W 2 "$gw" &>/dev/null; then
     msg_warn "The gateway ${gw} does not answer the container"
   fi
-  if ! incus_ct_exec timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' &>/dev/null; then
-    msg_warn "The container has no connection out (1.1.1.1:443)"
-  elif ! incus_ct_exec getent hosts deb.debian.org &>/dev/null; then
+  # Alpine has no bash before its base packages, Debian images no ping.
+  if ! incus_ct_exec ping -c 1 -W 2 1.1.1.1 &>/dev/null &&
+    ! incus_ct_exec sh -c 'nc -z -w 3 1.1.1.1 443 2>/dev/null || timeout 5 bash -c "exec 3<>/dev/tcp/1.1.1.1/443"' &>/dev/null; then
+    msg_warn "The container has no connection out (1.1.1.1)"
+    rc=7
+  elif ! incus_ct_exec getent hosts "$host" &>/dev/null; then
     msg_warn "The container reaches the internet but resolves no names"
+    rc=6
   fi
   # The fetch error is the cause; "has no installation candidate" only follows from it.
   last="$(grep -iE '^(E|Err|W):.*(resolv|connect|fetch|unreachable|timed out)' "${1:-/dev/null}" 2>/dev/null | tail -n 1 | cut -c1-200)" || last=""
   [[ -n "$last" ]] || last="$(grep -E '^(E|Err):' "${1:-/dev/null}" 2>/dev/null | tail -n 1 | cut -c1-200)" || last=""
-  [[ -z "$last" ]] || msg_custom "ℹ️" "${YW}" "apt: ${last}"
-  return 0
+  [[ -z "$last" ]] || msg_custom "ℹ️" "${YW}" "${last}"
+  return $rc
 }
 
 incus_fix_debian13_root_ownership() {
@@ -1045,7 +1050,27 @@ EOF"
       msg_warn "Alpine repository DNS resolution failed in container, injecting public DNS servers"
       incus_ct_exec /bin/sh -c 'printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" >/etc/resolv.conf' || true
     fi
-    incus_ct_exec ash -c "apk add bash newt curl openssh nano mc ncurses jq >/dev/null" || msg_warn "Alpine base package install had issues"
+    local _apk_log="${BUILD_LOG:-${INCUS_BUILD_LOG:-/dev/null}}"
+    incus_ct_exec ash -c "apk add bash newt curl openssh nano mc ncurses jq" >>"$_apk_log" 2>&1 || {
+      # Without them the install script fails later on a missing curl or bash.
+      msg_warn "apk install failed (dl-cdn.alpinelinux.org), trying alternate mirrors..."
+      incus_ct_exec env ALPINE_REL="$alpine_rel" ash -c '
+        for m in $(printf "%s\n" mirror.init7.net ftp.halifax.rwth-aachen.de mirrors.edge.kernel.org alpine.mirror.wearetriple.com mirror.leaseweb.com uk.alpinelinux.org dl-2.alpinelinux.org dl-4.alpinelinux.org | shuf); do
+          wget -q --spider --timeout=3 "http://$m/alpine/$ALPINE_REL/main/" 2>/dev/null || continue
+          printf "http://%s/alpine/%s/main\nhttp://%s/alpine/%s/community\n" "$m" "$ALPINE_REL" "$m" "$ALPINE_REL" >/etc/apk/repositories
+          if apk update && apk add bash newt curl openssh nano mc ncurses jq; then
+            echo "  CDN set to $m"
+            exit 0
+          fi
+        done
+        exit 2
+      ' >>"$_apk_log" 2>&1 || {
+        msg_error "Failed to install base packages in Alpine container"
+        local _net_rc=0
+        _incus_ct_net_facts "$_apk_log" dl-cdn.alpinelinux.org || _net_rc=$?
+        exit $((_net_rc ? _net_rc : 100))
+      }
+    }
   elif [[ "${var_os:-debian}" =~ ^(debian|ubuntu|devuan)$ ]]; then
     sleep 2
     local _ct_env='export LC_ALL=C.UTF-8 LANG=C.UTF-8 DEBIAN_FRONTEND=noninteractive;'
@@ -1083,8 +1108,9 @@ EOF"
         fi
         echo "Acquire::By-Hash \"no\";" >/etc/apt/apt.conf.d/99no-by-hash
         for m in $MIRRORS; do
-          sed -i "s|URIs: http[s]*://[^/]*/|URIs: http://${m}/|g; s|deb http[s]*://[^/]*/|deb http://${m}/|g" /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
-          sed -i "s|deb http[s]*://[^/]*/|deb http://${m}/|g" /etc/apt/sources.list 2>/dev/null || true
+          for src in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
+            [ -f "$src" ] && sed -i "s|URIs: http[s]*://[^/]*/|URIs: http://${m}/|g; s|deb http[s]*://[^/]*/|deb http://${m}/|g" "$src"
+          done
           rm -rf /var/lib/apt/lists/*
           echo "--- mirror ${m}"
           apt-get update 2>&1 && apt-get install -y $APT_BASE 2>&1 && exit 0
@@ -1092,8 +1118,9 @@ EOF"
         exit 1
       ' >>"$_apt_log" 2>&1 || {
         msg_error "apt-get base packages installation failed"
-        _incus_ct_net_facts "$_apt_log"
-        exit 100
+        local _net_rc=0
+        _incus_ct_net_facts "$_apt_log" || _net_rc=$?
+        exit $((_net_rc ? _net_rc : 100))
       }
     }
   else
