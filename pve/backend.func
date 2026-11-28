@@ -1480,7 +1480,7 @@ EOF
         if _pve_ct_gone_during_setup; then
           install_exit_code=$_CS_SETUP_GONE_RC
         else
-          _pve_ct_net_facts "$BUILD_LOG" && install_exit_code=1 || install_exit_code=$?
+          _pve_ct_net_facts "$BUILD_LOG" && install_exit_code=100 || install_exit_code=$?
           msg_error "Failed to install base packages in Alpine container"
         fi
       fi
@@ -1570,7 +1570,9 @@ EOF
       install_exit_code=100
     else
       local failed_mirror
-      failed_mirror=$(pct exec "$CTID" -- bash -c "grep -m1 -oP '(?<=URIs: https?://)[^/]+' /etc/apt/sources.list.d/debian.sources 2>/dev/null || grep -m1 -oP '(?<=deb https?://)[^/]+' /etc/apt/sources.list 2>/dev/null" 2>/dev/null || echo "unknown")
+      # The Debian 13 template lists security.debian.org first; the main archive is what failed.
+      failed_mirror=$(pct exec "$CTID" -- sh -c "cat /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null | grep -oE '(URIs:|^deb) +https?://[^/ ]+' | sed -E 's#.*https?://##' | grep -v security | head -n1" 2>/dev/null)
+      [[ -n "$failed_mirror" ]] || failed_mirror="unknown"
       msg_warn "apt-get update failed (${failed_mirror})."
       msg_custom "ℹ️" "${YW}" "Probing alternate mirrors (this can take 1-2 minutes on network issues)"
       local mirror_exit=0
@@ -1603,12 +1605,23 @@ EOF
         echo "Acquire::By-Hash \"no\";" >/etc/apt/apt.conf.d/99no-by-hash
 
         try_mirrors() {
-          for src in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do
-            [ -f "$src" ] && sed -i "s|URIs: http[s]*://[^/]*/|URIs: http://${1}/|g; s|deb http[s]*://[^/]*/|deb http://${1}/|g" "$src"
+          for src in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
+            [ -f "$src" ] || continue
+            # The templates name security.debian.org without its path, which the rewrite below skips.
+            sed -i -E "s#^(URIs:|deb) +https?://security\.debian\.org/?( |\$)#\1 http://security.debian.org/debian-security\2#" "$src"
+            sed -i "s|URIs: http[s]*://[^/]*/|URIs: http://${1}/|g; s|deb http[s]*://[^/]*/|deb http://${1}/|g" "$src"
           done
           rm -rf /var/lib/apt/lists/*
           APT_OUT=$(cs_apt_update)
           APT_RC=$?
+          # Twelve of the thirty mirrors here carry no debian-security (ftp.debian.org among them).
+          if [ $APT_RC -ne 0 ] && echo "$APT_OUT" | grep -qE "^(Err|E|Error):.*//${1}/debian-security"; then
+            for src in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do
+              [ -f "$src" ] && sed -i "s|http://${1}/debian-security|http://security.debian.org/debian-security|g" "$src"
+            done
+            APT_OUT=$(cs_apt_update)
+            APT_RC=$?
+          fi
           if [ $APT_RC -eq 75 ]; then
             echo "  The package lists are still locked, another mirror cannot change that"
             exit 3
@@ -1707,7 +1720,7 @@ EOF
             continue
           }
           pct exec "$CTID" -- bash -c "
-            for src in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do
+            for src in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
               [ -f \"\$src\" ] && sed -i \"s|URIs: http[s]*://[^/]*/|URIs: http://${custom_mirror}/|g; s|deb http[s]*://[^/]*/|deb http://${custom_mirror}/|g\" \"\$src\"
             done
             rm -rf /var/lib/apt/lists/*
