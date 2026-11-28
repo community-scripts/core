@@ -265,26 +265,30 @@ install_script() {
   run_preflight
 
   # --- Support CLI argument as direct preset (default, advanced, …) ---
+  # var_defaults names a set of User Defaults, so on its own it picks that mode.
+  if [[ -n "${var_defaults:-}" ]]; then
+    case "${mode:-${1:-}}" in
+    "") mode="mydefaults" ;;
+    3 | mydefaults | MYDEFAULTS | userdefaults | USERDEFAULTS) ;;
+    *) msg_warn "var_defaults=${var_defaults} is only read with mode=mydefaults, ignoring it" ;;
+    esac
+  fi
   CHOICE="${mode:-${1:-}}"
 
   # If no CLI argument → show whiptail menu
   # Build menu dynamically based on available options
   local appdefaults_option=""
   local settings_option=""
-  local menu_items=(
-    "1" "Default Install"
-    "2" "Advanced Install"
-    "3" "User Defaults"
-  )
+  local menu_items=() menu_tail=() _set _set_label
 
   if [ -f "$(get_app_defaults_path)" ]; then
     appdefaults_option="4"
-    menu_items+=("4" "App Defaults for ${APP}")
+    menu_tail+=("4" "App Defaults for ${APP}")
     settings_option="5"
-    menu_items+=("5" "Settings")
+    menu_tail+=("5" "Settings")
   else
     settings_option="4"
-    menu_items+=("4" "Settings")
+    menu_tail+=("4" "Settings")
   fi
 
   APPDEFAULTS_OPTION="$appdefaults_option"
@@ -293,6 +297,14 @@ install_script() {
   # Main menu loop - allows returning from Settings
   while true; do
     if [ -z "$CHOICE" ]; then
+      # Built on every pass: Settings can add or remove a set of User Defaults.
+      menu_items=("1" "Default Install" "2" "Advanced Install" "3" "User Defaults")
+      while IFS= read -r _set; do
+        [[ -n "$_set" ]] || continue
+        _set_label="User Defaults: ${_set} ($(_defaults_set_summary "$(_defaults_set_file "$_set")"))"
+        menu_items+=("set:${_set}" "${_set_label:0:52}")
+      done < <(list_defaults_sets)
+      menu_items+=("${menu_tail[@]}")
       TMP_CHOICE=$(whiptail \
         --backtitle "Proxmox VE Helper Scripts" \
         --title "Community-Scripts Options" \
@@ -330,9 +342,11 @@ install_script() {
       run_maybe_offer="yes"
       break
       ;;
-    3 | mydefaults | MYDEFAULTS | userdefaults | USERDEFAULTS)
-      default_var_settings || {
-        msg_error "Failed to apply default.vars"
+    3 | mydefaults | MYDEFAULTS | userdefaults | USERDEFAULTS | set:*)
+      _set=""
+      [[ "$CHOICE" == set:* ]] && _set="${CHOICE#set:}"
+      default_var_settings "$_set" || {
+        msg_error "Failed to apply User Defaults"
         exit 1
       }
       defaults_target="$(declare -f community_scripts_dir >/dev/null 2>&1 && community_scripts_dir || echo /usr/local/community-scripts)/default.vars"
@@ -398,11 +412,71 @@ edit_default_storage() {
   ensure_storage_selection_for_vars_file "$vf"
 }
 
+# default.vars and the named sets beside it: edit one, add one, remove one.
+defaults_sets_menu() {
+  local base dir items choice name file _set
+  base="$(declare -f community_scripts_dir >/dev/null 2>&1 && community_scripts_dir || echo /usr/local/community-scripts)"
+  dir="${base}/mydefaults"
+  while true; do
+    items=("default" "default.vars, read by every run with User Defaults")
+    while IFS= read -r _set; do
+      [[ -n "$_set" ]] && items+=("$_set" "$(_defaults_set_summary "$(_defaults_set_file "$_set")")")
+    done < <(list_defaults_sets)
+    items+=("[new]" "New set, for another VLAN or bridge")
+    ((${#items[@]} > 4)) && items+=("[delete]" "Delete a set")
+    items+=("[back]" "Back")
+
+    choice=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "USER DEFAULTS" \
+      --ok-button "Select" --cancel-button "Back" \
+      --menu "\nA set holds only what differs from default.vars.\nStart a script with one: var_defaults=<name>\n" 20 72 9 \
+      "${items[@]}" 3>&1 1>&2 2>&3) || return 0
+
+    case "$choice" in
+    "[back]") return 0 ;;
+    default) nano "${base}/default.vars" ;;
+    "[new]")
+      name=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "NEW USER DEFAULTS" \
+        --inputbox "\nName (letters, digits, - and _), e.g. vlan20:" 10 60 3>&1 1>&2 2>&3) || continue
+      if ! _defaults_set_name_ok "$name"; then
+        whiptail --backtitle "Proxmox VE Helper Scripts" --msgbox "'${name}' cannot be used as a name.\n\nLetters, digits, - and _, up to 32 characters; 'default' is default.vars." 10 60
+        continue
+      fi
+      file="${dir}/${name}.vars"
+      if [[ ! -f "$file" ]]; then
+        mkdir -p "$dir"
+        printf '%s\n' \
+          "# User Defaults \"${name}\": what is set here wins over default.vars." \
+          "# Use it from the menu, or start a script with var_defaults=${name}" \
+          "# An empty value (var_vlan=) switches a setting of default.vars off." \
+          "" "#var_brg=" "#var_vlan=" "#var_net=dhcp" "#var_gateway=" >"$file"
+        chmod 0644 "$file"
+      fi
+      nano "$file"
+      ;;
+    "[delete]")
+      items=()
+      while IFS= read -r _set; do
+        [[ -n "$_set" ]] && items+=("$_set" "$(_defaults_set_file "$_set")")
+      done < <(list_defaults_sets)
+      name=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "DELETE USER DEFAULTS" \
+        --menu "\nWhich set should be deleted?" 18 72 8 "${items[@]}" 3>&1 1>&2 2>&3) || continue
+      file="$(_defaults_set_file "$name")" || continue
+      if whiptail --backtitle "Proxmox VE Helper Scripts" --defaultno --yesno "Delete ${file}?" 8 72; then
+        rm -f "$file"
+      fi
+      ;;
+    *)
+      file="$(_defaults_set_file "$choice")" && nano "$file"
+      ;;
+    esac
+  done
+}
+
 settings_menu() {
   while true; do
     local settings_items=(
       "1" "Manage API-Diagnostic Setting"
-      "2" "Edit Default.vars"
+      "2" "Edit User Defaults"
       "3" "Configure dev mode"
     )
     if [ -f "$(get_app_defaults_path)" ]; then
@@ -422,7 +496,7 @@ settings_menu() {
 
     case "$choice" in
     1) diagnostics_menu ;;
-    2) nano "$(declare -f community_scripts_dir >/dev/null 2>&1 && community_scripts_dir || echo /usr/local/community-scripts)/default.vars" ;;
+    2) defaults_sets_menu ;;
     3) dev_mode_menu ;;
     4)
       if [ -f "$(get_app_defaults_path)" ]; then

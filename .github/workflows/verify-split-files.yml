@@ -106,6 +106,7 @@ on:
       - "tests/forge-branch-clean-install.sh"
       - "tests/alpine-clean-install.sh"
       - "tests/app-vars-files.sh"
+      - "tests/named-defaults.sh"
       - ".github/workflows/verify-split-files.yml"
   push:
     branches: [main]
@@ -203,6 +204,7 @@ on:
       - "tests/forge-branch-clean-install.sh"
       - "tests/alpine-clean-install.sh"
       - "tests/app-vars-files.sh"
+      - "tests/named-defaults.sh"
       - ".github/workflows/verify-split-files.yml"
   workflow_dispatch:
 
@@ -437,6 +439,8 @@ jobs:
         run: bash tests/alpine-clean-install.sh
       - name: App .vars file tests
         run: bash tests/app-vars-files.sh
+      - name: Named User Defaults tests
+        run: bash tests/named-defaults.sh
 
       - name: Prefetch lists cover every engine file
         run: |

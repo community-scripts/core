@@ -23,6 +23,10 @@ _cs_runtime_cache_dir
 _cs_scripts_ref_line
 _cs_shield_hangup
 _cs_stdin_source
+_defaults_set_file
+_defaults_set_name_ok
+_defaults_set_summary
+_defaults_sets_dirs
 _dev_step_end
 _dev_step_key
 _dev_step_start
@@ -114,6 +118,7 @@ confirm_not_pve_host
 cs_testing_state
 default_var_settings
 default_vars
+defaults_sets_menu
 detect_arm
 detect_cpu
 detect_gpu
@@ -159,6 +164,7 @@ is_ip_range
 is_unattended
 is_verbose_mode
 json_escape
+list_defaults_sets
 load_functions
 load_vars_file
 log_msg
