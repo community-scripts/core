@@ -739,14 +739,18 @@ list_defaults_sets() {
 
 # What a set is usually made for, for the menu: "vmbr1, VLAN 20, dhcp".
 _defaults_set_summary() {
-  local f="$1" v out=""
+  local f="$1" v out="" n
   v=$(_vars_file_value "$f" var_brg)
   [[ -n "$v" ]] && out+=", ${v}"
   v=$(_vars_file_value "$f" var_vlan)
   [[ -n "$v" ]] && out+=", VLAN ${v}"
   v=$(_vars_file_value "$f" var_net)
   [[ -n "$v" ]] && out+=", ${v}"
-  [[ -n "$out" ]] || out=", $(grep -cE '^[[:space:]]*var_[a-z0-9_]+=' "$f" 2>/dev/null || true) settings"
+  if [[ -z "$out" ]]; then
+    n=$(grep -cE '^[[:space:]]*var_[a-z0-9_]+=' "$f" 2>/dev/null || true)
+    out=", ${n} settings"
+    [[ "$n" == "0" ]] && out=", empty"
+  fi
   printf '%s' "${out#, }"
 }
 

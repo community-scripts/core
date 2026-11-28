@@ -104,6 +104,9 @@ check "and gone without a set" "" "$(export CS_DEFAULTS_SET_FILE=stale && defaul
 check "sets are listed sorted, files that are no names left out" "DMZ_2 untagged vlan20" "$(list_defaults_sets | paste -sd' ')"
 check "a summary names bridge, VLAN and address" "vmbr1, VLAN 20, dhcp" "$(_defaults_set_summary "$SETS/vlan20.vars")"
 check "or counts the settings" "2 settings" "$(_defaults_set_summary "$SETS/DMZ_2.vars")"
+printf '#var_brg=
+' >"$WORK/new.vars"
+check "a new set is empty" "empty" "$(_defaults_set_summary "$WORK/new.vars")"
 check "var_defaults is never read from a file" yes "$(_is_reserved_var_key var_defaults && echo yes)"
 
 # A stale storage is corrected in the file it came from
