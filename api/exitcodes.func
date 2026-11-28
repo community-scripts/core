@@ -130,7 +130,7 @@ explain_exit_code() {
   150) echo "Systemd: Service failed to start" ;;
   151) echo "Systemd: Service unit not found" ;;
   152) echo "Permission denied (EACCES)" ;;
-  153) echo "Build/compile failed (make/gcc/cmake)" ;;
+  153) echo "Build/compile failed" ;;
   154) echo "Node.js: Native addon build failed (node-gyp)" ;;
 
   # --- Python / pip / uv (160-162) ---
@@ -206,7 +206,7 @@ explain_exit_code() {
   246) echo "Node.js: Internal JavaScript Parse Error" ;;
   247) echo "Node.js: Fatal internal error" ;;
   248) echo "Node.js: Invalid C++ addon / N-API failure" ;;
-  249) echo "npm/pnpm/yarn: Unknown fatal error" ;;
+  249) echo "npm/pnpm/yarn: install or build step failed" ;;
 
   # --- Application Install/Update Errors (250-254) ---
   250) echo "App: Download failed or version not determined" ;;

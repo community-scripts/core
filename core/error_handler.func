@@ -202,6 +202,43 @@ _eh_explanation() {
   printf '%s' "$explanation"
 }
 
+# _eh_refine_code <command> <capture> - the code a tool's bare "1" stands for
+#
+# A failed service start, package manager or compiler exits 1, which reports
+# as "General error". The program that ran, and for some its output, give the
+# specific code the table already has.
+# Runs inside the ERR trap: no early returns, every test inside an if.
+_eh_refine_code() {
+  local command="$1" capture="${2:-}" word out="" code=1
+  word="$(_eh_command_word "$command")"
+  if [[ -n "$capture" && -s "$capture" ]]; then
+    out="$(tail -n 80 "$capture" 2>/dev/null)" || out=""
+  fi
+  case "$word" in
+  systemctl)
+    if [[ "$command" =~ [[:space:]](start|restart|reload|try-restart|reload-or-restart|enable)([[:space:]]|$) ]]; then
+      code=150
+    fi
+    ;;
+  npm | npx | pnpm | yarn | yarnpkg | bun | corepack | node)
+    if grep -qE 'heap out of memory|Ineffective mark-compacts' <<<"$out"; then
+      code=243
+    elif [[ "$word" != "node" ]]; then
+      code=249
+    fi
+    ;;
+  go | cargo | rustc | make | cmake | ninja | meson | gcc | g++ | cc | zig | xcaddy | mvn | gradle | dotnet)
+    code=153
+    ;;
+  uv | pip | pip3 | pipx | python | python3)
+    if grep -qE 'No solution found|ResolutionImpossible|Could not find a version that satisfies|Because .* depends on' <<<"$out"; then
+      code=161
+    fi
+    ;;
+  esac
+  printf '%s' "$code"
+}
+
 # The prefix of an explanation names the tool family it belongs to.
 _eh_tools_for() {
   case "$1" in
@@ -607,6 +644,10 @@ error_handler() {
     local called
     called="$(_eh_source_line "$src" "$line_number")"
     [[ -n "$called" ]] && command="$called"
+  fi
+
+  if [[ "$exit_code" == 1 ]]; then
+    exit_code="$(_eh_refine_code "$command" "$capture")"
   fi
 
   FAILED_COMMAND="$command"
