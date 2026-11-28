@@ -1859,6 +1859,8 @@ vm_resize_disk() {
 # and any post-install step would run against a machine that is not there yet.
 vm_wait_for_agent() {
   local name="${1:?name}" timeout="${2:-180}" waited=0
+  # 0: the guest ships no agent, so there is nothing to wait for.
+  ((timeout > 0)) || return 1
   msg_info "Waiting for the guest agent (up to ${timeout}s)"
   while ((waited < timeout)); do
     if incus exec "$name" -- true >/dev/null 2>&1; then
@@ -1886,6 +1888,40 @@ _vm_note_nat_network() {
   msg_custom "💡" "${YW}" "${net} is a NAT network - that address reaches the VM from this host, not from the LAN. Put the VM on a bridged profile for that."
 }
 
+# A VM on a LAN bridge takes its address from the LAN's DHCP server, which
+# Incus never sees, so without a guest agent "incus list" shows none. This host
+# has it in its neighbour table once the two have exchanged a packet; one ping
+# over the bridge's own /24 makes sure they have.
+_vm_ip_from_neighbors() {
+  local name="$1" mac dev cidr base ip="" i
+  local -a pids=()
+  incus_target_is_local || return 1
+  mac="$(incus config get "$name" volatile.eth0.hwaddr 2>/dev/null)" || mac=""
+  mac="${mac,,}"
+  [[ -n "$mac" ]] || return 1
+  dev="${BRG:-}"
+  if [[ -n "$dev" && ! -d "/sys/class/net/${dev}" ]]; then
+    dev="$(incus network get "$dev" parent 2>/dev/null)" || dev=""
+  fi
+  [[ -n "$dev" && -d "/sys/class/net/${dev}" ]] || return 1
+  ip="$(ip -4 neigh show dev "$dev" 2>/dev/null | awk -v m="$mac" 'tolower($3) == m { print $1; exit }')"
+  if [[ -z "$ip" ]] && command -v ping >/dev/null 2>&1; then
+    cidr="$(ip -4 -o addr show dev "$dev" 2>/dev/null | awk '{ print $4; exit }')"
+    if [[ "${cidr#*/}" == 24 ]]; then
+      base="${cidr%/*}"
+      base="${base%.*}"
+      for i in $(seq 1 254); do
+        ping -c 1 -W 1 "${base}.${i}" >/dev/null 2>&1 &
+        pids+=($!)
+      done
+      wait "${pids[@]}" 2>/dev/null
+      ip="$(ip -4 neigh show dev "$dev" 2>/dev/null | awk -v m="$mac" 'tolower($3) == m { print $1; exit }')"
+    fi
+  fi
+  [[ -n "$ip" ]] || return 1
+  echo "$ip"
+}
+
 vm_get_ip() {
   local name="${1:?name}" timeout="${2:-90}" waited=0 ip=""
   while ((waited < timeout)); do
@@ -1895,6 +1931,10 @@ vm_get_ip() {
       echo "$ip"
       return 0
     }
+    if ((waited >= 30 && waited % 15 == 0)) && ip=$(_vm_ip_from_neighbors "$name"); then
+      echo "$ip"
+      return 0
+    fi
     sleep 3
     waited=$((waited + 3))
   done
@@ -2227,7 +2267,7 @@ incus_vm_create() {
   vm_wait_for_agent "$vm_name" "${VM_AGENT_TIMEOUT:-180}" || true
 
   local ip
-  if ip=$(vm_get_ip "$vm_name"); then
+  if ip=$(vm_get_ip "$vm_name" "${VM_IP_TIMEOUT:-90}"); then
     VM_IP="$ip"
     msg_ok "VM ${vm_name} has the address ${BL}${ip}${CL}"
     _vm_note_nat_network
