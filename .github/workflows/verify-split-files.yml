@@ -78,6 +78,7 @@ on:
       - "tests/ct-host-helpers.sh"
       - "tests/protection-after-install.sh"
       - "tests/release-stamp-pending.sh"
+      - "tests/forge-legacy-version-file.sh"
       - "tests/pct-start-reason.sh"
       - "tests/vm-silent.sh"
       - "tests/header-unwritable-cache.sh"
@@ -174,6 +175,7 @@ on:
       - "tests/ct-host-helpers.sh"
       - "tests/protection-after-install.sh"
       - "tests/release-stamp-pending.sh"
+      - "tests/forge-legacy-version-file.sh"
       - "tests/pct-start-reason.sh"
       - "tests/vm-silent.sh"
       - "tests/header-unwritable-cache.sh"
@@ -379,6 +381,8 @@ jobs:
         run: bash tests/protection-after-install.sh
       - name: Release stamp pending marker tests
         run: bash tests/release-stamp-pending.sh
+      - name: Legacy version file migration tests
+        run: bash tests/forge-legacy-version-file.sh
       - name: pct start reason tests
         run: bash tests/pct-start-reason.sh
       - name: VM silent helper tests

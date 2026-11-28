@@ -2020,7 +2020,9 @@ check_for_release() {
   local current="" legacy_files=()
   if [[ -f "$current_file" ]]; then
     current="$(<"$current_file")"
-  else
+  # Only the script's own app takes a legacy file. A component checked first
+  # took the app's version and deleted the file the app's update still reads.
+  elif _forge_is_script_app "$app" "${NSAPP:-}"; then
     mapfile -t legacy_files < <(find /opt -maxdepth 1 -type f -name "*_version.txt" 2>/dev/null)
     if ((${#legacy_files[@]} == 1)); then
       current="$(_forge_strip_v "$(<"${legacy_files[0]}")")"
