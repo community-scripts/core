@@ -2038,8 +2038,32 @@ setup_php() {
   local PHP_POST_MAX_SIZE="${PHP_POST_MAX_SIZE:-128M}"
   local PHP_MAX_EXECUTION_TIME="${PHP_MAX_EXECUTION_TIME:-300}"
 
-  local CURRENT_PHP="" PHP_CARRY=""
-  CURRENT_PHP=$(is_tool_installed "php" 2>/dev/null) || true
+  # Read from the -common packages, not `php -v`: Sury's unversioned php-cli
+  # follows every new release and pulls that CLI in next to the version in use.
+  local CURRENT_PHP="" PHP_CARRY="" _v
+  local -a PHP_OTHER=()
+  for _v in $(dpkg-query -W -f='${db:Status-Abbrev} ${binary:Package}\n' 'php*-common' 2>/dev/null |
+    awk '$1 == "ii" && $2 ~ /^php[0-9]+[.][0-9]+-common$/ { v = $2; sub(/^php/, "", v); sub(/-common$/, "", v); print v }'); do
+    [[ "$_v" != "$PHP_VERSION" ]] && PHP_OTHER+=("$_v")
+  done
+
+  if ((${#PHP_OTHER[@]})) && [[ "$(dpkg-query -W -f='${db:Status-Abbrev}' "php${PHP_VERSION}-common" 2>/dev/null)" == ii* ]]; then
+    msg_info "Removing PHP ${PHP_OTHER[*]} installed next to PHP ${PHP_VERSION}"
+    for _v in "${PHP_OTHER[@]}"; do
+      $STD apt purge -y "php${_v}*" || msg_warn "Could not remove PHP ${_v}"
+    done
+    $STD apt autoremove -y 2>/dev/null || true
+    msg_ok "Removed PHP ${PHP_OTHER[*]}"
+  elif ((${#PHP_OTHER[@]})); then
+    CURRENT_PHP=$(is_tool_installed "php" 2>/dev/null) || true
+    [[ " ${PHP_OTHER[*]} " == *" ${CURRENT_PHP} "* ]] || CURRENT_PHP="${PHP_OTHER[-1]}"
+    for _v in "${PHP_OTHER[@]}"; do
+      if [[ "$(dpkg-query -W -f='${db:Status-Abbrev}' "libapache2-mod-php${_v}" 2>/dev/null)" == ii* ||
+        "$(dpkg-query -W -f='${db:Status-Abbrev}' "php${_v}-fpm" 2>/dev/null)" == ii* ]]; then
+        CURRENT_PHP="$_v"
+      fi
+    done
+  fi
 
   # The purge below takes every module, pool and setting the install added with it.
   if [[ -n "$CURRENT_PHP" && "$CURRENT_PHP" != "$PHP_VERSION" ]]; then
@@ -2094,8 +2118,16 @@ Package: php${PHP_VERSION}*
 Pin: version ${PHP_VERSION}.*
 Pin-Priority: 1001
 
+Package: php${PHP_VERSION}*
+Pin: version *
+Pin-Priority: 500
+
 Package: php[0-9].*
-Pin: release o=packages.sury.org-php
+Pin: release o=deb.sury.org
+Pin-Priority: -1
+
+Package: php[0-9].*
+Pin: release o=LP-PPA-ondrej-php
 Pin-Priority: -1
 EOF
 
@@ -2274,6 +2306,10 @@ EOF
       $STD systemctl reload apache2 || msg_warn "Apache did not reload, check its config for PHP ${CURRENT_PHP} paths"
     fi
     rm -rf "$PHP_CARRY"
+  fi
+
+  if [[ -x "/usr/bin/php${PHP_VERSION}" ]]; then
+    update-alternatives --set php "/usr/bin/php${PHP_VERSION}" &>/dev/null || true
   fi
 
   # Verify PHP installation - critical check
