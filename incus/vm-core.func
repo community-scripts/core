@@ -60,6 +60,13 @@ load_incus_vm_functions() {
   icons
   default_vars
   set_std_mode
+  # Before api.func: its repository detection reads the scripts base, and
+  # without one every Incus VM run is filed as ProxmoxVE.
+  COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/community-scripts/Incus/main}"
+  NSAPP="${NSAPP:-$(tr -d ' ' <<<"${APP,,}")-vm}"
+  RANDOM_UUID="${RANDOM_UUID:-$(cat /proc/sys/kernel/random/uuid)}"
+  load_api_functions || true
+  trap vm_report_exit EXIT
 }
 
 load_functions() { load_incus_vm_functions; }
@@ -336,6 +343,7 @@ vm_start_script() {
     default_settings
     vm_apply_env_overrides
     echo -e "${INFO}${BOLD}${DGN}Unattended: script defaults with environment overrides${CL}"
+    post_to_api_vm
     return 0
   fi
 
@@ -349,6 +357,7 @@ vm_start_script() {
     echo -e "${ADVANCED}${BOLD}${RD}Using Advanced Settings${CL}"
     advanced_settings
   fi
+  post_to_api_vm
 }
 
 # ==============================================================================
@@ -2235,13 +2244,22 @@ incus_vm_create() {
 # ==============================================================================
 # api.func is the shared reporter; the host is the single reporting side.
 
-post_to_api_vm() {
-  declare -f post_to_api >/dev/null 2>&1 || return 0
-  export TELEMETRY_PLATFORM="incus"
-  post_to_api "$@" 2>/dev/null || true
-}
+# No-ops until load_functions sources api.func, which replaces both; they stay
+# when it could not be fetched.
+post_to_api_vm() { return 0; }
+post_update_to_api() { return 0; }
 
-post_update_to_api() {
-  declare -f post_update_to_api_real >/dev/null 2>&1 && post_update_to_api_real "$@"
+# The final status, as cleanup in pve/vm-core.func sends it. Scripts that set
+# their own EXIT trap call this first in it, while $? is still the exit code.
+vm_report_exit() {
+  local rc=$?
+  [[ "${POST_UPDATE_DONE:-}" == "true" ]] && return 0
+  if [[ $rc -ne 0 ]]; then
+    post_update_to_api "failed" "$rc"
+  elif [[ -n "$_INCUS_VM_NAME" ]] && incus info "$_INCUS_VM_NAME" >/dev/null 2>&1; then
+    post_update_to_api "done" "none"
+  else
+    post_update_to_api "aborted" "0"
+  fi
   return 0
 }
