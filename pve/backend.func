@@ -1521,7 +1521,9 @@ EOF
       msg_warn "Skipping timezone setup – zone '$tz' not found in container"
     fi
 
-    local _base_pkgs="sudo curl mc gnupg2 jq"
+    # From cron on: what a Proxmox template ships and the linuxcontainers.org
+    # images (arm64, catalog fallback) lack. Same set as the Incus backend.
+    local _base_pkgs="sudo curl mc gnupg2 jq cron logrotate wget xz-utils bzip2 file less nano whiptail python3 perl lsof cpio"
     if [[ "${ARCH:-amd64}" == "arm64" ]]; then
       _base_pkgs+=" openssh-server wget gcc"
     fi
