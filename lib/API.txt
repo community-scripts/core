@@ -50,6 +50,8 @@ _mongodb_in_place_simulate
 _nodejs_in_place_simulate
 _nvidia_apt_pins
 _nvidia_version_pin
+_php_carry_restore
+_php_carry_save
 _purge_is_safe
 _resolve_igc_tag
 _setup_amd_apu
