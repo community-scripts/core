@@ -1855,16 +1855,19 @@ setup_nodejs() {
   if command -v pnpm >/dev/null 2>&1; then
     pnpm config set --global strictDepBuilds false >/dev/null 2>&1 || true
     pnpm config set --global fetch-timeout 600000 >/dev/null 2>&1 || true
+    pnpm config set --global fetch-retries 5 >/dev/null 2>&1 || true
     pnpm config set --global network-concurrency 8 >/dev/null 2>&1 || true
   fi
-
-  if command -v yarn >/dev/null 2>&1; then
-    if [[ "$(yarn --version 2>/dev/null | cut -d. -f1)" == "1" ]]; then
-      $STD yarn config set network-timeout 600000 2>/dev/null || true
-    else
-      $STD yarn config set --home httpTimeout 600000 2>/dev/null || true
-    fi
+  if command -v npm >/dev/null 2>&1; then
+    npm config set fetch-retries 5 --location=global >/dev/null 2>&1 || true
+    npm config set fetch-retry-maxtimeout 120000 --location=global >/dev/null 2>&1 || true
   fi
+
+  # Corepack picks the yarn release per project, so asking `yarn --version` here
+  # configured whichever answered and left yarn 4 projects on its 60 s timeout.
+  # Classic reads ~/.yarnrc, yarn 2+ ~/.yarnrc.yml; each ignores the other file.
+  grep -q '^network-timeout' "$HOME/.yarnrc" 2>/dev/null || echo 'network-timeout 600000' >>"$HOME/.yarnrc"
+  grep -q '^httpTimeout:' "$HOME/.yarnrc.yml" 2>/dev/null || printf 'httpTimeout: 600000\nhttpRetry: 5\n' >>"$HOME/.yarnrc.yml"
 }
 
 # ------------------------------------------------------------------------------
