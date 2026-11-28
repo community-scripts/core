@@ -1868,6 +1868,100 @@ setup_nodejs() {
 }
 
 # ------------------------------------------------------------------------------
+# Saves what setup_php's purge of PHP $1 would lose into directory $2:
+# installed modules and SAPIs, php.ini lines that differ from the packaged
+# default, FPM pools, extra conf.d files and whether Apache used the FPM conf.
+# ------------------------------------------------------------------------------
+_php_carry_save() {
+  local old="$1" dir="$2" sapi pristine entry
+  dpkg-query -W -f='${db:Status-Abbrev} ${binary:Package}\n' "php${old}-*" 2>/dev/null |
+    awk -v p="php${old}-" '$1 == "ii" && index($2, p) == 1 { m = substr($2, length(p) + 1); if (m != "fpm") print m }' |
+    paste -sd, - >"$dir/modules" || true
+  [[ "$(dpkg-query -W -f='${db:Status-Abbrev}' "php${old}-fpm" 2>/dev/null)" == ii* ]] && touch "$dir/fpm"
+  [[ "$(dpkg-query -W -f='${db:Status-Abbrev}' "libapache2-mod-php${old}" 2>/dev/null)" == ii* ]] && touch "$dir/apache"
+  [[ -e "/etc/apache2/conf-enabled/php${old}-fpm.conf" ]] && touch "$dir/apache-fpm-conf"
+
+  for sapi in cli fpm apache2; do
+    [[ -d "/etc/php/${old}/${sapi}" ]] || continue
+    pristine="/usr/lib/php/${old}/php.ini-production"
+    [[ "$sapi" == "cli" && -f "${pristine}.cli" ]] && pristine="${pristine}.cli"
+    if [[ -f "$pristine" && -f "/etc/php/${old}/${sapi}/php.ini" ]]; then
+      awk '
+        function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+        /^[ \t]*[^;[ \t][^=]*=/ {
+          k = trim(substr($0, 1, index($0, "=") - 1)); v = trim(substr($0, index($0, "=") + 1))
+          if (FNR == NR) { base[k "=" v] = 1 } else if (!((k "=" v) in base)) { print k " = " v }
+        }' "$pristine" "/etc/php/${old}/${sapi}/php.ini" >"$dir/${sapi}.ini"
+    fi
+    mkdir -p "$dir/${sapi}.d"
+    for entry in "/etc/php/${old}/${sapi}/conf.d/"*.ini; do
+      [[ -f "$entry" ]] || continue
+      grep -qE '^[[:space:]]*(zend_)?extension[[:space:]]*=' "$entry" && continue
+      cp "$entry" "$dir/${sapi}.d/${entry##*/}"
+    done
+  done
+  [[ -d "/etc/php/${old}/fpm/pool.d" ]] && cp -a "/etc/php/${old}/fpm/pool.d" "$dir/pool.d"
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# Puts what _php_carry_save kept for PHP $1 onto PHP $2 and points the web
+# server configs that named the old FPM socket at the new one.
+# ------------------------------------------------------------------------------
+_php_carry_restore() {
+  local old="$1" new="$2" dir="$3" sapi ini line key entry f
+  local old_re="${old//./[.]}"
+
+  for sapi in cli fpm apache2; do
+    ini="/etc/php/${new}/${sapi}/php.ini"
+    if [[ -s "$dir/${sapi}.ini" && -f "$ini" ]]; then
+      while IFS= read -r line; do
+        key="${line%% = *}"
+        awk -v k="$key" -v l="$line" '
+          function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+          function keyof(s,  t) { t = s; sub(/^[ \t]*;?[ \t]*/, "", t); return trim(substr(t, 1, index(t, "=") - 1)) }
+          FNR == NR {
+            if ($0 !~ /^[ \t]*;?[ \t]*[^;[ \t][^=]*=/ || keyof($0) != k) next
+            multi = (k == "extension" || k == "zend_extension")
+            if (multi && $0 ~ /^[ \t]*[^;]/ && trim(substr($0, index($0, "=") + 1)) == trim(substr(l, index(l, "=") + 1))) skip = 1
+            if (!multi && $0 ~ /^[ \t]*[^;]/ && !set) set = FNR
+            if (!multi && $0 ~ /^[ \t]*;/ && !alt) alt = FNR
+            next
+          }
+          FNR == 1 { at = set ? set : alt }
+          FNR == at && !skip { print l; done = 1; next }
+          { print }
+          END { if (!done && !skip) print l }' "$ini" "$ini" >"${ini}.carry" && cat "${ini}.carry" >"$ini"
+        rm -f "${ini}.carry"
+      done <"$dir/${sapi}.ini"
+    fi
+    if [[ -d "$dir/${sapi}.d" && -d "/etc/php/${new}/${sapi}/conf.d" ]]; then
+      for entry in "$dir/${sapi}.d/"*.ini; do
+        [[ -f "$entry" && ! -e "/etc/php/${new}/${sapi}/conf.d/${entry##*/}" ]] || continue
+        cp "$entry" "/etc/php/${new}/${sapi}/conf.d/"
+      done
+    fi
+  done
+
+  if [[ -d "$dir/pool.d" && -d "/etc/php/${new}/fpm/pool.d" ]]; then
+    cp -a "$dir/pool.d/." "/etc/php/${new}/fpm/pool.d/"
+    for f in "/etc/php/${new}/fpm/pool.d/"*.conf; do
+      [[ -f "$f" ]] && sed -i -e "s#php${old_re}-fpm#php${new}-fpm#g" -e "s#/etc/php/${old_re}/#/etc/php/${new}/#g" "$f"
+    done
+  fi
+
+  while IFS= read -r f; do
+    sed -i "s#php${old_re}-fpm#php${new}-fpm#g" "$f"
+  done < <(grep -rlF "php${old}-fpm" /etc/nginx /etc/apache2 /etc/caddy 2>/dev/null)
+
+  if [[ -f "$dir/apache-fpm-conf" && -f "/etc/apache2/conf-available/php${new}-fpm.conf" ]]; then
+    $STD a2enconf "php${new}-fpm" || true
+  fi
+  msg_ok "Moved PHP ${old} modules, pools and settings to PHP ${new}"
+  return 0
+}
+
+# ------------------------------------------------------------------------------
 # Installs PHP with selected modules and configures Apache/FPM support.
 #
 # Description:
@@ -1944,6 +2038,18 @@ setup_php() {
   local PHP_POST_MAX_SIZE="${PHP_POST_MAX_SIZE:-128M}"
   local PHP_MAX_EXECUTION_TIME="${PHP_MAX_EXECUTION_TIME:-300}"
 
+  local CURRENT_PHP="" PHP_CARRY=""
+  CURRENT_PHP=$(is_tool_installed "php" 2>/dev/null) || true
+
+  # The purge below takes every module, pool and setting the install added with it.
+  if [[ -n "$CURRENT_PHP" && "$CURRENT_PHP" != "$PHP_VERSION" ]]; then
+    PHP_CARRY=$(mktemp -d)
+    _php_carry_save "$CURRENT_PHP" "$PHP_CARRY"
+    [[ -f "$PHP_CARRY/fpm" ]] && PHP_FPM="YES"
+    [[ -f "$PHP_CARRY/apache" ]] && PHP_APACHE="YES"
+    PHP_MODULE="${PHP_MODULE},$(<"$PHP_CARRY/modules")"
+  fi
+
   # Merge with user-defined modules
   if [[ -n "$PHP_MODULE" ]]; then
     COMBINED_MODULES="${COMBINED_MODULES},${PHP_MODULE}"
@@ -1971,10 +2077,6 @@ setup_php() {
 
   # Deduplicate
   COMBINED_MODULES=$(echo "$FILTERED_MODULES" | tr ',' '\n' | awk '!seen[$0]++' | paste -sd, -)
-
-  # Get current PHP-CLI version
-  local CURRENT_PHP=""
-  CURRENT_PHP=$(is_tool_installed "php" 2>/dev/null) || true
 
   # Remove conflicting PHP version before pinning
   if [[ -n "$CURRENT_PHP" && "$CURRENT_PHP" != "$PHP_VERSION" ]]; then
@@ -2125,6 +2227,8 @@ EOF
   fi
   cache_installed_version "php" "$PHP_VERSION"
 
+  [[ -n "$PHP_CARRY" ]] && _php_carry_restore "$CURRENT_PHP" "$PHP_VERSION" "$PHP_CARRY"
+
   # Patch all relevant php.ini files
   local PHP_INI_PATHS=("/etc/php/${PHP_VERSION}/cli/php.ini")
   [[ "$PHP_FPM" == "YES" ]] && PHP_INI_PATHS+=("/etc/php/${PHP_VERSION}/fpm/php.ini")
@@ -2157,6 +2261,19 @@ EOF
       $STD systemctl enable php${PHP_VERSION}-fpm
       safe_service_restart php${PHP_VERSION}-fpm
     fi
+  fi
+
+  if [[ -n "$PHP_CARRY" ]]; then
+    if systemctl is-active -q nginx 2>/dev/null; then
+      $STD systemctl reload nginx || msg_warn "nginx did not reload, check its config for PHP ${CURRENT_PHP} paths"
+    fi
+    if systemctl is-active -q caddy 2>/dev/null; then
+      $STD systemctl reload caddy || msg_warn "Caddy did not reload, check its config for PHP ${CURRENT_PHP} paths"
+    fi
+    if [[ "$PHP_APACHE" != "YES" ]] && systemctl is-active -q apache2 2>/dev/null; then
+      $STD systemctl reload apache2 || msg_warn "Apache did not reload, check its config for PHP ${CURRENT_PHP} paths"
+    fi
+    rm -rf "$PHP_CARRY"
   fi
 
   # Verify PHP installation - critical check
