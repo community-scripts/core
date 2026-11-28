@@ -38,6 +38,16 @@ as they are, since only the script knows what they mean. Keys in
 `VAR_RESERVED` are never read from a file. Saving app defaults keeps the app's
 own settings, but never takes the keys in `VAR_PER_RUN` from the current run.
 
+User Defaults can have named sets beside `default.vars`:
+`mydefaults/<name>.vars`, for a second VLAN or another bridge. A set holds only
+what differs. It loads first and `default.vars` fills in the rest, so the order
+is environment, set, `default.vars`, built-ins; an empty value (`var_vlan=`)
+switches a `default.vars` setting off. Each set is its own entry in the install
+menu, and `var_defaults=<name>` picks one without the menu (it implies
+`mode=mydefaults`). `default` is `default.vars` itself. A name that has no file
+stops the run instead of falling back, because the container would land on the
+wrong network. Settings > Edit User Defaults creates, edits and deletes sets.
+
 ## [`advanced.func`](../ui/advanced.func)
 
 `advanced_settings` — one function, the full interactive configuration path.

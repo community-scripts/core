@@ -423,7 +423,7 @@ declare -ag VAR_WHITELIST=(
   var_verbose var_version var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
 )
 declare -ag VAR_RESERVED=(
-  var_arm64 var_bridge var_ctid var_storage var_external_installer var_force_breaking_update var_ignore_breaking_changes
+  var_arm64 var_bridge var_ctid var_defaults var_storage var_external_installer var_force_breaking_update var_ignore_breaking_changes
   var_ignore_disable var_ignore_os_mismatch var_install var_ipv6_static var_testurl
 )
 declare -ag VAR_PER_RUN=(
@@ -699,15 +699,83 @@ load_vars_file() {
 }
 
 # ------------------------------------------------------------------------------
-# default_var_settings
+# Named User Defaults
+#
+# mydefaults/<name>.vars beside default.vars, one file per name: a second VLAN,
+# another bridge. A set holds only what differs; everything else still comes
+# from default.vars, and an empty value (var_vlan=) switches a setting of
+# default.vars off. "default" is default.vars itself.
+# ------------------------------------------------------------------------------
+_defaults_sets_dirs() {
+  local base
+  base="$(declare -f community_scripts_dir >/dev/null 2>&1 && community_scripts_dir || echo /usr/local/community-scripts)"
+  printf '%s\n' "${base}/mydefaults" /usr/local/community-scripts/mydefaults "$HOME/.config/community-scripts/mydefaults" | awk '!seen[$0]++'
+}
+
+_defaults_set_name_ok() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$ && "${1,,}" != "default" ]]
+}
+
+_defaults_set_file() {
+  local d
+  _defaults_set_name_ok "$1" || return 1
+  while IFS= read -r d; do
+    [[ -f "${d}/${1}.vars" ]] && echo "${d}/${1}.vars" && return 0
+  done < <(_defaults_sets_dirs)
+  return 1
+}
+
+list_defaults_sets() {
+  local d f n
+  while IFS= read -r d; do
+    for f in "$d"/*.vars; do
+      [[ -f "$f" ]] || continue
+      n="${f##*/}"
+      n="${n%.vars}"
+      _defaults_set_name_ok "$n" && echo "$n"
+    done
+  done < <(_defaults_sets_dirs) | LC_ALL=C sort -u
+}
+
+# What a set is usually made for, for the menu: "vmbr1, VLAN 20, dhcp".
+_defaults_set_summary() {
+  local f="$1" v out=""
+  v=$(_vars_file_value "$f" var_brg)
+  [[ -n "$v" ]] && out+=", ${v}"
+  v=$(_vars_file_value "$f" var_vlan)
+  [[ -n "$v" ]] && out+=", VLAN ${v}"
+  v=$(_vars_file_value "$f" var_net)
+  [[ -n "$v" ]] && out+=", ${v}"
+  [[ -n "$out" ]] || out=", $(grep -cE '^[[:space:]]*var_[a-z0-9_]+=' "$f" 2>/dev/null || true) settings"
+  printf '%s' "${out#, }"
+}
+
+# ------------------------------------------------------------------------------
+# default_var_settings [set]
 #
 # - Ensures /usr/local/community-scripts/default.vars exists (creates if missing)
 # - Loads var_* values from default.vars (safe parser, no source/eval)
-# - Precedence: ENV var_* > default.vars > built-in defaults
+# - With a set (argument, else var_defaults): that file first, default.vars for the rest
+# - Precedence: ENV var_* > named set > default.vars > built-in defaults
 # - Maps var_verbose → VERBOSE
 # - Calls base_settings "$VERBOSE" and echo_default
 # ------------------------------------------------------------------------------
 default_var_settings() {
+  local _set="${1:-${var_defaults:-}}" _set_file=""
+  [[ "${_set,,}" == "default" ]] && _set=""
+  if [[ -n "$_set" ]]; then
+    if ! _defaults_set_name_ok "$_set"; then
+      msg_error "'${_set}' is not a name for User Defaults (letters, digits, - and _, up to 32)"
+      return 1
+    fi
+    # Not default.vars instead: the set is there to put the container on another network.
+    if ! _set_file="$(_defaults_set_file "$_set")"; then
+      msg_error "No User Defaults named '${_set}' here: $(_defaults_sets_dirs | head -n1)/${_set}.vars is missing"
+      msg_custom "💡" "${YW}" "Available: default $(list_defaults_sets | paste -sd' ')"
+      return 1
+    fi
+  fi
+
   # Snapshot: environment variables (highest precedence)
   declare -A _HARD_ENV=()
   local _k
@@ -839,7 +907,17 @@ EOF
   # Later steps need the file they are reading from: a storage named here that
   # no longer holds the content has to be corrected in this file, not a guess.
   export CS_DEFAULT_VARS_FILE="$dv"
-  load_vars_file "$dv" "no" "${!_HARD_ENV[*]}"
+  # The set loads first and its keys are then kept from default.vars: cpu, ram
+  # and disk are applied by every file, so the later one would win otherwise.
+  local _keep="${!_HARD_ENV[*]}"
+  unset CS_DEFAULTS_SET_FILE
+  if [[ -n "$_set_file" ]]; then
+    export CS_DEFAULTS_SET_FILE="$_set_file"
+    load_vars_file "$_set_file" "no" "$_keep"
+    _load_vars_file_to_map "$_set_file"
+    _keep+=" ${!_VARS_IN[*]}"
+  fi
+  load_vars_file "$dv" "no" "$_keep"
 
   # 3) Map var_verbose → VERBOSE
   if [[ -n "${var_verbose:-}" ]]; then
@@ -856,7 +934,11 @@ EOF
   METHOD="mydefaults-global"
   base_settings "$VERBOSE"
   header_info
-  echo -e "${DEFAULT}${BOLD}${BL}Using User Defaults (default.vars) on node $PVEHOST_NAME${CL}"
+  if [[ -n "$_set_file" ]]; then
+    echo -e "${DEFAULT}${BOLD}${BL}Using User Defaults '${_set}' (${_set}.vars over default.vars) on node $PVEHOST_NAME${CL}"
+  else
+    echo -e "${DEFAULT}${BOLD}${BL}Using User Defaults (default.vars) on node $PVEHOST_NAME${CL}"
+  fi
   echo_default
 }
 
